@@ -4,45 +4,54 @@ services:
   loadshaper:
     build: .
     container_name: loadshaper
-    restart: unless-stopped
-    # Host network makes iperf bind to the real NIC and lets us read host /proc cleanly.
-    network_mode: host
+    restart: ${RESTART_POLICY:-unless-stopped}
+    # No host networking. We read host NIC stats via a read-only bind of /sys/class/net.
+    volumes:
+      - /sys/class/net:/host_sys_class_net:ro,Z
     environment:
       # === Targets ===
-      CPU_TARGET_PCT: "${CPU_TARGET_PCT:-42}"        # target average CPU for the whole system
-      MEM_TARGET_PCT: "${MEM_TARGET_PCT:-42}"        # target RAM used (system-wide), % of total
+      CPU_TARGET_PCT: "${CPU_TARGET_PCT:-25}"         # target average CPU (system-wide)
+      MEM_TARGET_PCT: "${MEM_TARGET_PCT:-25}"         # target RAM used (EXCLUDING cache/buffers)
+      NET_TARGET_PCT: "${NET_TARGET_PCT:-25}"         # target NIC utilization % (avg of tx+rx vs link speed)
 
       # === Safety stop thresholds (long window) ===
-      CPU_STOP_PCT: "${CPU_STOP_PCT:-85}"            # if long avg CPU > this, pause load
-      MEM_STOP_PCT: "${MEM_STOP_PCT:-90}"            # if long avg RAM used > this, free memory
+      CPU_STOP_PCT: "${CPU_STOP_PCT:-50}"
+      MEM_STOP_PCT: "${MEM_STOP_PCT:-50}"
+      NET_STOP_PCT: "${NET_STOP_PCT:-50}"             # pause all load if avg NIC util > this
 
       # === Control behavior ===
-      CONTROL_PERIOD_SEC: "${CONTROL_PERIOD_SEC:-5}" # control loop tick
-      AVG_WINDOW_SEC: "${AVG_WINDOW_SEC:-120}"       # "long period" window for moving average
-      HYSTERESIS_PCT: "${HYSTERESIS_PCT:-5}"         # resume margin below targets to avoid flapping
-      JITTER_PCT: "${JITTER_PCT:-20}"                # +/- jitter around targets
-      JITTER_PERIOD_SEC: "${JITTER_PERIOD_SEC:-10}"  # how often to pick a new jitter offset
+      CONTROL_PERIOD_SEC: "${CONTROL_PERIOD_SEC:-5}"
+      AVG_WINDOW_SEC: "${AVG_WINDOW_SEC:-300}"
+      HYSTERESIS_PCT: "${HYSTERESIS_PCT:-5}"
+      JITTER_PCT: "${JITTER_PCT:-15}"
+      JITTER_PERIOD_SEC: "${JITTER_PERIOD_SEC:-5}"
 
       # === Memory safety ===
-      MEM_MIN_FREE_MB: "${MEM_MIN_FREE_MB:-512}"     # never eat into this free headroom
-      MEM_STEP_MB: "${MEM_STEP_MB:-64}"              # allocate/free in chunks to avoid thrash
+      MEM_MIN_FREE_MB: "${MEM_MIN_FREE_MB:-512}"
+      MEM_STEP_MB: "${MEM_STEP_MB:-64}"
 
-      # === Network load (optional) ===
-      NET_MODE: "${NET_MODE:-client}"                # "off" | "client"
-      # Put the *other* VMs here (IPv4 or IPv6). Each VM should list the *others*.
-      # Example for VM-A: "10.0.0.2,10.0.0.3"
-      # Example for VM-B: "10.0.0.1,10.0.0.3", etc.
-      NET_PEERS: "${NET_PEERS:-10.0.0.2,10.0.0.3}"
-      NET_TARGET_MBIT: "${NET_TARGET_MBIT:-1}"       # target Mbps when bursting
-      NET_BURST_SEC: "${NET_BURST_SEC:-2}"           # iperf client burst duration
-      NET_IDLE_SEC: "${NET_IDLE_SEC:-10}"            # idle pause between bursts
-      NET_PROTOCOL: "${NET_PROTOCOL:-udp}"           # "udp" or "tcp"
+      # === Network shaping (no host net; unprivileged port) ===
+      NET_MODE: "${NET_MODE:-client}"                 # off|client
+      NET_PROTOCOL: "${NET_PROTOCOL:-udp}"            # udp (lower CPU) | tcp
+      NET_PEERS: "${NET_PEERS:-10.0.0.2,10.0.0.3}"    # other VMs
+      NET_PORT: "${NET_PORT:-15201}"                  # iperf3 port on peers
+      NET_BURST_SEC: "${NET_BURST_SEC:-10}"           # client burst duration
+      NET_IDLE_SEC: "${NET_IDLE_SEC:-10}"             # idle between bursts
 
-  # Always-on iperf3 server so OTHER VMs can target this one.
+      # Which host NIC to measure (for utilization %) and its speed
+      NET_IFACE: "${NET_IFACE:-ens3}"                 # set to your host’s real NIC name
+      NET_LINK_MBIT: "${NET_LINK_MBIT:-1000}"         # fallback link speed if /sys speed is unknown
+
+      # Limits for the controller -> client sending rate (Mbps)
+      NET_MIN_RATE_MBIT: "${NET_MIN_RATE_MBIT:-1}"
+      NET_MAX_RATE_MBIT: "${NET_MAX_RATE_MBIT:-800}"  # cap below link speed for safety
+
+  # iperf3 receiver on an unprivileged port; exposed for peers to hit
   iperf3:
     image: networkstatic/iperf3:latest
     container_name: iperf3-server
-    command: ["-s"]
-    restart: unless-stopped
-    network_mode: host
-    
+    command: ["-s", "-p", "${NET_PORT:-15201}"]
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${NET_PORT:-15201}:${NET_PORT:-15201}/tcp"
+      - "${NET_PORT:-15201}:${NET_PORT:-15201}/udp"
