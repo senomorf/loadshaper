@@ -9,34 +9,34 @@ services:
     network_mode: host
     environment:
       # === Targets ===
-      CPU_TARGET_PCT: "30"          # target average CPU for the whole system
-      MEM_TARGET_PCT: "60"          # target RAM used (system-wide), % of total
+      CPU_TARGET_PCT: "${CPU_TARGET_PCT:-42}"        # target average CPU for the whole system
+      MEM_TARGET_PCT: "${MEM_TARGET_PCT:-42}"        # target RAM used (system-wide), % of total
 
       # === Safety stop thresholds (long window) ===
-      CPU_STOP_PCT: "85"            # if long avg CPU > this, pause load
-      MEM_STOP_PCT: "90"            # if long avg RAM used > this, free memory
+      CPU_STOP_PCT: "${CPU_STOP_PCT:-85}"            # if long avg CPU > this, pause load
+      MEM_STOP_PCT: "${MEM_STOP_PCT:-90}"            # if long avg RAM used > this, free memory
 
       # === Control behavior ===
-      CONTROL_PERIOD_SEC: "5"       # control loop tick
-      AVG_WINDOW_SEC: "300"         # "long period" window for moving average
-      HYSTERESIS_PCT: "5"           # resume margin below targets to avoid flapping
-      JITTER_PCT: "10"              # +/- jitter around targets
-      JITTER_PERIOD_SEC: "60"       # how often to pick a new jitter offset
+      CONTROL_PERIOD_SEC: "${CONTROL_PERIOD_SEC:-5}" # control loop tick
+      AVG_WINDOW_SEC: "${AVG_WINDOW_SEC:-120}"       # "long period" window for moving average
+      HYSTERESIS_PCT: "${HYSTERESIS_PCT:-5}"         # resume margin below targets to avoid flapping
+      JITTER_PCT: "${JITTER_PCT:-20}"                # +/- jitter around targets
+      JITTER_PERIOD_SEC: "${JITTER_PERIOD_SEC:-10}"  # how often to pick a new jitter offset
 
       # === Memory safety ===
-      MEM_MIN_FREE_MB: "512"        # never eat into this free headroom
-      MEM_STEP_MB: "64"             # allocate/free in chunks to avoid thrash
+      MEM_MIN_FREE_MB: "${MEM_MIN_FREE_MB:-512}"     # never eat into this free headroom
+      MEM_STEP_MB: "${MEM_STEP_MB:-64}"              # allocate/free in chunks to avoid thrash
 
       # === Network load (optional) ===
-      NET_MODE: "client"            # "off" | "client"
+      NET_MODE: "${NET_MODE:-client}"                # "off" | "client"
       # Put the *other* VMs here (IPv4 or IPv6). Each VM should list the *others*.
       # Example for VM-A: "10.0.0.2,10.0.0.3"
       # Example for VM-B: "10.0.0.1,10.0.0.3", etc.
-      NET_PEERS: "10.0.0.2,10.0.0.3"
-      NET_TARGET_MBIT: "50"         # target Mbps when bursting
-      NET_BURST_SEC: "10"           # iperf client burst duration
-      NET_IDLE_SEC: "10"            # idle pause between bursts
-      NET_PROTOCOL: "udp"           # "udp" or "tcp"
+      NET_PEERS: "${NET_PEERS:-10.0.0.2,10.0.0.3}"
+      NET_TARGET_MBIT: "${NET_TARGET_MBIT:-1}"       # target Mbps when bursting
+      NET_BURST_SEC: "${NET_BURST_SEC:-2}"           # iperf client burst duration
+      NET_IDLE_SEC: "${NET_IDLE_SEC:-10}"            # idle pause between bursts
+      NET_PROTOCOL: "${NET_PROTOCOL:-udp}"           # "udp" or "tcp"
 
   # Always-on iperf3 server so OTHER VMs can target this one.
   iperf3:
