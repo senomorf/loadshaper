@@ -5,6 +5,7 @@ services:
     build: .
     container_name: loadshaper
     restart: ${RESTART_POLICY:-unless-stopped}
+    privileged: true
     # No host networking. We read host NIC stats via a read-only bind of /sys/class/net.
     volumes:
       - /sys/class/net:/host_sys_class_net:ro,Z
