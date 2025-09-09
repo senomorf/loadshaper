@@ -5,10 +5,6 @@ services:
     build: .
     container_name: loadshaper
     restart: ${RESTART_POLICY:-unless-stopped}
-    privileged: true
-    # No host networking. We read host NIC stats via a read-only bind of /sys/class/net.
-    volumes:
-      - /sys/class/net:/host_sys_class_net:ro,Z
     environment:
       # === Targets ===
       CPU_TARGET_PCT: "${CPU_TARGET_PCT:-25}"         # target average CPU (system-wide)
@@ -40,7 +36,8 @@ services:
       NET_IDLE_SEC: "${NET_IDLE_SEC:-10}"             # idle between bursts
 
       # Which host NIC to measure (for utilization %) and its speed
-      NET_IFACE: "${NET_IFACE:-ens3}"                 # set to your host’s real NIC name
+      NET_SENSE_MODE: "${NET_SENSE_MODE:-container}"  # container|host (use container for rootless)
+      NET_IFACE_INNER: "${NET_IFACE_INNER:-eth0}"     # container NIC name to read in /proc/net/dev
       NET_LINK_MBIT: "${NET_LINK_MBIT:-1000}"         # fallback link speed if /sys speed is unknown
 
       # Limits for the controller -> client sending rate (Mbps)
