@@ -39,14 +39,20 @@ JITTER_PERIOD     = getenv_float("JITTER_PERIOD_SEC", 60.0)
 MEM_MIN_FREE_MB   = getenv_int("MEM_MIN_FREE_MB", 512)
 MEM_STEP_MB       = getenv_int("MEM_STEP_MB", 64)
 
-NET_MODE          = os.getenv("NET_MODE", "off").strip().lower()
+NET_MODE          = os.getenv("NET_MODE", "client").strip().lower()
 NET_PEERS         = [p.strip() for p in os.getenv("NET_PEERS", "").split(",") if p.strip()]
 NET_PORT          = getenv_int("NET_PORT", 15201)
 NET_BURST_SEC     = getenv_int("NET_BURST_SEC", 10)
 NET_IDLE_SEC      = getenv_int("NET_IDLE_SEC", 10)
 NET_PROTOCOL      = os.getenv("NET_PROTOCOL", "udp").strip().lower()
-NET_IFACE         = os.getenv("NET_IFACE", "ens3").strip()
-NET_LINK_MBIT     = getenv_float("NET_LINK_MBIT", 1000.0)
+
+# New: how we "sense" NIC bytes
+NET_SENSE_MODE    = os.getenv("NET_SENSE_MODE", "container").strip().lower()  # container|host
+NET_IFACE         = os.getenv("NET_IFACE", "ens3").strip()        # for host mode (requires /sys mount)
+NET_IFACE_INNER   = os.getenv("NET_IFACE_INNER", "eth0").strip()  # for container mode (/proc/net/dev)
+NET_LINK_MBIT     = getenv_float("NET_LINK_MBIT", 1000.0)         # used directly in container mode
+
+# Controller rate bounds (Mbps)
 NET_MIN_RATE      = getenv_float("NET_MIN_RATE_MBIT", 1.0)
 NET_MAX_RATE      = getenv_float("NET_MAX_RATE_MBIT", 800.0)
 
@@ -88,7 +94,7 @@ def cpu_percent_over(dt, prev=None):
     return usage, cur
 
 def read_meminfo():
-    # Return dict of meminfo fields (kB), plus calculated "used_no_cache_pct"
+    # Return host-level (since /proc is global) mem usage excluding cache/buffers
     m = {}
     with open("/proc/meminfo") as f:
         for line in f:
@@ -101,7 +107,6 @@ def read_meminfo():
     cached = m.get("Cached", 0)
     srecl = m.get("SReclaimable", 0)
     shmem = m.get("Shmem", 0)
-    # Buffers/cache that are reclaimable (exclude tmpfs via Shmem)
     buff_cache = buffers + max(0, cached + srecl - shmem)
     used_no_cache = max(0, total - free - buff_cache)
     used_pct = (100.0 * used_no_cache / total) if total > 0 else 0.0
@@ -176,9 +181,10 @@ def mem_nurse_thread(stop_evt: threading.Event):
         time.sleep(1.0)
 
 # ---------------------------
-# NIC utilization (host) via /sys
+# NIC sensing helpers
 # ---------------------------
 def read_host_nic_bytes(iface: str):
+    # Requires a bind-mount of /sys/class/net -> /host_sys_class_net
     base = f"/host_sys_class_net/{iface}/statistics"
     try:
         with open(f"{base}/tx_bytes", "r") as f:
@@ -189,8 +195,24 @@ def read_host_nic_bytes(iface: str):
     except Exception:
         return None
 
+def read_container_nic_bytes(iface: str):
+    # Parse /proc/net/dev (available in all containers)
+    try:
+        with open("/proc/net/dev", "r") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                name, rest = [x.strip() for x in line.split(":", 1)]
+                if name == iface:
+                    parts = rest.split()
+                    rx = int(parts[0])   # bytes
+                    tx = int(parts[8])   # bytes
+                    return (tx, rx)
+    except Exception:
+        pass
+    return None
+
 def read_host_nic_speed_mbit(iface: str):
-    # Try /sys speed first; fall back to env NET_LINK_MBIT
     try:
         with open(f"/host_sys_class_net/{iface}/speed", "r") as f:
             sp = float(f.read().strip())
@@ -209,7 +231,8 @@ def nic_utilization_pct(prev, cur, dt_sec, link_mbit):
     bps = bits / dt_sec
     cap_bps = link_mbit * 1_000_000.0
     util = 100.0 * (bps / cap_bps) if cap_bps > 0 else 0.0
-    if util < 0: util = 0.0
+    if util < 0:
+        util = 0.0
     return util
 
 # ---------------------------
@@ -245,15 +268,16 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
 # Main control loop
 # ---------------------------
 class EMA3:
-    # tiny wrapper so we can init all three easily
     def __init__(self, period, step):
         self.cpu = EMA(period, step)
         self.mem = EMA(period, step)
         self.net = EMA(period, step)
 
 def main():
-    print("[loadshaper v2] starting with",
-          f"CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}%")
+    print("[loadshaper v2.2] starting with",
+          f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
+          f" NET_SENSE_MODE={NET_SENSE_MODE}")
+
     duty = Value('d', 0.0)
     paused = Value('d', 0.0)  # 1.0 => paused
     net_rate_mbit = Value('d', max(NET_MIN_RATE, min(NET_MAX_RATE, (NET_MAX_RATE + NET_MIN_RATE)/2.0)))
@@ -299,8 +323,12 @@ def main():
     ema = EMA3(AVG_WINDOW_SEC, CONTROL_PERIOD)
 
     # NIC state
-    link_mbit = read_host_nic_speed_mbit(NET_IFACE)
-    prev_nic = read_host_nic_bytes(NET_IFACE)
+    if NET_SENSE_MODE == "host":
+        link_mbit = read_host_nic_speed_mbit(NET_IFACE)
+        prev_nic = read_host_nic_bytes(NET_IFACE)
+    else:  # container
+        link_mbit = NET_LINK_MBIT
+        prev_nic = read_container_nic_bytes(NET_IFACE_INNER)
     prev_nic_t = time.time()
 
     try:
@@ -314,7 +342,10 @@ def main():
             mem_avg = ema.mem.update(mem_used_no_cache_pct)
 
             # NIC utilization
-            cur_nic = read_host_nic_bytes(NET_IFACE)
+            if NET_SENSE_MODE == "host":
+                cur_nic = read_host_nic_bytes(NET_IFACE)
+            else:
+                cur_nic = read_container_nic_bytes(NET_IFACE_INNER)
             now = time.time()
             dt = now - prev_nic_t if prev_nic_t else CONTROL_PERIOD
             nic_util = nic_utilization_pct(prev_nic, cur_nic, dt, link_mbit)
@@ -326,7 +357,7 @@ def main():
                 update_jitter()
                 jitter_next = time.time() + JITTER_PERIOD
 
-            # Safety stops (any long average beyond stop => pause all load)
+            # Safety stops
             if ((cpu_avg is not None and cpu_avg > CPU_STOP_PCT) or
                 (mem_avg is not None and mem_avg > MEM_STOP_PCT) or
                 (net_avg is not None and net_avg > NET_STOP_PCT)):
@@ -337,7 +368,6 @@ def main():
                 set_mem_target_bytes(0)
                 net_rate_mbit.value = NET_MIN_RATE
             else:
-                # Resume when all are below target - hysteresis
                 resume_cpu = (cpu_avg is None) or (cpu_avg < max(0.0, CPU_TARGET_PCT - HYSTERESIS_PCT))
                 resume_mem = (mem_avg is None) or (mem_avg < max(0.0, MEM_TARGET_PCT - HYSTERESIS_PCT))
                 resume_net = (net_avg is None) or (net_avg < max(0.0, NET_TARGET_PCT - HYSTERESIS_PCT))
@@ -355,16 +385,12 @@ def main():
                     duty.value = min(MAX_DUTY, max(0.0, new_duty))
 
                 # RAM target (no-cache used)
-                # used_no_cache_b (current). Desired used_no_cache = total * mem_target_now%
                 desired_used_b = int(total_b * (mem_target_now / 100.0))
                 need_delta_b = desired_used_b - used_no_cache_b
-
                 # Keep some real free memory
                 min_free_b = MEM_MIN_FREE_MB * 1024 * 1024
                 if need_delta_b > 0 and (free_b - need_delta_b) < min_free_b:
                     need_delta_b = max(0, int(free_b - min_free_b))
-
-                # Step our private allocation toward the target
                 with mem_lock:
                     our_current = len(mem_block)
                 target_alloc = max(0, our_current + need_delta_b)
@@ -373,14 +399,15 @@ def main():
                 # NET rate control (Mbps)
                 if net_avg is not None and NET_MODE == "client" and NET_PEERS:
                     err_net = net_target_now - net_avg
-                    new_rate = float(net_rate_mbit.value) + KP_NET * (err_net)  # 1% util -> ~1 Mbps by default
+                    new_rate = float(net_rate_mbit.value) + KP_NET * (err_net)
                     net_rate_mbit.value = max(NET_MIN_RATE, min(NET_MAX_RATE, new_rate))
 
             # Logging
             if cpu_avg is not None and mem_avg is not None and net_avg is not None:
                 print(f"[loadshaper] cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% | "
                       f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% | "
-                      f"nic util now={nic_util:5.2f}% avg={net_avg:5.2f}% (link≈{link_mbit:.0f} Mbit) | "
+                      f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
+                      f"now={nic_util:5.2f}% avg={net_avg:5.2f}% | "
                       f"duty={duty.value:4.2f} paused={int(paused.value)} "
                       f"targets cpu≈{cpu_target_now:.1f}% mem≈{mem_target_now:.1f}% net≈{net_target_now:.1f}% "
                       f"net_rate≈{net_rate_mbit.value:.1f} Mbit")
