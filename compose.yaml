@@ -4,7 +4,7 @@ services:
   loadshaper:
     build: .
     container_name: loadshaper
-    restart: ${RESTART_POLICY:-unless-stopped}
+    restart: ${RESTART_POLICY:-always}
     environment:
       # === Targets ===
       CPU_TARGET_PCT: "${CPU_TARGET_PCT:-25}"         # target average CPU (system-wide)
@@ -49,7 +49,7 @@ services:
     image: networkstatic/iperf3:latest
     container_name: iperf3-server
     command: ["-s", "-p", "${NET_PORT:-15201}"]
-    restart: ${RESTART_POLICY:-unless-stopped}
+    restart: ${RESTART_POLICY:-always}
     ports:
       - "${NET_PORT:-15201}:${NET_PORT:-15201}/tcp"
       - "${NET_PORT:-15201}:${NET_PORT:-15201}/udp"
