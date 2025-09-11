@@ -31,10 +31,21 @@ docker logs -f loadshaper
 
 ## Oracle Free Tier thresholds
 
-The VM.Standard.E2.1.Micro shape exposes up to 50 Mbps to the internet, so the
-20 % network criterion equates to roughly 10 Mbps. A1.Flex shapes provide
-1 Gbps per vCPU; apply the same 20 % rule, e.g. a single vCPU must sustain about
-0.2 Gbps. Memory reclamation checks apply only to A1.Flex shapes.
+Oracle's Always Free Tier compute shapes have the following specifications and reclamation thresholds:
+
+**VM.Standard.E2.1.Micro:**
+- CPU: 1/8 OCPU (burstable)
+- Memory: 1 GB RAM (no memory reclamation rule)
+- Network: 480 Mbps internal, **50 Mbps external (internet)**
+- 20% threshold = ~10 Mbps external traffic required
+
+**A1.Flex (ARM-based):**
+- CPU: Up to 4 OCPUs
+- Memory: Up to 24 GB RAM (20% threshold applies)
+- Network: 1 Gbps per vCPU
+- 20% threshold = ~0.2 Gbps per vCPU required
+
+**Important:** Network monitoring typically measures internet-bound traffic (external bandwidth), not internal VM-to-VM traffic. For E2 shapes, focus on the 50 Mbps external limit.
 
 Currently `loadshaper` drives CPU usage and can emit network traffic, but it
 does not yet monitor utilization over seven days or autonomously decide when to
@@ -99,3 +110,55 @@ The controller and CPU load workers run with low operating system priority using
 On Linux/Unix systems this lowers their scheduling priority; on other platforms
 the call is ignored. Tight loops include small `sleep` slices (≈5 ms) so the
 scheduler can run other workloads without noticeable latency impact.
+
+## Troubleshooting
+
+### Verifying Load Generation
+
+**Check CPU load is working:**
+```shell
+# CPU percentage should be near your target
+docker logs -f loadshaper | grep "cpu now="
+```
+
+**Check memory allocation:**
+```shell
+# Memory usage should increase over time if MEM_TARGET_PCT > current usage
+docker logs -f loadshaper | grep "mem(no-cache)"
+```
+
+**Check network traffic:**
+```shell
+# Network percentage should show activity when NET_MODE=client and peers are configured
+docker logs -f loadshaper | grep "nic("
+```
+
+### Common Issues
+
+**CPU not reaching target percentage:**
+- Check if `LOAD_THRESHOLD` is too low (workers pause when system load is high)
+- Verify `CPU_STOP_PCT` isn't triggering premature shutdown
+- Increase `CPU_TARGET_PCT` if needed
+
+**Memory not increasing:**
+- Ensure sufficient free memory exists (respects `MEM_MIN_FREE_MB`)
+- Check if `MEM_STOP_PCT` is being triggered
+- Verify container has access to enough memory
+
+**Network traffic not generating:**
+- Confirm `NET_MODE=client` and `NET_PEERS` are set correctly
+- Verify peers are running iperf3 servers on the specified port
+- Check firewall rules between instances
+- Try `NET_PROTOCOL=tcp` if UDP traffic is filtered
+
+**Database storage issues:**
+```shell
+# Check if metrics database is working
+docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Using fallback /tmp storage"
+```
+
+**Load average causing frequent pauses:**
+```shell
+# If workers pause too often, adjust thresholds
+LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 docker compose up -d
+```

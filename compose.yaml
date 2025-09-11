@@ -1,20 +1,27 @@
 version: "3.9"
 
+# Default configuration optimized for VM.Standard.E2.1.Micro (1/8 OCPU, 1GB RAM, 50 Mbps external)
+# For A1.Flex shapes, consider these overrides:
+# - CPU_TARGET_PCT=35 (more CPU available)
+# - MEM_TARGET_PCT=40 (memory reclamation applies)
+# - NET_TARGET_PCT=25 (1 Gbps per vCPU available)
+# - NET_LINK_MBIT=1000 (or higher for multi-vCPU)
+
 services:
   loadshaper:
     build: .
     container_name: loadshaper
     restart: ${RESTART_POLICY:-always}
     environment:
-      # === Targets ===
+      # === Targets (conservative defaults for E2.1.Micro) ===
       CPU_TARGET_PCT: "${CPU_TARGET_PCT:-25}"         # target average CPU (system-wide)
-      MEM_TARGET_PCT: "${MEM_TARGET_PCT:-25}"         # target RAM used (EXCLUDING cache/buffers)
-      NET_TARGET_PCT: "${NET_TARGET_PCT:-25}"         # target NIC utilization % (avg of tx+rx vs link speed)
+      MEM_TARGET_PCT: "${MEM_TARGET_PCT:-0}"          # target RAM used (EXCLUDING cache/buffers) - disabled for E2 (1GB RAM)
+      NET_TARGET_PCT: "${NET_TARGET_PCT:-15}"         # target NIC utilization % (conservative for 50 Mbps external)
 
-      # === Safety stop thresholds (long window) ===
-      CPU_STOP_PCT: "${CPU_STOP_PCT:-50}"
-      MEM_STOP_PCT: "${MEM_STOP_PCT:-50}"
-      NET_STOP_PCT: "${NET_STOP_PCT:-50}"             # pause all load if avg NIC util > this
+      # === Safety stop thresholds (conservative for shared tenancy) ===
+      CPU_STOP_PCT: "${CPU_STOP_PCT:-45}"             # lower for E2 shared tenancy
+      MEM_STOP_PCT: "${MEM_STOP_PCT:-80}"             # higher since MEM_TARGET is disabled
+      NET_STOP_PCT: "${NET_STOP_PCT:-40}"             # conservative for external bandwidth
 
       # === Control behavior ===
       CONTROL_PERIOD_SEC: "${CONTROL_PERIOD_SEC:-5}"
