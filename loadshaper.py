@@ -3,6 +3,7 @@ import time
 import random
 import threading
 import subprocess
+import sqlite3
 from multiprocessing import Process, Value
 from math import isfinite
 
@@ -158,6 +159,163 @@ class EMA:
         else:
             self.val = self.val + self.alpha * (x - self.val)
         return self.val
+
+# ---------------------------
+# 7-day metrics storage
+# ---------------------------
+class MetricsStorage:
+    def __init__(self, db_path=None):
+        if db_path is None:
+            # Try to use /var/lib/loadshaper, fallback to /tmp
+            try:
+                os.makedirs("/var/lib/loadshaper", exist_ok=True)
+                db_path = "/var/lib/loadshaper/metrics.db"
+            except (OSError, PermissionError):
+                db_path = "/tmp/loadshaper_metrics.db"
+        
+        self.db_path = db_path
+        self.lock = threading.Lock()
+        self._init_db()
+    
+    def _init_db(self):
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS metrics (
+                        timestamp REAL PRIMARY KEY,
+                        cpu_pct REAL,
+                        mem_pct REAL,
+                        net_pct REAL,
+                        load_avg REAL
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"[metrics] Failed to initialize database: {e}")
+                # If explicit path was given and failed, try fallback to /tmp
+                if self.db_path != "/tmp/loadshaper_metrics.db":
+                    print("[metrics] Attempting fallback to /tmp")
+                    self.db_path = "/tmp/loadshaper_metrics.db"
+                    try:
+                        conn = sqlite3.connect(self.db_path)
+                        conn.execute("""
+                            CREATE TABLE IF NOT EXISTS metrics (
+                                timestamp REAL PRIMARY KEY,
+                                cpu_pct REAL,
+                                mem_pct REAL,
+                                net_pct REAL,
+                                load_avg REAL
+                            )
+                        """)
+                        conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
+                        conn.commit()
+                        conn.close()
+                        print(f"[metrics] Successfully initialized fallback database at {self.db_path}")
+                    except Exception as e2:
+                        print(f"[metrics] Fallback to /tmp also failed: {e2}")
+                        self.db_path = None
+                else:
+                    self.db_path = None
+    
+    def store_sample(self, cpu_pct, mem_pct, net_pct, load_avg):
+        if self.db_path is None:
+            return False
+        
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                timestamp = time.time()
+                conn.execute(
+                    "INSERT OR REPLACE INTO metrics (timestamp, cpu_pct, mem_pct, net_pct, load_avg) VALUES (?, ?, ?, ?, ?)",
+                    (timestamp, cpu_pct, mem_pct, net_pct, load_avg)
+                )
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"[metrics] Failed to store sample: {e}")
+                return False
+    
+    def get_percentile(self, metric_name, percentile=95.0, days_back=7):
+        if self.db_path is None:
+            return None
+        
+        column_map = {
+            'cpu': 'cpu_pct',
+            'mem': 'mem_pct', 
+            'net': 'net_pct',
+            'load': 'load_avg'
+        }
+        
+        if metric_name not in column_map:
+            return None
+        
+        column = column_map[metric_name]
+        cutoff_time = time.time() - (days_back * 24 * 3600)
+        
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.execute(
+                    f"SELECT {column} FROM metrics WHERE timestamp >= ? AND {column} IS NOT NULL ORDER BY {column}",
+                    (cutoff_time,)
+                )
+                values = [row[0] for row in cursor.fetchall()]
+                conn.close()
+                
+                if not values:
+                    return None
+                
+                # Calculate percentile manually (no numpy dependency)
+                index = (percentile / 100.0) * (len(values) - 1)
+                if index == int(index):
+                    return values[int(index)]
+                else:
+                    lower = values[int(index)]
+                    upper = values[int(index) + 1]
+                    return lower + (upper - lower) * (index - int(index))
+                    
+            except Exception as e:
+                print(f"[metrics] Failed to get percentile: {e}")
+                return None
+    
+    def cleanup_old(self, days_to_keep=7):
+        if self.db_path is None:
+            return 0
+            
+        cutoff_time = time.time() - (days_to_keep * 24 * 3600)
+        
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.execute("DELETE FROM metrics WHERE timestamp < ?", (cutoff_time,))
+                deleted = cursor.rowcount
+                conn.commit()
+                conn.close()
+                return deleted
+            except Exception as e:
+                print(f"[metrics] Failed to cleanup old data: {e}")
+                return 0
+    
+    def get_sample_count(self, days_back=7):
+        if self.db_path is None:
+            return 0
+            
+        cutoff_time = time.time() - (days_back * 24 * 3600)
+        
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.execute("SELECT COUNT(*) FROM metrics WHERE timestamp >= ?", (cutoff_time,))
+                count = cursor.fetchone()[0]
+                conn.close()
+                return count
+            except Exception as e:
+                print(f"[metrics] Failed to get sample count: {e}")
+                return 0
 
 # ---------------------------
 # CPU workers (busy/sleep)
@@ -383,6 +541,10 @@ def main():
 
     prev_cpu = read_proc_stat()
     ema = EMA4(AVG_WINDOW_SEC, CONTROL_PERIOD)
+    
+    # Initialize 7-day metrics storage
+    metrics_storage = MetricsStorage()
+    cleanup_counter = 0  # Cleanup old data periodically
 
     # NIC state
     if NET_SENSE_MODE == "host":
@@ -417,6 +579,17 @@ def main():
             # Load average (per-core)
             load_1min, load_5min, load_15min, per_core_load = read_loadavg()
             load_avg = ema.load.update(per_core_load)
+
+            # Store metrics sample for 7-day analysis
+            metrics_storage.store_sample(cpu_pct, mem_used_no_cache_pct, nic_util, per_core_load)
+            
+            # Cleanup old data every ~1000 iterations (roughly every 1.4 hours at 5sec intervals)
+            cleanup_counter += 1
+            if cleanup_counter >= 1000:
+                deleted = metrics_storage.cleanup_old()
+                if deleted > 0:
+                    print(f"[metrics] Cleaned up {deleted} old samples")
+                cleanup_counter = 0
 
             # Update jitter
             if time.time() >= jitter_next:
@@ -484,15 +657,30 @@ def main():
 
             # Logging
             if cpu_avg is not None and mem_avg is not None and net_avg is not None and load_avg is not None:
-                load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f}" if LOAD_CHECK_ENABLED else "load=disabled"
-                print(f"[loadshaper] cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% | "
-                      f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% | "
+                # Get 95th percentile values for 7-day metrics
+                cpu_p95 = metrics_storage.get_percentile('cpu')
+                mem_p95 = metrics_storage.get_percentile('mem')
+                net_p95 = metrics_storage.get_percentile('net')
+                load_p95 = metrics_storage.get_percentile('load')
+                
+                # Format percentile values for display
+                cpu_p95_str = f"p95={cpu_p95:5.1f}%" if cpu_p95 is not None else "p95=n/a"
+                mem_p95_str = f"p95={mem_p95:5.1f}%" if mem_p95 is not None else "p95=n/a"
+                net_p95_str = f"p95={net_p95:5.2f}%" if net_p95 is not None else "p95=n/a"
+                load_p95_str = f"p95={load_p95:.2f}" if load_p95 is not None else "p95=n/a"
+                
+                load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f} {load_p95_str}" if LOAD_CHECK_ENABLED else "load=disabled"
+                sample_count = metrics_storage.get_sample_count()
+                
+                print(f"[loadshaper] cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% {cpu_p95_str} | "
+                      f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str} | "
                       f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
-                      f"now={nic_util:5.2f}% avg={net_avg:5.2f}% | "
+                      f"now={nic_util:5.2f}% avg={net_avg:5.2f}% {net_p95_str} | "
                       f"{load_status} | "
                       f"duty={duty.value:4.2f} paused={int(paused.value)} "
                       f"targets cpu≈{cpu_target_now:.1f}% mem≈{mem_target_now:.1f}% net≈{net_target_now:.1f}% "
-                      f"net_rate≈{net_rate_mbit.value:.1f} Mbit")
+                      f"net_rate≈{net_rate_mbit.value:.1f} Mbit | "
+                      f"samples_7d={sample_count}")
 
     except KeyboardInterrupt:
         pass

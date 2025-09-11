@@ -47,9 +47,10 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 
 **Important:** Network monitoring typically measures internet-bound traffic (external bandwidth), not internal VM-to-VM traffic. For E2 shapes, focus on the 50 Mbps external limit.
 
-Currently `loadshaper` drives CPU usage and can emit network traffic, but it
-does not yet monitor utilization over seven days or autonomously decide when to
-apply network load.
+`loadshaper` drives CPU usage and can emit network traffic. It now tracks CPU,
+memory, and network utilization over a 7-day rolling window and calculates 95th
+percentile values to mirror Oracle's reclamation criteria. The telemetry output
+shows current, 5-minute average, and 7-day 95th percentile values for each metric.
 
 ## CPU load characteristics
 
@@ -67,9 +68,10 @@ CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is design
 ## Network shaping as fallback
 
 Network traffic should only be generated when CPU or memory activity risks
-falling below Oracle's thresholds. A future version could track recent metrics
-and temporarily raise network usage until another metric is safely above the
-limit or network usage reaches ~10 Mbps on E2 (or 0.2 Gbps per A1 vCPU).
+falling below Oracle's thresholds. With 7-day metrics tracking now in place,
+future versions can make intelligent decisions about when to temporarily raise
+network usage based on 95th percentile trends, ensuring at least one metric
+stays above Oracle's reclamation thresholds.
 
 ## Load average monitoring
 
@@ -83,6 +85,34 @@ immediately steps aside when real work needs the CPU.
 The default thresholds (0.6/0.4) provide a good balance between responsiveness
 to legitimate workloads and stability. The hysteresis gap prevents oscillation
 when load hovers near the threshold.
+
+## 7-day metrics storage
+
+`loadshaper` automatically stores CPU, memory, and network utilization samples
+in a lightweight SQLite database for 7-day rolling analysis. Metrics are stored
+at each control period (default 5 seconds) and automatically cleaned up after
+7 days.
+
+**Storage location:**
+- Primary: `/var/lib/loadshaper/metrics.db` (if writable)
+- Fallback: `/tmp/loadshaper_metrics.db`
+
+**Telemetry output format:**
+```
+[loadshaper] cpu now=45.2% avg=42.1% p95=48.3% | mem(no-cache) now=55.1% avg=52.8% p95=58.7% | nic(...) now=12.50% avg=11.25% p95=15.20% | load now=0.45 avg=0.42 p95=0.52 | ... | samples_7d=98547
+```
+
+Where:
+- `now`: Current sample value
+- `avg`: 5-minute exponential moving average
+- `p95`: 95th percentile over the past 7 days
+- `samples_7d`: Number of samples stored in the 7-day window
+
+**Storage characteristics:**
+- Approximately 120,960 samples per week (one every 5 seconds)
+- Estimated database size: 10-20 MB for 7 days of data
+- Thread-safe for concurrent access
+- Gracefully handles storage failures (continues with existing behavior)
 
 ## Overriding detection and thresholds
 
