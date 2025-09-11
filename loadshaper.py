@@ -129,8 +129,8 @@ def read_loadavg():
             load_1min = float(parts[0])
             load_5min = float(parts[1]) 
             load_15min = float(parts[2])
-            # Use N_WORKERS (worker thread count) instead of os.cpu_count() for consistency 
-            # with loadshaper's worker behavior - ensures load thresholds align with actual worker load
+            # Use N_WORKERS for consistency with actual worker thread behavior
+            # This ensures load thresholds correspond to the CPU resources loadshaper uses
             cpu_count = N_WORKERS
             per_core_load = load_1min / cpu_count if cpu_count > 0 else load_1min
             return load_1min, load_5min, load_15min, per_core_load
@@ -405,7 +405,9 @@ def main():
                 jitter_next = time.time() + JITTER_PERIOD
 
             # Safety stops (including load contention check)
-            load_contention = LOAD_CHECK_ENABLED and load_avg is not None and load_avg > LOAD_THRESHOLD
+            load_contention = (LOAD_CHECK_ENABLED and 
+                               load_avg is not None and 
+                               load_avg > LOAD_THRESHOLD)
             if ((cpu_avg is not None and cpu_avg > CPU_STOP_PCT) or
                 (mem_avg is not None and mem_avg > MEM_STOP_PCT) or
                 (net_avg is not None and net_avg > NET_STOP_PCT) or
