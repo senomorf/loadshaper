@@ -1,15 +1,52 @@
 # loadshaper
 
-Minimal baseline load generator for Oracle Cloud Always Free compute instances.
-Idle instances may be reclaimed if, over a 7‑day window, the following are all
-true:
+![License](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![Docker](https://img.shields.io/badge/Docker-supported-blue.svg)
+![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20ARM64%20%7C%20x86--64-lightgrey.svg)
+![Oracle Cloud](https://img.shields.io/badge/Oracle%20Cloud-Always%20Free-red.svg)
 
-- 95th‑percentile CPU utilization is below 20 %
-- Network utilization is below 20 % of the shape's internet cap
-- Memory utilization is below 20 % (A1.Flex shapes only)
+**Minimal baseline load generator for Oracle Cloud Always Free compute instances.**
 
-`loadshaper` strives to keep at least one metric above the threshold while
-remaining as unobtrusive as possible.
+## Problem
+
+Oracle Cloud Always Free compute instances are automatically reclaimed if they remain underutilized for 7 consecutive days. An instance is considered idle when **ALL** of the following conditions are met over a 7-day window:
+
+- 95th-percentile CPU utilization is below 20%
+- Network utilization is below 20% of the shape's internet bandwidth cap  
+- Memory utilization is below 20% (A1.Flex shapes only)
+
+## Solution
+
+`loadshaper` prevents VM reclamation by intelligently maintaining resource utilization above Oracle's thresholds while remaining completely unobtrusive to legitimate workloads. It:
+
+✅ **Keeps at least one metric above 20%** to prevent reclamation  
+✅ **Runs at lowest OS priority** (nice 19) with minimal system impact  
+✅ **Automatically pauses** when real workloads need resources  
+✅ **Tracks 95th percentile metrics** over 7-day rolling windows  
+✅ **Works on both x86-64 and ARM64** Oracle Free Tier shapes
+
+## Quick Start
+
+**1. Clone and deploy:**
+```bash
+git clone https://github.com/senomorf/loadshaper.git
+cd loadshaper
+docker compose up -d --build
+```
+
+**2. Monitor activity:**
+```bash
+docker logs -f loadshaper
+```
+
+**3. See current metrics:**
+```bash
+# Look for telemetry lines showing current, average, and 95th percentile values
+docker logs loadshaper | grep "\[loadshaper\]" | tail -5
+```
+
+That's it! `loadshaper` will automatically detect your Oracle Cloud shape and start maintaining appropriate resource utilization.
 
 ## How to run
 
@@ -51,6 +88,44 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 memory, and network utilization over a 7-day rolling window and calculates 95th
 percentile values to mirror Oracle's reclamation criteria. The telemetry output
 shows current, 5-minute average, and 7-day 95th percentile values for each metric.
+
+## Architecture
+
+`loadshaper` operates as a lightweight monitoring and control system with three main components:
+
+### 1. **Metric Collection**
+- **CPU utilization**: Read from `/proc/stat` (system-wide percentage)
+- **Memory utilization**: Read from `/proc/meminfo` (excluding cache/buffers for A1.Flex shapes)  
+- **Network utilization**: Read from `/proc/net/dev` with automatic speed detection
+- **Load average**: Monitor from `/proc/loadavg` to detect CPU contention
+
+### 2. **7-Day Metrics Storage**
+- **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis
+- **95th percentile calculation**: Mirrors Oracle's reclamation criteria exactly
+- **Automatic cleanup**: Removes data older than 7 days
+- **Storage locations**: `/var/lib/loadshaper/metrics.db` (preferred) or `/tmp/loadshaper_metrics.db` (fallback)
+
+### 3. **Intelligent Load Generation**
+- **CPU stress**: Low-priority workers (nice 19) with arithmetic operations
+- **Memory allocation**: Gradual allocation with regular touching for A1.Flex shapes  
+- **Network traffic**: iperf3-based bursts to peer instances when needed
+- **Load balancing**: Automatic pausing when real workloads need resources
+
+### Operation Flow
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Collect       │───▶│   Analyze       │───▶│   Adjust        │
+│   Metrics       │    │   95th %ile     │    │   Load Level    │
+│   Every 5s      │    │   vs Thresholds │    │   Accordingly   │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Store in      │    │   Check Load    │    │   Yield to      │
+│   SQLite DB     │    │   Average for   │    │   Real Work     │
+│   (7 days)      │    │   Contention    │    │   When Needed   │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
 
 ## CPU load characteristics
 
@@ -132,12 +207,142 @@ LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 LOAD_CHECK_ENABLED=true python -u l
 LOAD_THRESHOLD=0.4 LOAD_RESUME_THRESHOLD=0.2 python -u loadshaper.py
 ```
 
+## Configuration Reference
+
+### Resource Targets
+
+| Variable | Default | Description | E2.1.Micro | A1.Flex |
+|----------|---------|-------------|------------|----------|
+| `CPU_TARGET_PCT` | `25` | Target CPU utilization (%) | 25% (conservative) | 35% (more CPU available) |
+| `MEM_TARGET_PCT` | `0` | Target memory utilization (%) | 0% (disabled) | 40% (memory rule applies) |
+| `NET_TARGET_PCT` | `15` | Target network utilization (%) | 15% (50 Mbps limit) | 25% (1 Gbps per vCPU) |
+
+### Safety Thresholds
+
+| Variable | Default | Description | Notes |
+|----------|---------|-------------|-------|
+| `CPU_STOP_PCT` | `45` | CPU % to pause load generation | Conservative for shared tenancy |
+| `MEM_STOP_PCT` | `80` | Memory % to pause allocation | Safe when MEM targeting disabled |
+| `NET_STOP_PCT` | `40` | Network % to pause traffic | Conservative for external bandwidth |
+
+### Control Behavior
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTROL_PERIOD_SEC` | `5` | Seconds between control decisions |
+| `AVG_WINDOW_SEC` | `300` | Exponential moving average window (5 min) |
+| `HYSTERESIS_PCT` | `5` | Percentage hysteresis to prevent oscillation |
+| `JITTER_PCT` | `15` | Random jitter in load generation (%) |
+| `JITTER_PERIOD_SEC` | `5` | Seconds between jitter adjustments |
+
+### Load Average Monitoring
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOAD_THRESHOLD` | `0.6` | Load average per core to pause workers |
+| `LOAD_RESUME_THRESHOLD` | `0.4` | Load average per core to resume workers |
+| `LOAD_CHECK_ENABLED` | `true` | Enable/disable load average monitoring |
+
+### Memory Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEM_MIN_FREE_MB` | `512` | Minimum free memory to maintain (MB) |
+| `MEM_STEP_MB` | `64` | Memory allocation step size (MB) |
+
+### Network Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NET_MODE` | `client` | Network mode: `off`, `client` |
+| `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
+| `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses |
+| `NET_PORT` | `15201` | iperf3 port for communication |
+| `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
+| `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
+
+### Network Interface Detection
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NET_SENSE_MODE` | `container` | Detection mode: `container`, `host` |
+| `NET_IFACE_INNER` | `eth0` | Container interface name |
+| `NET_LINK_MBIT` | `1000` | Fallback link speed (Mbps) |
+| `NET_MIN_RATE_MBIT` | `1` | Minimum traffic generation rate |
+| `NET_MAX_RATE_MBIT` | `800` | Maximum traffic generation rate |
+
+### Shape-Specific Recommendations
+
+**VM.Standard.E2.1.Micro (x86-64):**
+```bash
+# Conservative settings for shared 1/8 OCPU
+CPU_TARGET_PCT=25 MEM_TARGET_PCT=0 NET_TARGET_PCT=15
+NET_LINK_MBIT=50 LOAD_THRESHOLD=0.6
+```
+
+**A1.Flex (ARM64):**
+```bash  
+# Higher targets for dedicated resources
+CPU_TARGET_PCT=35 MEM_TARGET_PCT=40 NET_TARGET_PCT=25
+NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
+```
+
+## FAQ
+
+### General Questions
+
+**Q: Will this impact the performance of my applications?**  
+A: No. `loadshaper` runs at the lowest OS priority (nice 19) and automatically pauses when real workloads need resources. It's designed to be completely invisible to legitimate applications.
+
+**Q: How much system resources does loadshaper use?**  
+A: Very minimal - typically <1% CPU when idle, 10-20MB memory for metrics storage, and network traffic only when needed as fallback.
+
+**Q: Does this work on both x86-64 and ARM64?**  
+A: Yes, it automatically detects and adapts to both VM.Standard.E2.1.Micro (x86-64) and A1.Flex (ARM64) shapes.
+
+### Oracle Cloud Specific
+
+**Q: How does this prevent my Always Free instance from being reclaimed?**  
+A: Oracle reclaims instances when ALL metrics are below 20% for 7 days. `loadshaper` ensures at least one metric stays above 20% by tracking 95th percentiles just like Oracle does.
+
+**Q: What if Oracle changes their reclamation policy?**  
+A: The thresholds are easily configurable via environment variables. Simply adjust `CPU_TARGET_PCT`, `MEM_TARGET_PCT`, or `NET_TARGET_PCT` as needed.
+
+**Q: Will Oracle consider this usage "legitimate"?**  
+A: The tool generates actual resource utilization that would be visible to Oracle's monitoring. However, you should review Oracle's terms of service to ensure compliance with your use case.
+
+### Technical Questions
+
+**Q: Why does memory targeting default to 0% on E2.1.Micro?**  
+A: E2 shapes only have 1GB RAM and memory isn't counted in Oracle's reclamation criteria for these instances. Memory targeting is only enabled by default on A1.Flex shapes.
+
+**Q: How can I tell if it's working?**  
+A: Watch the telemetry output: `docker logs -f loadshaper`. You'll see current, average, and 95th percentile values for all metrics.
+
+**Q: What happens if I restart the container?**  
+A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` or `/tmp/`). The 7-day rolling window continues from where it left off.
+
+**Q: Can I run this alongside other applications?**  
+A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist peacefully with any workload.
+
+### Troubleshooting
+
+**Q: CPU load isn't reaching the target percentage**  
+A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
+
+**Q: Network traffic isn't being generated**  
+A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify iperf3 servers are running on peer instances and firewall rules allow traffic on `NET_PORT`.
+
+**Q: Memory usage isn't increasing on A1.Flex**  
+A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
+
 ## Future work
 
-- Record rolling seven‑day CPU, memory, and network metrics to mirror Oracle's
-  reclamation checks.
-- Trigger network load only when other metrics remain below thresholds.
-- Implement memory stressors for A1.Flex shapes.
+- **Smart network activation**: Trigger network load only when CPU/memory metrics trend below thresholds (predictive activation)
+- **Additional Oracle shapes**: Support for newer compute shapes and specialized instances
+- **Multi-cloud support**: Extend to AWS Free Tier, Google Cloud Free Tier
+- **Advanced monitoring**: Integration with Oracle Cloud monitoring APIs for validation
+- **Resource optimization**: Dynamic adjustment based on actual Oracle reclamation patterns
 
 
 ## Scheduling

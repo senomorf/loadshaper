@@ -4,6 +4,6 @@
 - CPU stress must run at `nice` 19, use transient bursts, and yield immediately to real workloads.
 - Generate network traffic only as a fallback when CPU or memory activity risks dropping below thresholds.
 - **Critical**: CPU load must have minimal impact on system responsiveness - always choose the lightest workload type that minimizes latency for other processes.
-- Key overrides: `NET_SENSE_MODE`, `NET_LINK_MBIT`, `CPU_TARGET_PCT`, `NET_STOP_PCT`, `MEM_STOP_PCT`.
+- Key overrides: `NET_SENSE_MODE`, `NET_LINK_MBIT`, `CPU_TARGET_PCT`, `NET_STOP_PCT`, `MEM_STOP_PCT`, `LOAD_THRESHOLD`.
 - Run `python -m pytest -q` and keep docs (`README.md`, `AGENTS.md`, this file) in sync.
 - Code style: Python 3, PEP 8, 4‑space indentation, minimal dependencies (stdlib + `iperf3`).
