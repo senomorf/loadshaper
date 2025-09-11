@@ -34,7 +34,7 @@ AVG_WINDOW_SEC    = getenv_float("AVG_WINDOW_SEC", 300.0)
 HYSTERESIS_PCT    = getenv_float("HYSTERESIS_PCT", 5.0)
 
 JITTER_PCT        = getenv_float("JITTER_PCT", 10.0)
-JITTER_PERIOD     = getenv_float("JITTER_PERIOD_SEC", 60.0)
+JITTER_PERIOD     = getenv_float("JITTER_PERIOD_SEC", 5.0)
 
 MEM_MIN_FREE_MB   = getenv_int("MEM_MIN_FREE_MB", 512)
 MEM_STEP_MB       = getenv_int("MEM_STEP_MB", 64)
@@ -255,7 +255,14 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
             "-b", f"{rate}M", "-t", str(burst), "-p", str(NET_PORT), "-c", peer
         ]
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=burst + 5,
+            )
+        except subprocess.TimeoutExpired:
+            pass
         except Exception:
             pass
 
