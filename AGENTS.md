@@ -1,16 +1,18 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry.
+- `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
 - `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
 - `compose.yaml` — two services: `loadshaper` (client/loader) and `iperf3` (receiver) with configurable env vars.
 - `README.md`, `LICENSE` — usage and licensing.
+- `CLAUDE.md` — additional guidance for Anthropic contributors; keep in sync with this file.
 
 ## Build, Test, and Development Commands
 - Build & run in Docker: `docker compose up -d --build`
 - Tail logs: `docker logs -f loadshaper`
 - Local run (Linux only, needs /proc): `python -u loadshaper.py`
 - Override settings at launch, e.g.: `CPU_TARGET_PCT=35 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
+- Run tests: `python -m pytest -q`
 
 ## Coding Style & Naming Conventions
 - Language: Python 3; 4‑space indentation; PEP 8 style.
@@ -19,9 +21,10 @@
 - Prefer small, testable helpers; keep I/O at edges; maintain clear separation between sensing, control, and workers.
 
 ## Testing Guidelines
-- No formal test suite yet. Validate behavior by running the stack and observing `[loadshaper]` telemetry.
+- Run unit tests with `python -m pytest -q`.
+- Validate behavior by running the stack and observing `[loadshaper]` telemetry.
 - CPU/RAM only: `NET_MODE=off docker compose up -d`.
-- Network shaping: set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
+- Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
 - Safety checks: verify `*_STOP_PCT` thresholds trigger pause/resume; include log snippets in PRs.
 
 ## Commit & Pull Request Guidelines
