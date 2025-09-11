@@ -61,15 +61,10 @@ def test_read_loadavg_zero_cpus():
     """Test handling zero CPU count edge case"""
     mock_content = "1.5 1.2 1.0 2/147 12345\n"
     with mock.patch("builtins.open", mock.mock_open(read_data=mock_content)):
-        # Mock N_WORKERS to be 0 to test the edge case
-        import loadshaper
-        original_n_workers = loadshaper.N_WORKERS
-        loadshaper.N_WORKERS = 0
-        try:
+        # Use mock.patch to avoid modifying global state
+        with mock.patch("loadshaper.N_WORKERS", 0):
             load_1min, load_5min, load_15min, per_core_load = read_loadavg()
             assert load_1min == 1.5
             assert load_5min == 1.2
             assert load_15min == 1.0
             assert per_core_load == 1.5  # Should fall back to raw load when cpu_count is 0
-        finally:
-            loadshaper.N_WORKERS = original_n_workers

@@ -129,7 +129,9 @@ def read_loadavg():
             load_1min = float(parts[0])
             load_5min = float(parts[1]) 
             load_15min = float(parts[2])
-            cpu_count = N_WORKERS  # Use same as worker count
+            # Use N_WORKERS (worker thread count) instead of os.cpu_count() for consistency 
+            # with loadshaper's worker behavior - ensures load thresholds align with actual worker load
+            cpu_count = N_WORKERS
             per_core_load = load_1min / cpu_count if cpu_count > 0 else load_1min
             return load_1min, load_5min, load_15min, per_core_load
     except Exception:
@@ -461,7 +463,8 @@ def main():
 
             # Logging
             if cpu_avg is not None and mem_avg is not None and net_avg is not None and load_avg is not None:
-                load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f}" if LOAD_CHECK_ENABLED else "load=disabled"
+                # Defensive check to ensure per_core_load is defined for load status
+                load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f}" if LOAD_CHECK_ENABLED and 'per_core_load' in locals() else "load=disabled"
                 print(f"[loadshaper] cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% | "
                       f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% | "
                       f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
