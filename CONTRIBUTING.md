@@ -2,6 +2,11 @@
 
 Thank you for your interest in contributing to `loadshaper`! This project helps Oracle Cloud Always Free users prevent VM reclamation through intelligent resource management.
 
+**📖 Quick Links:**
+- [README.md](README.md) - Project overview and usage instructions
+- [AGENTS.md](AGENTS.md) - Development guidelines and testing strategies
+- [CHANGELOG.md](CHANGELOG.md) - Version history and breaking changes
+
 ## Quick Start for Contributors
 
 ### Development Environment Setup
@@ -47,13 +52,13 @@ Thank you for your interest in contributing to `loadshaper`! This project helps 
 - **Performance optimizations**: Lower overhead, smarter algorithms
 
 ### 📖 Documentation
-- README improvements
+- README improvements (see [README.md](README.md))
 - Configuration examples
 - Troubleshooting guides
 - API documentation
 
 ### 🧪 Testing
-- Additional test cases
+- Additional test cases (see [AGENTS.md](AGENTS.md) for testing guidelines)
 - Platform-specific tests
 - Performance benchmarks
 - Edge case coverage
