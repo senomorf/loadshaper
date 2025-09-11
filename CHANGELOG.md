@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Oracle shape auto-detection**: Automatically detects Oracle Cloud shapes (E2.1.Micro, E2.2.Micro, A1.Flex-1, A1.Flex-4)
+- **Shape-specific configuration templates**: Pre-configured templates optimized for each Oracle shape
+- **Template system**: ENV > TEMPLATE > DEFAULT priority for configuration management
 - Comprehensive documentation overhaul with badges, FAQ, and configuration tables
 - Architecture diagrams and component interaction documentation
 - CONTRIBUTING.md with detailed contributor guidelines

@@ -41,9 +41,17 @@
 ## Project Structure & Module Organization
 - `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
 - `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
-- `compose.yaml` — two services: `loadshaper` (client/loader) and `iperf3` (receiver) with configurable env vars.
+- `compose.yaml` — two services: `loadshaper` (client/loader) and `iperf3` (receiver) with configurable env vars; mounts config templates.
 - `README.md`, `LICENSE` — usage and licensing.
 - `CLAUDE.md` — additional guidance for Anthropic contributors; keep in sync with this file.
+- `config-templates/` — Oracle shape-specific configuration templates (e2-1-micro.env, e2-2-micro.env, a1-flex-1.env, a1-flex-4.env) with optimized settings for each shape.
+
+### Oracle Shape Auto-Detection
+The system automatically detects Oracle Cloud shapes via:
+- DMI system vendor detection (`/sys/class/dmi/id/sys_vendor`)
+- Oracle-specific file presence (`/opt/oci-hpc`, `/etc/oci-hostname.conf`)
+- CPU/memory characteristics analysis
+- Shape-specific template loading with ENV > TEMPLATE > DEFAULT priority
 
 ## Build, Test, and Development Commands
 - Build & run in Docker: `docker compose up -d --build`
