@@ -16,9 +16,9 @@ def test_read_loadavg_valid_file():
     assert load_1min == 0.75
     assert load_5min == 0.65 
     assert load_15min == 0.55
-    # per_core_load should be load_1min / N_WORKERS (defaults to os.cpu_count())
-    import os
-    expected_per_core = 0.75 / (os.cpu_count() or 1)
+    # per_core_load should be load_1min / N_WORKERS
+    from loadshaper import N_WORKERS
+    expected_per_core = 0.75 / N_WORKERS
     assert per_core_load == pytest.approx(expected_per_core)
 
 
