@@ -58,10 +58,14 @@ limit or network usage reaches ~10 Mbps on E2 (or 0.2 Gbps per A1 vCPU).
 
 `loadshaper` monitors system load average to detect CPU contention from other
 processes. When the 1-minute load average per core exceeds the configured 
-threshold (default 0.8), CPU workers are automatically paused to yield resources
+threshold (default 0.6), CPU workers are automatically paused to yield resources
 to legitimate workloads. Workers resume when load drops below the resume 
-threshold (default 0.5). This ensures `loadshaper` remains unobtrusive and
+threshold (default 0.4). This ensures `loadshaper` remains unobtrusive and
 immediately steps aside when real work needs the CPU.
+
+The default thresholds (0.6/0.4) provide a good balance between responsiveness
+to legitimate workloads and stability. The hysteresis gap prevents oscillation
+when load hovers near the threshold.
 
 ## Overriding detection and thresholds
 
@@ -74,8 +78,11 @@ NET_SENSE_MODE=container NET_LINK_MBIT=10000 NET_STOP_PCT=20 python -u loadshape
 # Raise CPU target while lowering the safety stop
 CPU_TARGET_PCT=50 CPU_STOP_PCT=70 MEM_TARGET_PCT=40 MEM_STOP_PCT=80 python -u loadshaper.py
 
-# Configure load average monitoring thresholds
+# Configure load average monitoring thresholds (more aggressive example)
 LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 LOAD_CHECK_ENABLED=true python -u loadshaper.py
+
+# Conservative load monitoring (earlier pause, safer for shared systems)
+LOAD_THRESHOLD=0.4 LOAD_RESUME_THRESHOLD=0.2 python -u loadshaper.py
 ```
 
 ## Future work

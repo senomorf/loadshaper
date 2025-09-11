@@ -33,8 +33,8 @@ CONTROL_PERIOD    = getenv_float("CONTROL_PERIOD_SEC", 5.0)
 AVG_WINDOW_SEC    = getenv_float("AVG_WINDOW_SEC", 300.0)
 HYSTERESIS_PCT    = getenv_float("HYSTERESIS_PCT", 5.0)
 
-LOAD_THRESHOLD    = getenv_float("LOAD_THRESHOLD", 0.8)      # pause when load avg per core > this
-LOAD_RESUME_THRESHOLD = getenv_float("LOAD_RESUME_THRESHOLD", 0.5)  # resume when load avg per core < this
+LOAD_THRESHOLD    = getenv_float("LOAD_THRESHOLD", 0.6)      # pause when load avg per core > this (conservative for Oracle Free Tier)
+LOAD_RESUME_THRESHOLD = getenv_float("LOAD_RESUME_THRESHOLD", 0.4)  # resume when load avg per core < this (hysteresis)
 LOAD_CHECK_ENABLED = os.getenv("LOAD_CHECK_ENABLED", "true").strip().lower() == "true"
 
 JITTER_PCT        = getenv_float("JITTER_PCT", 10.0)
@@ -129,9 +129,9 @@ def read_loadavg():
             load_1min = float(parts[0])
             load_5min = float(parts[1]) 
             load_15min = float(parts[2])
-            # Use N_WORKERS for consistency with actual worker thread behavior
-            # This ensures load thresholds correspond to the CPU resources loadshaper uses
-            cpu_count = N_WORKERS
+            # Use actual system CPU count since load averages are system-wide metrics
+            # that include all processes, not just loadshaper's worker threads
+            cpu_count = os.cpu_count() or 1
             per_core_load = load_1min / cpu_count if cpu_count > 0 else load_1min
             return load_1min, load_5min, load_15min, per_core_load
     except Exception:
