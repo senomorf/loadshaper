@@ -2,7 +2,7 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review, reopened]
     # Optional: Only run on specific file changes
     # paths:
     #   - "src/**/*.ts"
@@ -27,15 +27,23 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          fetch-depth: 1
+          fetch-depth: 0 # Full history for better diff analysis
 
-      - name: Run Claude Code Review
+      - name: Run Claude Code Review with Progress Tracking
         id: claude-review
         uses: anthropics/claude-code-action@v1
+        env:
+          # increase from default 25000 to allow reading PR files from MCP (otherwise reads them using gh command anyway)
+          MAX_MCP_OUTPUT_TOKENS: "100000"
         with:
+          additional_permissions: |
+            actions: read
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          use_sticky_comment: true
+          allowed_bots: "dependabot,claude,codex"
           prompt: |
             Please review this pull request and provide feedback on:
             - Code quality and best practices
