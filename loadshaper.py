@@ -33,6 +33,10 @@ CONTROL_PERIOD    = getenv_float("CONTROL_PERIOD_SEC", 5.0)
 AVG_WINDOW_SEC    = getenv_float("AVG_WINDOW_SEC", 300.0)
 HYSTERESIS_PCT    = getenv_float("HYSTERESIS_PCT", 5.0)
 
+LOAD_THRESHOLD    = getenv_float("LOAD_THRESHOLD", 0.8)      # pause when load avg per core > this
+LOAD_RESUME_THRESHOLD = getenv_float("LOAD_RESUME_THRESHOLD", 0.5)  # resume when load avg per core < this
+LOAD_CHECK_ENABLED = os.getenv("LOAD_CHECK_ENABLED", "true").strip().lower() == "true"
+
 JITTER_PCT        = getenv_float("JITTER_PCT", 10.0)
 JITTER_PERIOD     = getenv_float("JITTER_PERIOD_SEC", 5.0)
 
@@ -114,6 +118,23 @@ def read_meminfo():
     used_no_cache = max(0, total - free - buff_cache)
     used_pct = (100.0 * used_no_cache / total) if total > 0 else 0.0
     return total * 1024, free * 1024, used_pct, used_no_cache * 1024  # bytes
+
+def read_loadavg():
+    # Read system load averages and return per-core load for 1-min average
+    try:
+        with open("/proc/loadavg", "r") as f:
+            line = f.readline().strip()
+        parts = line.split()
+        if len(parts) >= 3:
+            load_1min = float(parts[0])
+            load_5min = float(parts[1]) 
+            load_15min = float(parts[2])
+            cpu_count = N_WORKERS  # Use same as worker count
+            per_core_load = load_1min / cpu_count if cpu_count > 0 else load_1min
+            return load_1min, load_5min, load_15min, per_core_load
+    except Exception:
+        pass
+    return 0.0, 0.0, 0.0, 0.0
 
 # ---------------------------
 # Moving average (EMA)
@@ -280,16 +301,18 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
 # ---------------------------
 # Main control loop
 # ---------------------------
-class EMA3:
+class EMA4:
     def __init__(self, period, step):
         self.cpu = EMA(period, step)
         self.mem = EMA(period, step)
         self.net = EMA(period, step)
+        self.load = EMA(period, step)
 
 def main():
+    load_monitor_status = f"LOAD_THRESHOLD={LOAD_THRESHOLD:.1f}" if LOAD_CHECK_ENABLED else "LOAD_CHECK=disabled"
     print("[loadshaper v2.2] starting with",
           f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
-          f" NET_SENSE_MODE={NET_SENSE_MODE}")
+          f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}")
 
     try:
         os.nice(19)  # run controller and workers at lowest priority
@@ -338,7 +361,7 @@ def main():
     update_jitter()
 
     prev_cpu = read_proc_stat()
-    ema = EMA3(AVG_WINDOW_SEC, CONTROL_PERIOD)
+    ema = EMA4(AVG_WINDOW_SEC, CONTROL_PERIOD)
 
     # NIC state
     if NET_SENSE_MODE == "host":
@@ -370,17 +393,32 @@ def main():
             prev_nic, prev_nic_t = cur_nic, now
             net_avg = ema.net.update(nic_util)
 
+            # Load average (per-core)
+            load_1min, load_5min, load_15min, per_core_load = read_loadavg()
+            load_avg = ema.load.update(per_core_load)
+
             # Update jitter
             if time.time() >= jitter_next:
                 update_jitter()
                 jitter_next = time.time() + JITTER_PERIOD
 
-            # Safety stops
+            # Safety stops (including load contention check)
+            load_contention = LOAD_CHECK_ENABLED and load_avg is not None and load_avg > LOAD_THRESHOLD
             if ((cpu_avg is not None and cpu_avg > CPU_STOP_PCT) or
                 (mem_avg is not None and mem_avg > MEM_STOP_PCT) or
-                (net_avg is not None and net_avg > NET_STOP_PCT)):
+                (net_avg is not None and net_avg > NET_STOP_PCT) or
+                load_contention):
                 if paused.value != 1.0:
-                    print(f"[loadshaper] SAFETY STOP: cpu_avg={cpu_avg:.1f}% mem_avg={mem_avg:.1f}% net_avg={net_avg:.1f}%")
+                    reason = []
+                    if cpu_avg is not None and cpu_avg > CPU_STOP_PCT:
+                        reason.append(f"cpu_avg={cpu_avg:.1f}%")
+                    if mem_avg is not None and mem_avg > MEM_STOP_PCT:
+                        reason.append(f"mem_avg={mem_avg:.1f}%")
+                    if net_avg is not None and net_avg > NET_STOP_PCT:
+                        reason.append(f"net_avg={net_avg:.1f}%")
+                    if load_contention:
+                        reason.append(f"load_avg={load_avg:.2f}")
+                    print(f"[loadshaper] SAFETY STOP: {' '.join(reason)}")
                 paused.value = 1.0
                 duty.value = 0.0
                 set_mem_target_bytes(0)
@@ -389,7 +427,8 @@ def main():
                 resume_cpu = (cpu_avg is None) or (cpu_avg < max(0.0, CPU_TARGET_PCT - HYSTERESIS_PCT))
                 resume_mem = (mem_avg is None) or (mem_avg < max(0.0, MEM_TARGET_PCT - HYSTERESIS_PCT))
                 resume_net = (net_avg is None) or (net_avg < max(0.0, NET_TARGET_PCT - HYSTERESIS_PCT))
-                if resume_cpu and resume_mem and resume_net:
+                resume_load = (not LOAD_CHECK_ENABLED) or (load_avg is None) or (load_avg < LOAD_RESUME_THRESHOLD)
+                if resume_cpu and resume_mem and resume_net and resume_load:
                     if paused.value != 0.0:
                         print("[loadshaper] RESUME")
                     paused.value = 0.0
@@ -421,11 +460,13 @@ def main():
                     net_rate_mbit.value = max(NET_MIN_RATE, min(NET_MAX_RATE, new_rate))
 
             # Logging
-            if cpu_avg is not None and mem_avg is not None and net_avg is not None:
+            if cpu_avg is not None and mem_avg is not None and net_avg is not None and load_avg is not None:
+                load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f}" if LOAD_CHECK_ENABLED else "load=disabled"
                 print(f"[loadshaper] cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% | "
                       f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% | "
                       f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
                       f"now={nic_util:5.2f}% avg={net_avg:5.2f}% | "
+                      f"{load_status} | "
                       f"duty={duty.value:4.2f} paused={int(paused.value)} "
                       f"targets cpu≈{cpu_target_now:.1f}% mem≈{mem_target_now:.1f}% net≈{net_target_now:.1f}% "
                       f"net_rate≈{net_rate_mbit.value:.1f} Mbit")
