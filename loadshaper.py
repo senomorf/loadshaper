@@ -139,7 +139,7 @@ def cpu_worker(shared_duty: Value, stop_flag: Value):
     junk = 1.0
     while True:
         if stop_flag.value == 1.0:
-            time.sleep(0.5)
+            time.sleep(SLEEP_SLICE)
             continue
         d = float(shared_duty.value)
         d = 0.0 if d < 0 else (MAX_DUTY if d > MAX_DUTY else d)
@@ -150,6 +150,8 @@ def cpu_worker(shared_duty: Value, stop_flag: Value):
         rest = TICK - busy
         if rest > 0:
             time.sleep(rest)
+        else:
+            time.sleep(SLEEP_SLICE)
 
 # ---------------------------
 # RAM allocator & toucher
@@ -285,6 +287,11 @@ def main():
     print("[loadshaper v2.2] starting with",
           f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
           f" NET_SENSE_MODE={NET_SENSE_MODE}")
+
+    try:
+        os.nice(19)  # run controller and workers at lowest priority
+    except Exception:
+        pass
 
     duty = Value('d', 0.0)
     paused = Value('d', 0.0)  # 1.0 => paused
