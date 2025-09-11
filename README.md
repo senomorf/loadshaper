@@ -49,23 +49,10 @@ docker logs loadshaper | grep "\[loadshaper\]" | tail -5
 
 That's it! `loadshaper` will automatically detect your Oracle Cloud shape and start maintaining appropriate resource utilization.
 
-## How to run
-
-On each VM:
-
-```shell
-mkdir -p loadshaper
-# put the three files in place
-docker compose up -d --build
-# or: podman compose up -d
-```
-
-Then watch:
-
-```shell
-docker logs -f loadshaper
-# or: podman logs -f loadshaper
-```
+**📖 More Information:**
+- [Configuration Reference](#configuration-reference) - Detailed environment variable options
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Development setup and contribution guidelines
+- [CHANGELOG.md](CHANGELOG.md) - Version history and migration guides
 
 ## Oracle Free Tier thresholds
 
@@ -336,6 +323,14 @@ A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify 
 
 **Q: Memory usage isn't increasing on A1.Flex**  
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
+
+## Contributing
+
+Interested in improving `loadshaper`? Check out our [Contributing Guide](CONTRIBUTING.md) for:
+- Development environment setup
+- Testing requirements
+- Code style guidelines
+- How to submit improvements
 
 ## Future work
 

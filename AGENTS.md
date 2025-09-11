@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+**📖 Related Documentation:**
+- [README.md](README.md) - Project overview, usage, and configuration
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Contributor setup and guidelines
+- [CHANGELOG.md](CHANGELOG.md) - Version history and migration guides
+
 ## Architecture Overview
 
 `loadshaper` is designed as a single-process monitoring and load generation system with clear separation of concerns:
@@ -46,6 +51,8 @@
 - Local run (Linux only, needs /proc): `python -u loadshaper.py`
 - Override settings at launch, e.g.: `CPU_TARGET_PCT=35 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
 - Run tests: `python -m pytest -q`
+
+**🔗 See also:** [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development setup and testing requirements.
 
 ## Coding Style & Naming Conventions
 - Language: Python 3; 4‑space indentation; PEP 8 style.
