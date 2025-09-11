@@ -54,6 +54,15 @@ falling below Oracle's thresholds. A future version could track recent metrics
 and temporarily raise network usage until another metric is safely above the
 limit or network usage reaches ~10 Mbps on E2 (or 0.2 Gbps per A1 vCPU).
 
+## Load average monitoring
+
+`loadshaper` monitors system load average to detect CPU contention from other
+processes. When the 1-minute load average per core exceeds the configured 
+threshold (default 0.8), CPU workers are automatically paused to yield resources
+to legitimate workloads. Workers resume when load drops below the resume 
+threshold (default 0.5). This ensures `loadshaper` remains unobtrusive and
+immediately steps aside when real work needs the CPU.
+
 ## Overriding detection and thresholds
 
 Environment variables can override shape detection and contention limits:
@@ -64,6 +73,9 @@ NET_SENSE_MODE=container NET_LINK_MBIT=10000 NET_STOP_PCT=20 python -u loadshape
 
 # Raise CPU target while lowering the safety stop
 CPU_TARGET_PCT=50 CPU_STOP_PCT=70 MEM_TARGET_PCT=40 MEM_STOP_PCT=80 python -u loadshaper.py
+
+# Configure load average monitoring thresholds
+LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 LOAD_CHECK_ENABLED=true python -u loadshaper.py
 ```
 
 ## Future work
