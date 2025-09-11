@@ -1,5 +1,38 @@
 # Repository Guidelines
 
+## Architecture Overview
+
+`loadshaper` is designed as a single-process monitoring and load generation system with clear separation of concerns:
+
+### Core Components
+- **Metric Collection**: System-level monitoring (CPU, memory, network, load average)
+- **Storage Layer**: SQLite-based 7-day rolling metrics with 95th percentile calculations
+- **Control Logic**: PID-style controllers for each resource type with hysteresis
+- **Load Workers**: Low-priority background processes for resource consumption
+- **Safety Systems**: Load average monitoring and automatic yielding to real workloads
+
+### Component Interactions
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   Sensors   │───▶│ Controller  │───▶│  Workers    │
+│ (CPU/MEM/   │    │  (PID +     │    │ (CPU/MEM/   │
+│  NET/LOAD)  │    │ Hysteresis) │    │  Network)   │
+└─────────────┘    └─────────────┘    └─────────────┘
+       │                   │                   │
+       ▼                   ▼                   ▼
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   SQLite    │    │   Safety    │    │   Telemetry │
+│  Metrics    │    │  Monitors   │    │   Output    │
+│ (7-day p95) │    │ (Load Avg)  │    │ (Logs/UI)   │
+└─────────────┘    └─────────────┘    └─────────────┘
+```
+
+### Design Principles
+- **Unobtrusive**: Always yields to legitimate workloads (nice 19 priority)
+- **Adaptive**: Responds to system load and Oracle's reclamation criteria
+- **Resilient**: Handles storage failures, network issues, and system restarts
+- **Observable**: Rich telemetry for monitoring and debugging
+
 ## Project Structure & Module Organization
 - `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
 - `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
@@ -80,6 +113,133 @@
 - Verify `*_STOP_PCT` thresholds trigger pause/resume correctly
 - Test emergency shutdown scenarios (SIGTERM, container stop)
 - Include log snippets in PRs showing safety mechanisms working
+
+### Performance Benchmarks
+
+**Resource Usage Baseline (when idle):**
+```bash
+# Measure loadshaper's own resource consumption
+docker stats loadshaper --no-stream
+# Expected: <1% CPU, 10-20MB memory when not actively generating load
+```
+
+**Responsiveness Testing:**
+```bash
+# Test system responsiveness with loadshaper running
+time ls -la /usr/bin/  # Should be <100ms
+ping -c 5 8.8.8.8     # Should show normal latency
+```
+
+**Load Generation Effectiveness:**
+```bash
+# Verify CPU load reaches targets
+docker logs loadshaper | grep -E "cpu now=[0-9.]+" | tail -10
+
+# Check 95th percentile calculations  
+docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db \
+  "SELECT resource_type, COUNT(*), 
+   ROUND(AVG(value), 2) as avg_value,
+   ROUND(
+     (SELECT value FROM metrics m2 
+      WHERE m2.resource_type = m1.resource_type 
+      ORDER BY value DESC 
+      LIMIT 1 OFFSET CAST(COUNT(*) * 0.05 as INTEGER)
+     ), 2
+   ) as p95_value
+   FROM metrics m1 
+   WHERE timestamp > datetime('now', '-7 days') 
+   GROUP BY resource_type;"
+```
+
+### Continuous Testing Strategy
+
+**Pre-commit checks:**
+```bash
+# Run all tests
+python -m pytest -q
+
+# Verify container builds
+docker compose build
+
+# Check configuration consistency
+python -c "import loadshaper; print('Import successful')"
+```
+
+**Integration test workflow:**
+```bash
+# 1. Start with clean state
+docker compose down -v
+docker compose up -d --build
+
+# 2. Wait for startup and check health
+sleep 30
+docker logs loadshaper | tail -10
+
+# 3. Verify metrics collection
+docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" 2>/dev/null || echo "Using fallback storage"
+
+# 4. Test different load scenarios
+LOAD_THRESHOLD=0.1 docker compose up -d  # Should pause quickly
+LOAD_THRESHOLD=2.0 docker compose up -d  # Should rarely pause
+
+# 5. Cleanup
+docker compose down
+```
+
+## External Contribution Guidelines
+
+### Welcome Contributors
+We welcome contributions to `loadshaper`! This project helps Oracle Cloud Always Free users prevent VM reclamation through intelligent resource management.
+
+### Development Setup
+```bash
+git clone https://github.com/senomorf/loadshaper.git
+cd loadshaper
+
+# Create Python virtual environment (required)
+python3 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
+
+# Install development dependencies
+pip install -e .  # If setup.py exists
+# or just run: python3 -u loadshaper.py
+
+# Run tests
+python -m pytest -q
+
+# Test with Docker
+docker compose up -d --build
+docker logs -f loadshaper
+```
+
+### Types of Contributions
+- **Bug fixes**: Issues with resource monitoring, load generation, or safety systems
+- **Platform support**: Additional Oracle Cloud shapes or other cloud providers  
+- **Performance improvements**: Better algorithms, reduced overhead, smarter yielding
+- **Testing**: Additional test cases, especially for edge cases and different hardware
+- **Documentation**: README improvements, code comments, troubleshooting guides
+
+### Contribution Workflow
+1. **Fork** the repository and create a feature branch
+2. **Implement** your changes following the coding style guidelines
+3. **Test** thoroughly with both unit tests and manual verification
+4. **Document** any new environment variables or behavior changes
+5. **Submit** a pull request with detailed description
+
+### Release Process
+
+**Version Strategy**: 
+- Semantic versioning (MAJOR.MINOR.PATCH)
+- Tag releases with `git tag v1.2.3`
+- Keep CHANGELOG.md updated
+
+**Release Steps**:
+1. Update version references in documentation
+2. Test on both E2.1.Micro and A1.Flex instances  
+3. Verify Docker builds on multiple architectures
+4. Create GitHub release with release notes
+5. Update any deployment documentation
 
 ## Commit & Pull Request Guidelines
 - Commits: clear, imperative subject lines; mention touched subsystems (cpu, mem, net, compose, docs) and key env vars.
