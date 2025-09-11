@@ -12,6 +12,14 @@ services:
     build: .
     container_name: loadshaper
     restart: ${RESTART_POLICY:-always}
+    ports:
+      - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"   # health check endpoints
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${HEALTH_PORT:-8080}/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     environment:
       # === Targets (conservative defaults for E2.1.Micro) ===
       CPU_TARGET_PCT: "${CPU_TARGET_PCT:-25}"         # target average CPU (system-wide)
@@ -50,6 +58,10 @@ services:
       # Limits for the controller -> client sending rate (Mbps)
       NET_MIN_RATE_MBIT: "${NET_MIN_RATE_MBIT:-1}"
       NET_MAX_RATE_MBIT: "${NET_MAX_RATE_MBIT:-800}"  # cap below link speed for safety
+
+      # === Health check server ===
+      HEALTH_ENABLED: "${HEALTH_ENABLED:-true}"       # enable HTTP health endpoints
+      HEALTH_PORT: "${HEALTH_PORT:-8080}"             # port for /health and /metrics endpoints
 
   # iperf3 receiver on an unprivileged port; exposed for peers to hit
   iperf3:
