@@ -1,0 +1,76 @@
+# Oracle Cloud VM.Standard.E2.1.Micro specific configuration
+# CPU: 1/8 OCPU (burstable), Memory: 1 GB RAM, Network: 50 Mbps external
+
+# Conservative resource limits for E2.1.Micro
+resources:
+  limits:
+    cpu: 200m      # Conservative limit for burstable 1/8 OCPU
+    memory: 256Mi  # Conservative limit for 1GB RAM instance
+  requests:
+    cpu: 50m       # Minimal request for burstable workload
+    memory: 64Mi   # Minimal memory request
+
+# E2.1.Micro specific configuration
+config:
+  # Target percentages optimized for E2.1.Micro shape
+  CPU_TARGET_PCT: "25.0"    # Conservative for burstable CPU
+  MEM_TARGET_PCT: "40.0"    # No memory reclamation rule for E2, but keep reasonable
+  NET_TARGET_PCT: "25.0"    # Target 25% of 50 Mbps = 12.5 Mbps external
+  
+  # Safety stop thresholds
+  CPU_STOP_PCT: "80.0"      # Conservative stop for burstable CPU
+  MEM_STOP_PCT: "85.0"      # Conservative stop for 1GB instance
+  NET_STOP_PCT: "70.0"      # Stop at 70% of 50 Mbps external limit
+  
+  # Control system tuned for smaller instance
+  CONTROL_PERIOD_SEC: "10.0"  # Slower control loop for smaller instance
+  AVG_WINDOW_SEC: "300.0"     # 5-minute averaging window
+  HYSTERESIS_PCT: "8.0"       # Larger hysteresis for stability
+  
+  # Load monitoring - more conservative for single-core burstable
+  LOAD_THRESHOLD: "0.5"       # Pause earlier on E2.1.Micro
+  LOAD_RESUME_THRESHOLD: "0.3" # Resume with more margin
+  LOAD_CHECK_ENABLED: "true"
+  
+  # Memory allocation tuned for 1GB instance
+  MEM_MIN_FREE_MB: "256"      # Leave more free memory
+  MEM_STEP_MB: "32"           # Smaller allocation steps
+  
+  # Network configuration for E2.1.Micro (50 Mbps external limit)
+  NET_SENSE_MODE: "container"
+  NET_IFACE_INNER: "eth0"
+  NET_LINK_MBIT: "50.0"       # 50 Mbps external bandwidth limit
+  NET_MIN_RATE_MBIT: "0.5"    # Minimum rate
+  NET_MAX_RATE_MBIT: "40.0"   # Conservative max rate (80% of 50 Mbps)
+  
+  # More conservative jitter for smaller instance
+  JITTER_PCT: "15.0"
+  JITTER_PERIOD_SEC: "8.0"
+
+# Smaller persistent volume for E2.1.Micro
+persistence:
+  enabled: true
+  size: 500Mi  # Smaller database for limited storage
+
+# Node affinity to prefer smaller nodes (optional)
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      preference:
+        matchExpressions:
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+          - VM.Standard.E2.1.Micro
+        - key: oracle.com/shape
+          operator: In
+          values:
+          - VM.Standard.E2.1.Micro
+
+# Tolerate resource-constrained nodes
+tolerations:
+- key: oracle.com/shape
+  operator: Equal
+  value: VM.Standard.E2.1.Micro
+  effect: NoSchedule

@@ -1,0 +1,53 @@
+1. Get the application name:
+  export APP_NAME=$(kubectl get pods -l "app.kubernetes.io/name={{ include "loadshaper.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+
+2. Check the loadshaper status:
+  kubectl get pods -l "app.kubernetes.io/name={{ include "loadshaper.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+
+3. View loadshaper logs:
+  kubectl logs -f $APP_NAME
+
+4. Look for telemetry showing 95th percentile metrics compliance:
+  kubectl logs $APP_NAME | grep "\[loadshaper\]" | tail -5
+
+5. Check current configuration:
+  kubectl get configmap {{ include "loadshaper.fullname" . }}-config -o yaml
+
+{{- if .Values.persistence.enabled }}
+6. Verify metrics storage:
+  kubectl get pvc {{ .Values.persistence.existingClaim | default (include "loadshaper.fullname" .) }}
+{{- end }}
+
+{{- if .Values.serviceMonitor.enabled }}
+7. Prometheus metrics endpoint:
+  kubectl port-forward svc/{{ include "loadshaper.fullname" . }} 8080:{{ .Values.serviceMonitor.port | default 8080 }}
+  # Then visit http://127.0.0.1:8080/metrics
+{{- end }}
+
+{{- if .Values.service.enabled }}
+{{- if eq .Values.service.type "LoadBalancer" }}
+8. Get the external IP for network load generation:
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "loadshaper.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo "loadshaper service available at: $SERVICE_IP:{{ .Values.service.port }}"
+{{- else if eq .Values.service.type "ClusterIP" }}
+8. Access the service within the cluster:
+  kubectl port-forward svc/{{ include "loadshaper.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+{{- end }}
+{{- end }}
+
+Oracle Cloud Always Free Compliance:
+{{- if contains "e2-micro" .Values.image.tag }}
+✅ E2.1.Micro: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.NET_TARGET_PCT }}% of 50 Mbps network
+{{- else if contains "a1-flex" .Values.image.tag }}
+✅ A1.Flex: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
+{{- else }}
+✅ Default: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
+{{- end }}
+
+⚠️  Important: loadshaper runs at lowest priority (nice 19) and automatically pauses when real workloads need resources.
+    Monitor system load to ensure it remains unobtrusive to your applications.
+
+📊 Metrics are stored for 7-day rolling window analysis to match Oracle's reclamation criteria.
+    Database cleanup happens automatically - no maintenance required.
+
+For more information, visit: https://github.com/senomorf/loadshaper

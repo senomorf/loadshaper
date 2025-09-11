@@ -1,0 +1,89 @@
+# Oracle Cloud A1.Flex (ARM-based) specific configuration
+# CPU: Up to 4 OCPUs, Memory: Up to 24 GB RAM, Network: 1 Gbps per vCPU
+# IMPORTANT: A1.Flex is subject to the 20% memory utilization rule
+
+# Resource limits for A1.Flex (adjust based on your instance size)
+resources:
+  limits:
+    cpu: 2000m     # Assuming 2 vCPU A1.Flex instance
+    memory: 2Gi    # Conservative limit for larger memory
+  requests:
+    cpu: 200m      # Reasonable request for ARM processors
+    memory: 256Mi  # Minimal memory request
+
+# A1.Flex specific configuration
+config:
+  # Target percentages optimized for A1.Flex shape
+  CPU_TARGET_PCT: "35.0"    # Higher target for more capable ARM CPUs
+  MEM_TARGET_PCT: "65.0"    # CRITICAL: Memory reclamation rule applies to A1.Flex
+  NET_TARGET_PCT: "15.0"    # Target 15% of 1 Gbps per vCPU
+  
+  # Safety stop thresholds
+  CPU_STOP_PCT: "85.0"      # Standard stop threshold
+  MEM_STOP_PCT: "90.0"      # Critical: Must stay above 20% to avoid reclamation
+  NET_STOP_PCT: "60.0"      # Conservative network limit
+  
+  # Control system optimized for more capable hardware
+  CONTROL_PERIOD_SEC: "5.0"   # Standard control period
+  AVG_WINDOW_SEC: "300.0"     # 5-minute averaging window
+  HYSTERESIS_PCT: "5.0"       # Standard hysteresis
+  
+  # Load monitoring tuned for multi-core ARM
+  LOAD_THRESHOLD: "0.7"       # Can handle higher load on multi-core
+  LOAD_RESUME_THRESHOLD: "0.5" # Resume threshold
+  LOAD_CHECK_ENABLED: "true"
+  
+  # Memory allocation tuned for larger memory capacity
+  MEM_MIN_FREE_MB: "1024"     # Leave more free memory on larger instances
+  MEM_STEP_MB: "128"          # Larger allocation steps for bigger instance
+  
+  # Network configuration for A1.Flex (1 Gbps per vCPU)
+  NET_SENSE_MODE: "container"
+  NET_IFACE_INNER: "eth0"
+  NET_LINK_MBIT: "2000.0"     # 2 Gbps for 2 vCPU instance (adjust as needed)
+  NET_MIN_RATE_MBIT: "2.0"    # Higher minimum rate
+  NET_MAX_RATE_MBIT: "1600.0" # 80% of total bandwidth
+  
+  # Standard jitter configuration
+  JITTER_PCT: "10.0"
+  JITTER_PERIOD_SEC: "5.0"
+
+# Standard persistent volume for A1.Flex
+persistence:
+  enabled: true
+  size: 2Gi  # Larger database for more capable instance
+
+# Node affinity to prefer A1.Flex nodes
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      preference:
+        matchExpressions:
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+          - A1.Flex
+        - key: oracle.com/shape
+          operator: In
+          values:
+          - A1.Flex
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+          - arm64
+
+# Tolerate ARM architecture and A1.Flex specific taints
+tolerations:
+- key: oracle.com/shape
+  operator: Equal
+  value: A1.Flex
+  effect: NoSchedule
+- key: kubernetes.io/arch
+  operator: Equal
+  value: arm64
+  effect: NoSchedule
+
+# ARM-specific configuration (if using multi-arch images)
+nodeSelector:
+  kubernetes.io/arch: arm64

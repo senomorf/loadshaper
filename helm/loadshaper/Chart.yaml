@@ -1,0 +1,21 @@
+apiVersion: v2
+name: loadshaper
+description: Oracle Cloud Always Free VM Keeper - Intelligent baseline load generator
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - oracle-cloud
+  - always-free
+  - vm-keeper
+  - load-generator
+  - resource-utilization
+home: https://github.com/senomorf/loadshaper
+sources:
+  - https://github.com/senomorf/loadshaper
+maintainers:
+  - name: loadshaper-team
+    email: loadshaper@example.com
+annotations:
+  category: Monitoring
+  licenses: MIT

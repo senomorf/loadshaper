@@ -1,0 +1,181 @@
+# Default values for loadshaper.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: loadshaper
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+
+securityContext:
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  # Run with nice priority for minimal system impact
+  # This is handled by the application, not container security context
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 15201
+  annotations: {}
+  # loadBalancerIP: ""
+  # loadBalancerSourceRanges: []
+  # nodePort: 30201
+
+# Loadshaper configuration - environment variables
+config:
+  # Core target percentages
+  CPU_TARGET_PCT: "30.0"
+  MEM_TARGET_PCT: "60.0"
+  NET_TARGET_PCT: "10.0"
+  
+  # Safety stop thresholds
+  CPU_STOP_PCT: "85.0"
+  MEM_STOP_PCT: "90.0"
+  NET_STOP_PCT: "60.0"
+  
+  # Control system parameters
+  CONTROL_PERIOD_SEC: "5.0"
+  AVG_WINDOW_SEC: "300.0"
+  HYSTERESIS_PCT: "5.0"
+  
+  # Load average monitoring (pause when real workloads need CPU)
+  LOAD_THRESHOLD: "0.6"      # pause when load avg per core > this
+  LOAD_RESUME_THRESHOLD: "0.4"  # resume when load avg per core < this
+  LOAD_CHECK_ENABLED: "true"
+  
+  # Jitter configuration
+  JITTER_PCT: "10.0"
+  JITTER_PERIOD_SEC: "5.0"
+  
+  # Memory allocation parameters
+  MEM_MIN_FREE_MB: "512"
+  MEM_STEP_MB: "64"
+  
+  # Network configuration
+  NET_MODE: "client"
+  NET_PEERS: ""  # Comma-separated list of peer IPs/hostnames
+  NET_PORT: "15201"
+  NET_BURST_SEC: "10"
+  NET_IDLE_SEC: "10"
+  NET_PROTOCOL: "udp"
+  
+  # Network sensing and interface configuration
+  NET_SENSE_MODE: "container"  # container|host
+  NET_IFACE: "ens3"           # for host mode (requires /sys mount)
+  NET_IFACE_INNER: "eth0"     # for container mode (/proc/net/dev)
+  NET_LINK_MBIT: "1000.0"     # used directly in container mode
+  
+  # Network rate limits (Mbps)
+  NET_MIN_RATE_MBIT: "1.0"
+  NET_MAX_RATE_MBIT: "800.0"
+  
+  # Extra configuration (key-value pairs)
+  extra: {}
+
+# Additional environment variables
+env: []
+
+# Health checks
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Resource limits and requests
+resources:
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Persistence for metrics storage
+persistence:
+  enabled: true
+  # storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+  # existingClaim: ""
+  # selector: {}
+
+# Network policy configuration
+networkPolicy:
+  enabled: false
+  # Custom ingress rules (if not specified, default rules are used)
+  ingress: []
+  # Custom egress rules (if not specified, default rules are used)
+  egress: []
+
+# ServiceMonitor for Prometheus monitoring
+serviceMonitor:
+  enabled: false
+  # namespace: monitoring
+  labels: {}
+  annotations: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  port: 8080
+  jobLabel: ""
+  metricRelabelings: []
+  relabelings: []
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity: {}
+
+# Priority class name for pod scheduling
+priorityClassName: ""
+
+# Additional volumes
+volumes: []
+
+# Additional volume mounts
+volumeMounts: []
