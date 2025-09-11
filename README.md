@@ -1,12 +1,13 @@
 # loadshaper
 
+![Oracle Cloud](https://img.shields.io/badge/Oracle%20Cloud-F80000?style=for-the-badge&logo=oracle&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-supported-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20ARM64%20%7C%20x86--64-lightgrey.svg)
-![Oracle Cloud](https://img.shields.io/badge/Oracle%20Cloud-Always%20Free-red.svg)
 
-**Minimal baseline load generator for Oracle Cloud Always Free compute instances.**
+### Oracle Cloud Always Free VM Keeper
+**Intelligent baseline load generator that prevents Oracle Cloud Always Free compute instances from being reclaimed due to underutilization.**
 
 ## Problem
 
