@@ -64,6 +64,9 @@ KP_CPU = 0.30       # proportional gain for CPU duty
 KP_NET = 0.60       # proportional gain for iperf rate (Mbps)
 MAX_DUTY = 0.95     # CPU duty cap
 
+# Sleep slice for yielding scheduler (≈5ms as documented in README)
+SLEEP_SLICE = 0.005
+
 # ---------------------------
 # Helpers: CPU & memory read
 # ---------------------------
