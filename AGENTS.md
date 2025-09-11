@@ -21,11 +21,49 @@
 - Prefer small, testable helpers; keep I/O at edges; maintain clear separation between sensing, control, and workers.
 
 ## Testing Guidelines
+
+### Unit Tests
 - Run unit tests with `python -m pytest -q`.
+- Add tests for any new utility functions or control logic.
+- Test edge cases (negative values, missing files, network failures).
+
+### Integration Testing
 - Validate behavior by running the stack and observing `[loadshaper]` telemetry.
 - CPU/RAM only: `NET_MODE=off docker compose up -d`.
 - Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
-- Safety checks: verify `*_STOP_PCT` thresholds trigger pause/resume; include log snippets in PRs.
+
+### Memory Stressor Testing
+**For A1.Flex shapes (memory reclamation applies):**
+- Verify memory allocation increases when `mem(no-cache)` is below `MEM_TARGET_PCT`
+- Test memory touching frequency (current: every 1 second)
+- Monitor RSS and VSZ to confirm memory is actually consumed
+- Test with different `MEM_STEP_MB` values (64MB default may be too small)
+
+### Load Average Monitoring
+- Test with `LOAD_THRESHOLD=0.1` to verify workers pause under light load
+- Simulate CPU contention with `stress` or similar tools
+- Verify hysteresis works (no oscillation between pause/resume)
+
+### 7-Day Metrics Validation  
+- Confirm database storage works: `docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables"`
+- Check percentile calculations with: `docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db "SELECT COUNT(*) FROM metrics;"`
+- Verify cleanup removes old data properly
+
+### Shape-Specific Testing
+**E2.1.Micro (x86, 1/8 OCPU):**
+- Default targets should be conservative (CPU≤25%, no memory pressure)
+- Network should focus on external internet traffic
+- Load thresholds should be lower (more sensitive to contention)
+
+**A1.Flex (ARM, flexible):**
+- Test memory stressor effectiveness with higher targets (40-60%)
+- Verify per-vCPU network scaling works
+- Test with multiple vCPU configurations
+
+### Safety Checks
+- Verify `*_STOP_PCT` thresholds trigger pause/resume correctly
+- Test emergency shutdown scenarios (SIGTERM, container stop)
+- Include log snippets in PRs showing safety mechanisms working
 
 ## Commit & Pull Request Guidelines
 - Commits: clear, imperative subject lines; mention touched subsystems (cpu, mem, net, compose, docs) and key env vars.
