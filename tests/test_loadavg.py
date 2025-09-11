@@ -16,9 +16,10 @@ def test_read_loadavg_valid_file():
     assert load_1min == 0.75
     assert load_5min == 0.65 
     assert load_15min == 0.55
-    # per_core_load should be load_1min / N_WORKERS
-    from loadshaper import N_WORKERS
-    expected_per_core = 0.75 / N_WORKERS
+    # per_core_load should be load_1min / cpu_count
+    import os
+    cpu_count = os.cpu_count() or 1
+    expected_per_core = 0.75 / cpu_count
     assert per_core_load == pytest.approx(expected_per_core)
 
 
@@ -61,10 +62,10 @@ def test_read_loadavg_zero_cpus():
     """Test handling zero CPU count edge case"""
     mock_content = "1.5 1.2 1.0 2/147 12345\n"
     with mock.patch("builtins.open", mock.mock_open(read_data=mock_content)):
-        # Use mock.patch to avoid modifying global state
-        with mock.patch("loadshaper.N_WORKERS", 0):
+        # Mock os.cpu_count() to return None (which becomes 1 via 'or 1')
+        with mock.patch("os.cpu_count", return_value=None):
             load_1min, load_5min, load_15min, per_core_load = read_loadavg()
             assert load_1min == 1.5
             assert load_5min == 1.2
             assert load_15min == 1.0
-            assert per_core_load == 1.5  # Should fall back to raw load when cpu_count is 0
+            assert per_core_load == 1.5  # Should be load_1min / 1 when os.cpu_count() returns None
