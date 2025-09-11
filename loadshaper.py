@@ -134,6 +134,7 @@ class EMA:
 # CPU workers (busy/sleep)
 # ---------------------------
 def cpu_worker(shared_duty: Value, stop_flag: Value):
+    os.nice(19)  # lowest priority; always yield to real workloads
     TICK = 0.1
     junk = 1.0
     while True:
