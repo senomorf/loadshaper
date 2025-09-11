@@ -44,9 +44,25 @@
 - Simulate CPU contention with `stress` or similar tools
 - Verify hysteresis works (no oscillation between pause/resume)
 
+### CPU Load Responsiveness Testing
+**Critical requirement: CPU load must have minimal impact on system responsiveness**
+
+- **Latency impact testing**: Measure response times of simple system operations (file creation, network pings) with and without loadshaper running
+- **Context switching overhead**: Monitor context switch rates using `vmstat` or `/proc/stat` to ensure minimal increase
+- **Priority validation**: Confirm CPU workers immediately yield to higher-priority processes
+- **Yielding behavior**: Test that 5ms sleep slices provide adequate yielding under various system loads
+- **Cache impact**: Verify CPU stress workload doesn't significantly impact cache performance for other processes
+- **I/O responsiveness**: Ensure disk and network I/O from other processes remains responsive
+
+**Test scenarios:**
+- Run loadshaper alongside typical server workloads (web server, database queries)
+- Measure latency percentiles (P50, P95, P99) for critical operations
+- Compare system responsiveness metrics before/during/after loadshaper execution
+- Validate immediate pausing when legitimate high-priority work appears
+
 ### 7-Day Metrics Validation  
-- Confirm database storage works: `docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables"`
-- Check percentile calculations with: `docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db "SELECT COUNT(*) FROM metrics;"`
+- Confirm database storage works: `docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" || echo "Database not found"`
+- Check percentile calculations with: `docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db "SELECT COUNT(*) FROM metrics;" || echo "Database not found"`
 - Verify cleanup removes old data properly
 
 ### Shape-Specific Testing

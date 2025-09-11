@@ -20,7 +20,7 @@ services:
 
       # === Safety stop thresholds (conservative for shared tenancy) ===
       CPU_STOP_PCT: "${CPU_STOP_PCT:-45}"             # lower for E2 shared tenancy
-      MEM_STOP_PCT: "${MEM_STOP_PCT:-80}"             # higher since MEM_TARGET is disabled
+      MEM_STOP_PCT: "${MEM_STOP_PCT:-80}"             # safe when MEM targeting disabled - system can use cache/buffers freely
       NET_STOP_PCT: "${NET_STOP_PCT:-40}"             # conservative for external bandwidth
 
       # === Control behavior ===

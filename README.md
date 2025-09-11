@@ -54,10 +54,16 @@ shows current, 5-minute average, and 7-day 95th percentile values for each metri
 
 ## CPU load characteristics
 
-CPU stress runs in a worker set to the lowest OS priority (`nice` 19).  The
-workload uses short, jittered bursts so it stays transient and yields instantly
-to real processes. When choosing a stress method, favor the lightest option that
-meets the utilization requirement.
+**Design Priority: Minimal Impact on System Responsiveness**
+
+CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is designed to have minimal impact on system responsiveness for other processes. Key characteristics:
+
+- **Lowest priority**: Both controller and CPU workers run at `nice` 19, immediately yielding to any real workloads
+- **Transient bursts**: Short, jittered activity periods with frequent sleep intervals (5ms yielding slices)
+- **Baseline operation**: Designed to be lightweight background activity, not sustained high-intensity load
+- **Immediate yielding**: Automatically pauses when system load average indicates CPU contention from legitimate processes
+
+**Workload Selection Criteria**: When choosing between stress methods that produce similar CPU utilization metrics, always prioritize the approach with the **least impact on system responsiveness and latency** for other processes. The current implementation uses simple arithmetic operations that minimize context switching overhead and avoid cache pollution.
 
 ## Network shaping as fallback
 

@@ -69,7 +69,10 @@ KP_CPU = 0.30       # proportional gain for CPU duty
 KP_NET = 0.60       # proportional gain for iperf rate (Mbps)
 MAX_DUTY = 0.95     # CPU duty cap
 
-# Sleep slice for yielding scheduler (≈5ms as documented in README)
+# Sleep slice for yielding scheduler - critical for system responsiveness
+# 5ms chosen as balance between CPU utilization accuracy and responsiveness:
+# - Long enough to avoid excessive context switching overhead
+# - Short enough to ensure other processes get timely CPU access
 SLEEP_SLICE = 0.005
 
 # ---------------------------
@@ -318,24 +321,40 @@ class MetricsStorage:
 # CPU workers (busy/sleep)
 # ---------------------------
 def cpu_worker(shared_duty: Value, stop_flag: Value):
+    """
+    Lightweight CPU load generator designed for minimal system impact.
+    
+    Key design principles for minimal responsiveness impact:
+    - Runs at lowest OS priority (nice 19) to immediately yield to real workloads
+    - Uses simple arithmetic operations to minimize cache pollution and context switching overhead
+    - Short work periods (100ms max) with frequent yield opportunities
+    - Always includes sleep slice (5ms minimum) to ensure scheduler can run other processes
+    - Immediately responds to stop_flag when system load indicates contention
+    """
     os.nice(19)  # lowest priority; always yield to real workloads
-    TICK = 0.1
-    junk = 1.0
+    TICK = 0.1   # 100ms work periods - short enough to be responsive
+    junk = 1.0   # Simple arithmetic to minimize cache/memory pressure
+    
     while True:
         if stop_flag.value == 1.0:
-            time.sleep(SLEEP_SLICE)
+            time.sleep(SLEEP_SLICE)  # Still yield CPU when paused
             continue
+            
         d = float(shared_duty.value)
         d = 0.0 if d < 0 else (MAX_DUTY if d > MAX_DUTY else d)
-        busy = d * TICK
+        busy = d * TICK  # Calculate active work time within this tick
+        
+        # CPU-intensive work period (simple arithmetic chosen for minimal system impact)
         start = time.perf_counter()
         while (time.perf_counter() - start) < busy:
-            junk = junk * 1.0000001 + 1.0
+            junk = junk * 1.0000001 + 1.0  # Lightweight arithmetic, avoids memory allocation
+            
+        # Always yield remaining time in tick, minimum 5ms for scheduler responsiveness
         rest = TICK - busy
         if rest > 0:
             time.sleep(rest)
         else:
-            time.sleep(SLEEP_SLICE)
+            time.sleep(SLEEP_SLICE)  # Minimum yield to ensure other processes can run
 
 # ---------------------------
 # RAM allocator & toucher
