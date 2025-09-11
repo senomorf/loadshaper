@@ -8,6 +8,131 @@ from multiprocessing import Process, Value
 from math import isfinite
 
 # ---------------------------
+# Oracle shape auto-detection
+# ---------------------------
+def detect_oracle_shape():
+    """
+    Detect Oracle Cloud shape based on system characteristics.
+    Returns tuple: (shape_name, template_file, is_oracle)
+    """
+    try:
+        # Try to detect Oracle Cloud instance via DMI/cloud-init metadata
+        is_oracle = False
+        try:
+            # Check DMI system-vendor (requires root or sudo)
+            with open("/sys/class/dmi/id/sys_vendor", "r") as f:
+                vendor = f.read().strip().lower()
+            is_oracle = "oracle" in vendor
+        except (IOError, OSError):
+            # Fallback: check for Oracle-specific files/directories
+            oracle_indicators = [
+                "/opt/oci-hpc",
+                "/etc/oci-hostname.conf",
+                "/var/lib/cloud/data/instance-id"
+            ]
+            for indicator in oracle_indicators:
+                if os.path.exists(indicator):
+                    is_oracle = True
+                    break
+        
+        # Get system specs
+        cpu_count = os.cpu_count() or 1
+        
+        # Get total memory in GB
+        total_mem_gb = 0
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        # Convert from kB to GB
+                        total_mem_gb = int(line.split()[1]) / (1024 * 1024)
+                        break
+        except (IOError, OSError):
+            pass
+        
+        # Detect shape based on CPU/memory characteristics
+        if is_oracle:
+            # Oracle Cloud shapes
+            if cpu_count == 1 and 0.8 <= total_mem_gb <= 1.2:  # ~1GB
+                return ("VM.Standard.E2.1.Micro", "e2-1-micro.env", True)
+            elif cpu_count == 2 and 1.8 <= total_mem_gb <= 2.2:  # ~2GB  
+                return ("VM.Standard.E2.2.Micro", "e2-2-micro.env", True)
+            elif cpu_count == 1 and 5.5 <= total_mem_gb <= 6.5:  # ~6GB (A1.Flex 1 vCPU)
+                return ("VM.Standard.A1.Flex", "a1-flex-1.env", True)
+            elif cpu_count == 4 and 23 <= total_mem_gb <= 25:   # ~24GB (A1.Flex 4 vCPU)
+                return ("VM.Standard.A1.Flex", "a1-flex-4.env", True)
+            else:
+                # Oracle Cloud but unknown shape - use conservative E2.1.Micro defaults
+                return (f"Oracle-Unknown-{cpu_count}CPU-{total_mem_gb:.1f}GB", "e2-1-micro.env", True)
+        else:
+            # Non-Oracle environment - no template
+            return (f"Generic-{cpu_count}CPU-{total_mem_gb:.1f}GB", None, False)
+            
+    except Exception as e:
+        # On any error, assume non-Oracle environment
+        return (f"Unknown-Error-{str(e)[:20]}", None, False)
+
+def load_config_template(template_file):
+    """
+    Load configuration from template file.
+    Returns dict of config values or empty dict if file not found.
+    """
+    if not template_file:
+        return {}
+    
+    config = {}
+    template_path = os.path.join(os.path.dirname(__file__), "config-templates", template_file)
+    
+    try:
+        with open(template_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith("#"):
+                    continue
+                # Parse KEY=VALUE format
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    config[key.strip()] = value.strip()
+    except (IOError, OSError):
+        # Template file not found or not readable - use defaults
+        pass
+    
+    return config
+
+def getenv_with_template(name, default, config_template):
+    """
+    Get environment variable with template fallback.
+    Priority: ENV VAR > TEMPLATE > DEFAULT
+    """
+    # First try environment variable
+    env_val = os.getenv(name)
+    if env_val is not None:
+        return env_val
+    
+    # Then try template
+    template_val = config_template.get(name)
+    if template_val is not None:
+        return template_val
+    
+    # Finally use default
+    return default
+
+def getenv_float_with_template(name, default, config_template):
+    """Get float environment variable with template fallback."""
+    try:
+        return float(getenv_with_template(name, default, config_template))
+    except Exception:
+        return float(default)
+
+def getenv_int_with_template(name, default, config_template):
+    """Get int environment variable with template fallback."""
+    try:
+        return int(getenv_with_template(name, default, config_template))
+    except Exception:
+        return int(default)
+
+# ---------------------------
 # Env / config
 # ---------------------------
 def getenv_float(name, default):
@@ -22,44 +147,48 @@ def getenv_int(name, default):
     except Exception:
         return int(default)
 
-CPU_TARGET_PCT    = getenv_float("CPU_TARGET_PCT", 30.0)
-MEM_TARGET_PCT    = getenv_float("MEM_TARGET_PCT", 60.0)  # excludes cache/buffers
-NET_TARGET_PCT    = getenv_float("NET_TARGET_PCT", 10.0)  # NIC utilization %
+# Initialize Oracle shape detection and template loading
+DETECTED_SHAPE, TEMPLATE_FILE, IS_ORACLE = detect_oracle_shape()
+CONFIG_TEMPLATE = load_config_template(TEMPLATE_FILE)
 
-CPU_STOP_PCT      = getenv_float("CPU_STOP_PCT", 85.0)
-MEM_STOP_PCT      = getenv_float("MEM_STOP_PCT", 90.0)
-NET_STOP_PCT      = getenv_float("NET_STOP_PCT", 60.0)
+CPU_TARGET_PCT    = getenv_float_with_template("CPU_TARGET_PCT", 30.0, CONFIG_TEMPLATE)
+MEM_TARGET_PCT    = getenv_float_with_template("MEM_TARGET_PCT", 60.0, CONFIG_TEMPLATE)  # excludes cache/buffers
+NET_TARGET_PCT    = getenv_float_with_template("NET_TARGET_PCT", 10.0, CONFIG_TEMPLATE)  # NIC utilization %
 
-CONTROL_PERIOD    = getenv_float("CONTROL_PERIOD_SEC", 5.0)
-AVG_WINDOW_SEC    = getenv_float("AVG_WINDOW_SEC", 300.0)
-HYSTERESIS_PCT    = getenv_float("HYSTERESIS_PCT", 5.0)
+CPU_STOP_PCT      = getenv_float_with_template("CPU_STOP_PCT", 85.0, CONFIG_TEMPLATE)
+MEM_STOP_PCT      = getenv_float_with_template("MEM_STOP_PCT", 90.0, CONFIG_TEMPLATE)
+NET_STOP_PCT      = getenv_float_with_template("NET_STOP_PCT", 60.0, CONFIG_TEMPLATE)
 
-LOAD_THRESHOLD    = getenv_float("LOAD_THRESHOLD", 0.6)      # pause when load avg per core > this (conservative for Oracle Free Tier)
-LOAD_RESUME_THRESHOLD = getenv_float("LOAD_RESUME_THRESHOLD", 0.4)  # resume when load avg per core < this (hysteresis)
-LOAD_CHECK_ENABLED = os.getenv("LOAD_CHECK_ENABLED", "true").strip().lower() == "true"
+CONTROL_PERIOD    = getenv_float_with_template("CONTROL_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
+AVG_WINDOW_SEC    = getenv_float_with_template("AVG_WINDOW_SEC", 300.0, CONFIG_TEMPLATE)
+HYSTERESIS_PCT    = getenv_float_with_template("HYSTERESIS_PCT", 5.0, CONFIG_TEMPLATE)
 
-JITTER_PCT        = getenv_float("JITTER_PCT", 10.0)
-JITTER_PERIOD     = getenv_float("JITTER_PERIOD_SEC", 5.0)
+LOAD_THRESHOLD    = getenv_float_with_template("LOAD_THRESHOLD", 0.6, CONFIG_TEMPLATE)      # pause when load avg per core > this (conservative for Oracle Free Tier)
+LOAD_RESUME_THRESHOLD = getenv_float_with_template("LOAD_RESUME_THRESHOLD", 0.4, CONFIG_TEMPLATE)  # resume when load avg per core < this (hysteresis)
+LOAD_CHECK_ENABLED = getenv_with_template("LOAD_CHECK_ENABLED", "true", CONFIG_TEMPLATE).strip().lower() == "true"
 
-MEM_MIN_FREE_MB   = getenv_int("MEM_MIN_FREE_MB", 512)
-MEM_STEP_MB       = getenv_int("MEM_STEP_MB", 64)
+JITTER_PCT        = getenv_float_with_template("JITTER_PCT", 10.0, CONFIG_TEMPLATE)
+JITTER_PERIOD     = getenv_float_with_template("JITTER_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
 
-NET_MODE          = os.getenv("NET_MODE", "client").strip().lower()
-NET_PEERS         = [p.strip() for p in os.getenv("NET_PEERS", "").split(",") if p.strip()]
-NET_PORT          = getenv_int("NET_PORT", 15201)
-NET_BURST_SEC     = getenv_int("NET_BURST_SEC", 10)
-NET_IDLE_SEC      = getenv_int("NET_IDLE_SEC", 10)
-NET_PROTOCOL      = os.getenv("NET_PROTOCOL", "udp").strip().lower()
+MEM_MIN_FREE_MB   = getenv_int_with_template("MEM_MIN_FREE_MB", 512, CONFIG_TEMPLATE)
+MEM_STEP_MB       = getenv_int_with_template("MEM_STEP_MB", 64, CONFIG_TEMPLATE)
+
+NET_MODE          = getenv_with_template("NET_MODE", "client", CONFIG_TEMPLATE).strip().lower()
+NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "", CONFIG_TEMPLATE).split(",") if p.strip()]
+NET_PORT          = getenv_int_with_template("NET_PORT", 15201, CONFIG_TEMPLATE)
+NET_BURST_SEC     = getenv_int_with_template("NET_BURST_SEC", 10, CONFIG_TEMPLATE)
+NET_IDLE_SEC      = getenv_int_with_template("NET_IDLE_SEC", 10, CONFIG_TEMPLATE)
+NET_PROTOCOL      = getenv_with_template("NET_PROTOCOL", "udp", CONFIG_TEMPLATE).strip().lower()
 
 # New: how we "sense" NIC bytes
-NET_SENSE_MODE    = os.getenv("NET_SENSE_MODE", "container").strip().lower()  # container|host
-NET_IFACE         = os.getenv("NET_IFACE", "ens3").strip()        # for host mode (requires /sys mount)
-NET_IFACE_INNER   = os.getenv("NET_IFACE_INNER", "eth0").strip()  # for container mode (/proc/net/dev)
-NET_LINK_MBIT     = getenv_float("NET_LINK_MBIT", 1000.0)         # used directly in container mode
+NET_SENSE_MODE    = getenv_with_template("NET_SENSE_MODE", "container", CONFIG_TEMPLATE).strip().lower()  # container|host
+NET_IFACE         = getenv_with_template("NET_IFACE", "ens3", CONFIG_TEMPLATE).strip()        # for host mode (requires /sys mount)
+NET_IFACE_INNER   = getenv_with_template("NET_IFACE_INNER", "eth0", CONFIG_TEMPLATE).strip()  # for container mode (/proc/net/dev)
+NET_LINK_MBIT     = getenv_float_with_template("NET_LINK_MBIT", 1000.0, CONFIG_TEMPLATE)         # used directly in container mode
 
 # Controller rate bounds (Mbps)
-NET_MIN_RATE      = getenv_float("NET_MIN_RATE_MBIT", 1.0)
-NET_MAX_RATE      = getenv_float("NET_MAX_RATE_MBIT", 800.0)
+NET_MIN_RATE      = getenv_float_with_template("NET_MIN_RATE_MBIT", 1.0, CONFIG_TEMPLATE)
+NET_MAX_RATE      = getenv_float_with_template("NET_MAX_RATE_MBIT", 800.0, CONFIG_TEMPLATE)
 
 # Workers equal to CPU count for smoother shaping
 N_WORKERS = os.cpu_count() or 1
@@ -489,9 +618,12 @@ class EMA4:
 
 def main():
     load_monitor_status = f"LOAD_THRESHOLD={LOAD_THRESHOLD:.1f}" if LOAD_CHECK_ENABLED else "LOAD_CHECK=disabled"
+    shape_status = f"Oracle={DETECTED_SHAPE}" if IS_ORACLE else f"Generic={DETECTED_SHAPE}"
+    template_status = f"template={TEMPLATE_FILE}" if TEMPLATE_FILE else "template=none"
     print("[loadshaper v2.2] starting with",
           f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
-          f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}")
+          f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status} |",
+          f" {shape_status}, {template_status}")
 
     try:
         os.nice(19)  # run controller and workers at lowest priority
