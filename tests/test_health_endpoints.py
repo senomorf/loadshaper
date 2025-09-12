@@ -254,9 +254,9 @@ class TestHealthEndpoints:
         assert handler.response_code == 200
         response_data = json.loads(handler.response_body.decode('utf-8'))
         
-        # Should have error in percentiles section
+        # Should have error in percentiles section (sanitized)
         assert 'percentiles_7d' in response_data
-        assert response_data['percentiles_7d']['error'] == 'Storage error'
+        assert response_data['percentiles_7d']['error'] == 'Internal service error'
 
 
     def test_unknown_endpoint(self, healthy_state, metrics_storage):

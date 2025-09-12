@@ -67,6 +67,7 @@ NET_MAX_RATE      = getenv_float("NET_MAX_RATE_MBIT", 800.0)
 
 # Health check server configuration
 HEALTH_PORT       = getenv_int("HEALTH_PORT", 8080)
+HEALTH_HOST       = os.getenv("HEALTH_HOST", "127.0.0.1").strip()
 HEALTH_ENABLED    = os.getenv("HEALTH_ENABLED", "true").strip().lower() == "true"
 
 # Workers equal to CPU count for smoother shaping
@@ -496,6 +497,20 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.metrics_storage = metrics_storage
         super().__init__(*args, **kwargs)
     
+    def _sanitize_error(self, error_msg: str) -> str:
+        """Sanitize error messages to prevent information disclosure"""
+        # Remove potentially sensitive information like file paths, internal details
+        if "Permission denied" in error_msg or "permission" in error_msg.lower():
+            return "Access denied"
+        elif "No such file" in error_msg or "not found" in error_msg.lower():
+            return "Resource not found"
+        elif "Connection refused" in error_msg or "connection" in error_msg.lower():
+            return "Service unavailable"
+        elif "database" in error_msg.lower() or "sqlite" in error_msg.lower():
+            return "Storage service temporarily unavailable"
+        else:
+            return "Internal service error"
+    
     def log_message(self, format, *args):
         # Suppress HTTP server logs to keep output clean
         pass
@@ -511,6 +526,44 @@ class HealthHandler(BaseHTTPRequestHandler):
         else:
             self._send_error(404, "Not Found")
     
+    def do_POST(self):
+        self._send_method_not_allowed()
+    
+    def do_PUT(self):
+        self._send_method_not_allowed()
+    
+    def do_DELETE(self):
+        self._send_method_not_allowed()
+    
+    def do_PATCH(self):
+        self._send_method_not_allowed()
+    
+    def do_HEAD(self):
+        self._send_method_not_allowed()
+    
+    def do_OPTIONS(self):
+        self._send_method_not_allowed()
+    
+    def _send_method_not_allowed(self):
+        """Send 405 Method Not Allowed response"""
+        error_data = {
+            "error": "Method not allowed",
+            "message": "Only GET requests are supported",
+            "allowed_methods": ["GET"],
+            "status_code": 405,
+            "timestamp": time.time()
+        }
+        response_body = json.dumps(error_data, indent=2)
+        
+        self.send_response(405)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(response_body)))
+        self.send_header('Allow', 'GET')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        
+        self.wfile.write(response_body.encode('utf-8'))
+    
     def _handle_health(self):
         """Handle /health endpoint requests"""
         try:
@@ -520,15 +573,13 @@ class HealthHandler(BaseHTTPRequestHandler):
             # Check if metrics storage is working
             storage_ok = self.metrics_storage is not None and self.metrics_storage.db_path is not None
             
-            # Get current system state
-            current_state = self.controller_state.copy()
-            
-            # Determine overall health status
+            # Determine overall health status - direct access to avoid copy
             is_healthy = True
             status_checks = []
             
             # Check if system is in safety stop due to excessive load
-            if current_state.get('paused', 0.0) == 1.0:
+            paused_state = self.controller_state.get('paused', 0.0)
+            if paused_state == 1.0:
                 is_healthy = False
                 status_checks.append("system_paused_safety_stop")
             
@@ -538,8 +589,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                 # Note: Don't mark unhealthy for storage issues, as core functionality still works
             
             # Check for extreme resource usage that might indicate issues
-            cpu_avg = current_state.get('cpu_avg')
-            mem_avg = current_state.get('mem_avg') 
+            cpu_avg = self.controller_state.get('cpu_avg')
+            mem_avg = self.controller_state.get('mem_avg')
             if cpu_avg and cpu_avg > CPU_STOP_PCT:
                 status_checks.append("cpu_critical")
             if mem_avg and mem_avg > MEM_STOP_PCT:
@@ -551,39 +602,41 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "timestamp": time.time(),
                 "checks": status_checks if status_checks else ["all_systems_operational"],
                 "metrics_storage": "available" if storage_ok else "degraded",
-                "load_generation": "paused" if current_state.get('paused', 0.0) == 1.0 else "active"
+                "load_generation": "paused" if paused_state == 1.0 else "active"
             }
             
             status_code = 200 if is_healthy else 503
             self._send_json_response(status_code, health_data)
             
         except Exception as e:
-            self._send_error(500, f"Health check failed: {str(e)}")
+            sanitized_error = self._sanitize_error(str(e))
+            self._send_error(500, f"Health check failed: {sanitized_error}")
     
     def _handle_metrics(self):
         """Handle /metrics endpoint requests"""
         try:
-            current_state = self.controller_state.copy()
+            # Direct access to controller state to avoid copy overhead
+            cs = self.controller_state
             
             # Get current metrics
             metrics_data = {
                 "timestamp": time.time(),
                 "current": {
-                    "cpu_percent": current_state.get('cpu_pct'),
-                    "cpu_avg": current_state.get('cpu_avg'),
-                    "memory_percent": current_state.get('mem_pct'),
-                    "memory_avg": current_state.get('mem_avg'),
-                    "network_percent": current_state.get('net_pct'),
-                    "network_avg": current_state.get('net_avg'),
-                    "load_average": current_state.get('load_avg'),
-                    "duty_cycle": current_state.get('duty', 0.0),
-                    "network_rate_mbit": current_state.get('net_rate', 0.0),
-                    "paused": current_state.get('paused', 0.0) == 1.0
+                    "cpu_percent": cs.get('cpu_pct'),
+                    "cpu_avg": cs.get('cpu_avg'),
+                    "memory_percent": cs.get('mem_pct'),
+                    "memory_avg": cs.get('mem_avg'),
+                    "network_percent": cs.get('net_pct'),
+                    "network_avg": cs.get('net_avg'),
+                    "load_average": cs.get('load_avg'),
+                    "duty_cycle": cs.get('duty', 0.0),
+                    "network_rate_mbit": cs.get('net_rate', 0.0),
+                    "paused": cs.get('paused', 0.0) == 1.0
                 },
                 "targets": {
-                    "cpu_target": current_state.get('cpu_target', CPU_TARGET_PCT),
-                    "memory_target": current_state.get('mem_target', MEM_TARGET_PCT),
-                    "network_target": current_state.get('net_target', NET_TARGET_PCT)
+                    "cpu_target": cs.get('cpu_target', CPU_TARGET_PCT),
+                    "memory_target": cs.get('mem_target', MEM_TARGET_PCT),
+                    "network_target": cs.get('net_target', NET_TARGET_PCT)
                 },
                 "configuration": {
                     "cpu_stop_threshold": CPU_STOP_PCT,
@@ -608,12 +661,13 @@ class HealthHandler(BaseHTTPRequestHandler):
                     }
                     metrics_data["percentiles_7d"] = percentiles
                 except Exception as e:
-                    metrics_data["percentiles_7d"] = {"error": str(e)}
+                    metrics_data["percentiles_7d"] = {"error": self._sanitize_error(str(e))}
             
             self._send_json_response(200, metrics_data)
             
         except Exception as e:
-            self._send_error(500, f"Metrics retrieval failed: {str(e)}")
+            sanitized_error = self._sanitize_error(str(e))
+            self._send_error(500, f"Metrics retrieval failed: {sanitized_error}")
     
     def _send_json_response(self, status_code, data):
         """Send a JSON response with appropriate headers"""
@@ -646,10 +700,10 @@ def health_server_thread(stop_evt: threading.Event, controller_state: dict, metr
                            metrics_storage=metrics_storage, **kwargs)
     
     try:
-        server = HTTPServer(('0.0.0.0', HEALTH_PORT), handler_factory)
+        server = HTTPServer((HEALTH_HOST, HEALTH_PORT), handler_factory)
         server.timeout = 1.0  # Short timeout for responsive shutdown
         
-        print(f"[health] HTTP server starting on port {HEALTH_PORT}")
+        print(f"[health] HTTP server starting on {HEALTH_HOST}:{HEALTH_PORT}")
         
         while not stop_evt.is_set():
             server.handle_request()
@@ -675,7 +729,7 @@ class EMA4:
 
 def main():
     load_monitor_status = f"LOAD_THRESHOLD={LOAD_THRESHOLD:.1f}" if LOAD_CHECK_ENABLED else "LOAD_CHECK=disabled"
-    health_status = f"HEALTH_PORT={HEALTH_PORT}" if HEALTH_ENABLED else "HEALTH=disabled"
+    health_status = f"HEALTH={HEALTH_HOST}:{HEALTH_PORT}" if HEALTH_ENABLED else "HEALTH=disabled"
     print("[loadshaper v2.2] starting with",
           f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
           f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status}")

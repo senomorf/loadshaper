@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **HTTP health check endpoints**: `/health` and `/metrics` endpoints for Docker health checks and monitoring systems
+- **Configurable health server**: `HEALTH_ENABLED`, `HEALTH_PORT`, and `HEALTH_HOST` environment variables
+- **Docker integration examples**: Health check configuration for docker-compose.yml and Dockerfile
+- **Security-first binding**: Health server defaults to localhost-only (127.0.0.1) for security
 - Comprehensive documentation overhaul with badges, FAQ, and configuration tables
 - Architecture diagrams and component interaction documentation
 - CONTRIBUTING.md with detailed contributor guidelines
@@ -20,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restructured README.md with improved organization and Quick Start section
 - Enhanced AGENTS.md with external contributor guidelines and release process
 - Updated GitHub repository description and topics for better discoverability
+
+### Security
+- **Health endpoints security hardening**: Sanitized error messages, configurable host binding, HTTP method restrictions
 
 ## [1.2.0] - 2025-01-XX
 
