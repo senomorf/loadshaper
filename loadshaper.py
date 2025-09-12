@@ -33,6 +33,7 @@ class ShapeDetectionCache:
         self._cache = None
         self._timestamp = None
         self._ttl = ttl_seconds
+        self._lock = threading.Lock()
     
     def get_cached(self):
         """
@@ -41,11 +42,12 @@ class ShapeDetectionCache:
         Returns:
             tuple or None: Cached shape detection result or None if expired/invalid
         """
-        if (self._cache is not None and 
-            self._timestamp is not None and 
-            time.time() - self._timestamp < self._ttl):
-            return self._cache
-        return None
+        with self._lock:
+            if (self._cache is not None and 
+                self._timestamp is not None and 
+                time.time() - self._timestamp < self._ttl):
+                return self._cache
+            return None
     
     def set_cache(self, value):
         """
@@ -54,13 +56,15 @@ class ShapeDetectionCache:
         Args:
             value (tuple): Shape detection result to cache
         """
-        self._cache = value
-        self._timestamp = time.time()
+        with self._lock:
+            self._cache = value
+            self._timestamp = time.time()
     
     def clear_cache(self):
         """Clear cache (for testing purposes)."""
-        self._cache = None
-        self._timestamp = None
+        with self._lock:
+            self._cache = None
+            self._timestamp = None
 
 
 # Global cache instance for shape detection
@@ -165,23 +169,34 @@ def _detect_oracle_environment():
             # Skip indicators that can't be accessed
             continue
     
-    # Method 3: Check for Oracle-specific metadata service (if accessible)
-    try:
-        import socket
-        # Try to connect to Oracle's metadata service (169.254.169.254)
-        # This is a quick check without making actual HTTP requests
+    # Method 3: Oracle-specific metadata service check (disabled by default)
+    # Note: 169.254.169.254 is used by AWS/GCP/Azure, so we need Oracle-specific validation
+    if os.getenv('ORACLE_METADATA_PROBE', '0').lower() in ('1', 'true', 'yes'):
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(0.5)  # Very short timeout
-                result = sock.connect_ex(('169.254.169.254', 80))
-                if result == 0:  # Connection successful
-                    return True
-        except (socket.error, socket.timeout, OSError):
-            # Network connection failed - expected in many environments
+            import socket
+            import urllib.request
+            # Try to connect and check Oracle-specific endpoint
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(0.1)  # Reduced timeout to avoid startup delays
+                    result = sock.connect_ex(('169.254.169.254', 80))
+                    if result == 0:  # Connection successful
+                        # Verify it's actually Oracle by checking Oracle-specific endpoint
+                        try:
+                            req = urllib.request.Request('http://169.254.169.254/opc/v1/instance/',
+                                                       headers={'User-Agent': 'loadshaper'})
+                            with urllib.request.urlopen(req, timeout=0.1) as response:
+                                if response.status == 200:
+                                    return True
+                        except (urllib.error.HTTPError, urllib.error.URLError, OSError):
+                            # Not Oracle-specific metadata service
+                            pass
+            except (socket.error, socket.timeout, OSError):
+                # Network connection failed - expected in many environments
+                pass
+        except (ImportError, AttributeError):
+            # Required modules unavailable in restricted environments
             pass
-    except (ImportError, AttributeError):
-        # Socket module unavailable in restricted environments
-        pass
     
     return False
 
@@ -226,6 +241,8 @@ def _get_system_specs():
 E2_1_MICRO_MEM_RANGE = (0.8, 1.2)   # ±20% tolerance for ~1GB (E2.1.Micro)
 E2_2_MICRO_MEM_RANGE = (1.8, 2.2)   # ±20% tolerance for ~2GB (E2.2.Micro)
 A1_FLEX_1_MEM_RANGE = (5.5, 6.5)    # ±0.5GB tolerance for ~6GB (A1.Flex 1 vCPU)
+A1_FLEX_2_MEM_RANGE = (11.5, 12.5)  # ±0.5GB tolerance for ~12GB (A1.Flex 2 vCPU)
+A1_FLEX_3_MEM_RANGE = (17.5, 18.5)  # ±0.5GB tolerance for ~18GB (A1.Flex 3 vCPU)
 A1_FLEX_4_MEM_RANGE = (23, 25)      # ±1GB tolerance for ~24GB (A1.Flex 4 vCPU)
 
 
@@ -252,15 +269,28 @@ def _classify_oracle_shape(cpu_count, total_mem_gb):
     # A1.Flex shapes (dedicated Ampere)
     elif cpu_count == 1 and A1_FLEX_1_MEM_RANGE[0] <= total_mem_gb <= A1_FLEX_1_MEM_RANGE[1]:
         return ("VM.Standard.A1.Flex", "a1-flex-1.env")
+    elif cpu_count == 2 and A1_FLEX_2_MEM_RANGE[0] <= total_mem_gb <= A1_FLEX_2_MEM_RANGE[1]:
+        return ("VM.Standard.A1.Flex", "a1-flex-2.env")
+    elif cpu_count == 3 and A1_FLEX_3_MEM_RANGE[0] <= total_mem_gb <= A1_FLEX_3_MEM_RANGE[1]:
+        return ("VM.Standard.A1.Flex", "a1-flex-3.env")
     elif cpu_count == 4 and A1_FLEX_4_MEM_RANGE[0] <= total_mem_gb <= A1_FLEX_4_MEM_RANGE[1]:
         return ("VM.Standard.A1.Flex", "a1-flex-4.env")
     
-    # Unknown Oracle shape - use conservative E2.1.Micro defaults
+    # Unknown Oracle shape - use smart fallback based on memory size
     else:
-        return (
-            f"Oracle-Unknown-{cpu_count}CPU-{total_mem_gb:.1f}GB",
-            "e2-1-micro.env"
-        )
+        # If memory > 4GB, likely A1.Flex variant - use A1 template to enable memory targeting
+        # This ensures compliance with Oracle's 20% memory rule for A1 shapes
+        if total_mem_gb > 4.0:
+            return (
+                f"Oracle-Unknown-A1-{cpu_count}CPU-{total_mem_gb:.1f}GB",
+                "a1-flex-1.env"  # Use safe A1.Flex template with memory targeting
+            )
+        else:
+            # Small memory likely E2 variant - use E2 template
+            return (
+                f"Oracle-Unknown-E2-{cpu_count}CPU-{total_mem_gb:.1f}GB",
+                "e2-1-micro.env"
+            )
 
 def _validate_config_value(key, value):
     """
