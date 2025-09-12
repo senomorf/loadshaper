@@ -275,6 +275,103 @@ CPU_TARGET_PCT=35 MEM_TARGET_PCT=40 NET_TARGET_PCT=25
 NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 ```
 
+### Health Check Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEALTH_ENABLED` | `true` | Enable/disable HTTP health check server |
+| `HEALTH_PORT` | `8080` | Port for health check endpoints |
+| `HEALTH_HOST` | `127.0.0.1` | Host interface to bind (localhost only by default) |
+
+## Health Check Endpoints
+
+`loadshaper` provides HTTP endpoints for health monitoring and metrics retrieval, primarily designed for Docker container health checks and monitoring systems.
+
+### Endpoints
+
+**`GET /health`** - Health check status
+```json
+{
+  "status": "healthy",
+  "uptime_seconds": 3245.1,
+  "timestamp": 1705234567.89,
+  "checks": ["all_systems_operational"],
+  "metrics_storage": "available",
+  "load_generation": "active"
+}
+```
+
+**`GET /metrics`** - Detailed metrics and configuration
+```json
+{
+  "timestamp": 1705234567.89,
+  "current": {
+    "cpu_percent": 45.2,
+    "cpu_avg": 42.1,
+    "memory_percent": 55.1,
+    "memory_avg": 52.8,
+    "network_percent": 12.5,
+    "network_avg": 11.25,
+    "load_average": 0.42,
+    "duty_cycle": 0.65,
+    "network_rate_mbit": 15.2,
+    "paused": false
+  },
+  "targets": {
+    "cpu_target": 25.0,
+    "memory_target": 0.0,
+    "network_target": 15.0
+  },
+  "percentiles_7d": {
+    "cpu_p95": 48.3,
+    "memory_p95": 58.7,
+    "network_p95": 15.2,
+    "load_p95": 0.52,
+    "sample_count_7d": 98547
+  }
+}
+```
+
+### Docker Integration
+
+Add health check to your Docker compose or Dockerfile:
+
+```yaml
+# docker-compose.yml
+services:
+  loadshaper:
+    build: .
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+```
+
+```dockerfile
+# Dockerfile
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+```
+
+### Security Configuration
+
+By default, the health server binds to localhost only (`127.0.0.1`) for security. To enable external access:
+
+```bash
+# Allow access from any interface (Docker containers)
+HEALTH_HOST=0.0.0.0 docker run ...
+
+# Bind to specific interface
+HEALTH_HOST=10.0.0.1 docker run ...
+
+# Disable health server entirely
+HEALTH_ENABLED=false docker run ...
+```
+
+**Security Note**: Only bind to external interfaces (`0.0.0.0`) in trusted environments or behind proper network security controls.
+
 ## FAQ
 
 ### General Questions
