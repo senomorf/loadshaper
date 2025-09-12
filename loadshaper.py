@@ -11,8 +11,10 @@ from math import isfinite
 # Oracle shape auto-detection
 # ---------------------------
 
-# Cache for shape detection results to avoid repeated API calls
+# Cache for shape detection results with TTL to avoid repeated API calls
 _shape_detection_cache = None
+_cache_timestamp = None
+_CACHE_TTL_SECONDS = 300  # 5 minutes cache duration
 
 
 def detect_oracle_shape():
@@ -37,10 +39,13 @@ def detect_oracle_shape():
         >>> detect_oracle_shape()  # On non-Oracle system
         ('Generic-4CPU-8.0GB', None, False)
     """
-    global _shape_detection_cache
+    global _shape_detection_cache, _cache_timestamp
     
-    # Return cached result if available
-    if _shape_detection_cache is not None:
+    # Check cache validity with TTL mechanism
+    current_time = time.time()
+    if (_shape_detection_cache is not None and 
+        _cache_timestamp is not None and 
+        current_time - _cache_timestamp < _CACHE_TTL_SECONDS):
         return _shape_detection_cache
     
     try:
@@ -52,13 +57,15 @@ def detect_oracle_shape():
         
         # Step 3: Determine shape based on characteristics
         if is_oracle:
-            shape_name, template_file = _classify_oracle_shape(cpu_count, total_mem_gb)
+            shape_name, template_file = _classify_oracle_shape(
+                cpu_count, total_mem_gb)
         else:
             shape_name = f"Generic-{cpu_count}CPU-{total_mem_gb:.1f}GB"
             template_file = None
             
         result = (shape_name, template_file, is_oracle)
         _shape_detection_cache = result
+        _cache_timestamp = current_time
         return result
             
     except Exception as e:
@@ -66,12 +73,21 @@ def detect_oracle_shape():
         print(f"[shape-detection] Unexpected error during detection: {e}")
         fallback = (f"Unknown-Error-{str(e)[:20]}", None, False)
         _shape_detection_cache = fallback
+        _cache_timestamp = current_time
         return fallback
 
 
 def _detect_oracle_environment():
     """
     Detect if running on Oracle Cloud using multiple indicators.
+    
+    Uses three detection methods with robust error handling:
+    1. DMI system vendor information (most reliable)
+    2. Oracle-specific file and directory indicators
+    3. Oracle metadata service connectivity check
+    
+    All methods handle failures gracefully, ensuring detection
+    works even in restricted environments or containers.
     
     Returns:
         bool: True if Oracle Cloud environment detected, False otherwise
@@ -107,14 +123,25 @@ def _detect_oracle_environment():
         import socket
         # Try to connect to Oracle's metadata service (169.254.169.254)
         # This is a quick check without making actual HTTP requests
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.5)  # Very short timeout
-        result = sock.connect_ex(('169.254.169.254', 80))
-        sock.close()
-        if result == 0:  # Connection successful
-            return True
-    except (socket.error, ImportError):
-        # Socket operations may fail in restricted environments
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)  # Very short timeout
+            result = sock.connect_ex(('169.254.169.254', 80))
+            if result == 0:  # Connection successful
+                return True
+        except (socket.error, socket.timeout, OSError) as e:
+            # Network connection failed - expected in many environments
+            pass
+        finally:
+            # Ensure socket is properly closed even on exceptions
+            if sock is not None:
+                try:
+                    sock.close()
+                except (socket.error, OSError):
+                    pass
+    except (ImportError, AttributeError):
+        # Socket module unavailable in restricted environments
         pass
     
     return False
@@ -176,14 +203,19 @@ def _classify_oracle_shape(cpu_count, total_mem_gb):
         return ("VM.Standard.E2.2.Micro", "e2-2-micro.env")
     
     # A1.Flex shapes (dedicated Ampere)
-    elif cpu_count == 1 and 5.5 <= total_mem_gb <= 6.5:  # ~6GB (A1.Flex 1 vCPU)
+    elif cpu_count == 1 and 5.5 <= total_mem_gb <= 6.5:
+        # ~6GB (A1.Flex 1 vCPU)
         return ("VM.Standard.A1.Flex", "a1-flex-1.env")
-    elif cpu_count == 4 and 23 <= total_mem_gb <= 25:   # ~24GB (A1.Flex 4 vCPU)
+    elif cpu_count == 4 and 23 <= total_mem_gb <= 25:
+        # ~24GB (A1.Flex 4 vCPU)
         return ("VM.Standard.A1.Flex", "a1-flex-4.env")
     
     # Unknown Oracle shape - use conservative E2.1.Micro defaults
     else:
-        return (f"Oracle-Unknown-{cpu_count}CPU-{total_mem_gb:.1f}GB", "e2-1-micro.env")
+        return (
+            f"Oracle-Unknown-{cpu_count}CPU-{total_mem_gb:.1f}GB",
+            "e2-1-micro.env"
+        )
 
 def load_config_template(template_file):
     """
@@ -250,7 +282,10 @@ def load_config_template(template_file):
                         
     except (IOError, OSError, UnicodeDecodeError) as e:
         # Template file not found, not readable, or encoding issues
-        print(f"[config-template] Warning: Could not load template {template_file}: {e}")
+        print(
+            f"[config-template] Warning: Could not load template "
+            f"{template_file}: {e}"
+        )
     
     return config
 
