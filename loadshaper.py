@@ -5,10 +5,15 @@ import threading
 import subprocess
 import sqlite3
 import json
+import logging
 from multiprocessing import Process, Value
 from math import isfinite
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+
+
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------
@@ -119,10 +124,9 @@ def detect_oracle_shape():
             
     except Exception as e:
         # On any unexpected error, return safe fallback
-        print(f"[shape-detection] Unexpected error during detection: {type(e).__name__}")
+        logger.warning(f"Shape detection failed: {type(e).__name__}")
         # Log full error internally but return sanitized message to prevent information disclosure
-        import logging
-        logging.debug(f"Shape detection error details: {e}")
+        logger.debug(f"Shape detection error details: {e}")
         fallback = (f"Unknown-Error-{type(e).__name__}", None, False)
         _shape_cache.set_cache(fallback)
         return fallback
@@ -230,7 +234,7 @@ def _get_system_specs():
                     break
     except (IOError, OSError, ValueError, IndexError) as e:
         # /proc/meminfo parsing failed - use fallback
-        print(f"[shape-detection] Failed to read memory info: {e}")
+        logger.debug(f"Failed to read memory info: {e}")
         total_mem_gb = 0.0
     
     return cpu_count, total_mem_gb
@@ -353,6 +357,30 @@ def _validate_config_value(key, value):
     elif key.endswith('_ENABLED') or key in ['LOAD_CHECK_ENABLED']:
         if value.lower() not in ['true', 'false', '1', '0']:
             raise ValueError(f"{key}={value} must be true/false or 1/0")
+    
+    # Validate enum values for network configuration
+    elif key == 'NET_MODE':
+        if value.lower() not in ['off', 'client']:
+            raise ValueError(f"{key}={value} must be one of: off, client")
+    elif key == 'NET_PROTOCOL':
+        if value.lower() not in ['udp', 'tcp']:
+            raise ValueError(f"{key}={value} must be one of: udp, tcp")
+    elif key == 'NET_SENSE_MODE':
+        if value.lower() not in ['container', 'host']:
+            raise ValueError(f"{key}={value} must be one of: container, host")
+    
+    # Validate NET_PEERS IP addresses
+    elif key == 'NET_PEERS':
+        if value.strip():  # Only validate if not empty
+            import ipaddress
+            try:
+                peers = [peer.strip() for peer in value.split(',')]
+                for peer in peers:
+                    if peer:  # Skip empty peers
+                        # Try to parse as IP address (IPv4 or IPv6)
+                        ipaddress.ip_address(peer)
+            except (ValueError, ipaddress.AddressValueError):
+                raise ValueError(f"{key}={value} contains invalid IP address. Use comma-separated IPv4/IPv6 addresses")
 
 
 def load_config_template(template_file):
@@ -425,21 +453,16 @@ def load_config_template(template_file):
                                 config[key] = value
                             except ValueError as validation_error:
                                 # Log validation error but continue loading other values
-                                print(f"[config-template] Warning: Invalid value at "
-                                      f"{template_file}:{line_num}: {validation_error}")
+                                logger.warning(f"Invalid config value at {template_file}:{line_num}: {validation_error}")
                                 continue
                     except ValueError:
                         # Invalid line format - skip with warning
-                        print(f"[config-template] Warning: Invalid format at "
-                              f"{template_file}:{line_num}: {line}")
+                        logger.warning(f"Invalid config format at {template_file}:{line_num}: {line.strip()}")
                         continue
                         
     except (IOError, OSError, UnicodeDecodeError) as e:
         # Template file not found, not readable, or encoding issues
-        print(
-            f"[config-template] Warning: Could not load template "
-            f"{template_file}: {e}"
-        )
+        logger.warning(f"Could not load template {template_file}: {e}")
     
     return config
 
