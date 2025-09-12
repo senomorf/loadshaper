@@ -12,6 +12,397 @@ from urllib.parse import urlparse, parse_qs
 
 
 # ---------------------------
+# Oracle shape auto-detection
+# ---------------------------
+
+# Cache for shape detection results with TTL to avoid repeated API calls
+_shape_detection_cache = None
+_cache_timestamp = None
+_CACHE_TTL_SECONDS = 300  # 5 minutes cache duration
+
+
+def detect_oracle_shape():
+    """
+    Detect Oracle Cloud shape based on system characteristics.
+    
+    Uses multiple detection methods with proper error handling:
+    1. DMI system vendor information (/sys/class/dmi/id/sys_vendor)
+    2. Oracle-specific file indicators (OCI tools, cloud-init metadata)
+    3. System resource fingerprinting (CPU count and memory size)
+    
+    Returns:
+        tuple: (shape_name, template_file, is_oracle)
+               - shape_name: Detected shape identifier or generic description
+               - template_file: Configuration template filename or None
+               - is_oracle: Boolean indicating if running on Oracle Cloud
+               
+    Examples:
+        >>> detect_oracle_shape()  # On E2.1.Micro
+        ('VM.Standard.E2.1.Micro', 'e2-1-micro.env', True)
+        
+        >>> detect_oracle_shape()  # On non-Oracle system
+        ('Generic-4CPU-8.0GB', None, False)
+    """
+    global _shape_detection_cache, _cache_timestamp
+    
+    # Check cache validity with TTL mechanism
+    current_time = time.time()
+    if (_shape_detection_cache is not None and 
+        _cache_timestamp is not None and 
+        current_time - _cache_timestamp < _CACHE_TTL_SECONDS):
+        return _shape_detection_cache
+    
+    try:
+        # Step 1: Try to detect Oracle Cloud instance via DMI/cloud metadata
+        is_oracle = _detect_oracle_environment()
+        
+        # Step 2: Get system specifications with error handling
+        cpu_count, total_mem_gb = _get_system_specs()
+        
+        # Step 3: Determine shape based on characteristics
+        if is_oracle:
+            shape_name, template_file = _classify_oracle_shape(
+                cpu_count, total_mem_gb)
+        else:
+            shape_name = f"Generic-{cpu_count}CPU-{total_mem_gb:.1f}GB"
+            template_file = None
+            
+        result = (shape_name, template_file, is_oracle)
+        _shape_detection_cache = result
+        _cache_timestamp = current_time
+        return result
+            
+    except Exception as e:
+        # On any unexpected error, return safe fallback
+        print(f"[shape-detection] Unexpected error during detection: {e}")
+        fallback = (f"Unknown-Error-{str(e)[:20]}", None, False)
+        _shape_detection_cache = fallback
+        _cache_timestamp = current_time
+        return fallback
+
+
+def _detect_oracle_environment():
+    """
+    Detect if running on Oracle Cloud using multiple indicators.
+    
+    Uses three detection methods with robust error handling:
+    1. DMI system vendor information (most reliable)
+    2. Oracle-specific file and directory indicators
+    3. Oracle metadata service connectivity check
+    
+    All methods handle failures gracefully, ensuring detection
+    works even in restricted environments or containers.
+    
+    Returns:
+        bool: True if Oracle Cloud environment detected, False otherwise
+    """
+    # Method 1: Check DMI system vendor (most reliable, requires /sys access)
+    try:
+        with open("/sys/class/dmi/id/sys_vendor", "r") as f:
+            vendor = f.read().strip().lower()
+        if "oracle" in vendor:
+            return True
+    except (IOError, OSError, PermissionError) as e:
+        # Expected in containers or when /sys is not mounted
+        pass
+    
+    # Method 2: Check for Oracle-specific files and directories
+    oracle_indicators = [
+        "/opt/oci-hpc",                    # OCI HPC tools
+        "/etc/oci-hostname.conf",          # OCI hostname configuration
+        "/var/lib/cloud/data/instance-id", # Cloud-init instance metadata
+        "/etc/oracle-cloud-agent",         # Oracle Cloud Agent
+    ]
+    
+    for indicator in oracle_indicators:
+        try:
+            if os.path.exists(indicator):
+                return True
+        except (OSError, PermissionError):
+            # Skip indicators that can't be accessed
+            continue
+    
+    # Method 3: Check for Oracle-specific metadata service (if accessible)
+    try:
+        import socket
+        # Try to connect to Oracle's metadata service (169.254.169.254)
+        # This is a quick check without making actual HTTP requests
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)  # Very short timeout
+            result = sock.connect_ex(('169.254.169.254', 80))
+            if result == 0:  # Connection successful
+                return True
+        except (socket.error, socket.timeout, OSError) as e:
+            # Network connection failed - expected in many environments
+            pass
+        finally:
+            # Ensure socket is properly closed even on exceptions
+            if sock is not None:
+                try:
+                    sock.close()
+                except (socket.error, OSError):
+                    pass
+    except (ImportError, AttributeError):
+        # Socket module unavailable in restricted environments
+        pass
+    
+    return False
+
+
+def _get_system_specs():
+    """
+    Get system CPU count and memory size with error handling.
+    
+    Returns:
+        tuple: (cpu_count, total_mem_gb)
+               - cpu_count: Number of CPU cores (default: 1)
+               - total_mem_gb: Total memory in GB (default: 0.0)
+    """
+    # Get CPU count with fallback
+    try:
+        cpu_count = os.cpu_count() or 1
+    except (AttributeError, OSError):
+        cpu_count = 1
+    
+    # Get total memory in GB with error handling
+    total_mem_gb = 0.0
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    # Parse memory value and convert from kB to GB
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        mem_kb = int(parts[1])
+                        total_mem_gb = mem_kb / (1024 * 1024)
+                    break
+    except (IOError, OSError, ValueError, IndexError) as e:
+        # /proc/meminfo parsing failed - use fallback
+        print(f"[shape-detection] Failed to read memory info: {e}")
+        total_mem_gb = 0.0
+    
+    return cpu_count, total_mem_gb
+
+
+def _classify_oracle_shape(cpu_count, total_mem_gb):
+    """
+    Classify Oracle Cloud shape based on CPU and memory characteristics.
+    
+    Args:
+        cpu_count (int): Number of CPU cores
+        total_mem_gb (float): Total memory in GB
+        
+    Returns:
+        tuple: (shape_name, template_file)
+               - shape_name: Oracle shape identifier
+               - template_file: Configuration template filename
+    """
+    # Oracle Cloud shape classification with tolerances
+    # E2 shapes (shared tenancy)
+    if cpu_count == 1 and 0.8 <= total_mem_gb <= 1.2:  # ~1GB
+        return ("VM.Standard.E2.1.Micro", "e2-1-micro.env")
+    elif cpu_count == 2 and 1.8 <= total_mem_gb <= 2.2:  # ~2GB
+        return ("VM.Standard.E2.2.Micro", "e2-2-micro.env")
+    
+    # A1.Flex shapes (dedicated Ampere)
+    elif cpu_count == 1 and 5.5 <= total_mem_gb <= 6.5:
+        # ~6GB (A1.Flex 1 vCPU)
+        return ("VM.Standard.A1.Flex", "a1-flex-1.env")
+    elif cpu_count == 4 and 23 <= total_mem_gb <= 25:
+        # ~24GB (A1.Flex 4 vCPU)
+        return ("VM.Standard.A1.Flex", "a1-flex-4.env")
+    
+    # Unknown Oracle shape - use conservative E2.1.Micro defaults
+    else:
+        return (
+            f"Oracle-Unknown-{cpu_count}CPU-{total_mem_gb:.1f}GB",
+            "e2-1-micro.env"
+        )
+
+def load_config_template(template_file):
+    """
+    Load configuration from an Oracle shape template file.
+    
+    Parses environment variable files in KEY=VALUE format, ignoring comments
+    and empty lines. Used to load shape-specific configuration templates
+    that optimize loadshaper for different Oracle Cloud shapes.
+    
+    Args:
+        template_file (str or None): Template filename (e.g., 'e2-1-micro.env')
+                                   or None for no template
+                                   
+    Returns:
+        dict: Configuration dictionary with KEY=VALUE pairs from template,
+              or empty dict if template_file is None or file not found
+              
+    Examples:
+        >>> load_config_template('e2-1-micro.env')
+        {'CPU_TARGET_PCT': '30', 'MEM_TARGET_PCT': '60', ...}
+        
+        >>> load_config_template(None)
+        {}
+        
+    Note:
+        Template files should be located in the 'config-templates/' directory
+        relative to the loadshaper.py script location.
+    """
+    if not template_file:
+        return {}
+    
+    config = {}
+    template_path = os.path.join(
+        os.path.dirname(__file__), "config-templates", template_file
+    )
+    
+    try:
+        with open(template_path, "r", encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                
+                # Skip comments and empty lines
+                if not line or line.startswith("#"):
+                    continue
+                    
+                # Parse KEY=VALUE format
+                if "=" in line:
+                    try:
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Remove inline comments from value
+                        if "#" in value:
+                            value = value.split("#", 1)[0].strip()
+                            
+                        if key and value:  # Only store non-empty keys/values
+                            config[key] = value
+                    except ValueError:
+                        # Invalid line format - skip with warning
+                        print(f"[config-template] Warning: Invalid format at "
+                              f"{template_file}:{line_num}: {line}")
+                        continue
+                        
+    except (IOError, OSError, UnicodeDecodeError) as e:
+        # Template file not found, not readable, or encoding issues
+        print(
+            f"[config-template] Warning: Could not load template "
+            f"{template_file}: {e}"
+        )
+    
+    return config
+
+def getenv_with_template(name, default, config_template):
+    """
+    Get environment variable with three-tier priority fallback system.
+    
+    Implements the configuration priority system: 
+    ENV VAR > TEMPLATE > DEFAULT
+    
+    This allows users to override shape-specific templates with environment
+    variables while still benefiting from Oracle shape optimizations.
+    
+    Args:
+        name (str): Environment variable name to look up
+        default: Default value to use if not found in env or template
+        config_template (dict): Template configuration dictionary
+        
+    Returns:
+        str: Configuration value from highest priority source
+        
+    Priority Order:
+        1. Environment variable (highest priority)
+        2. Template configuration file
+        3. Default value (lowest priority)
+        
+    Examples:
+        >>> # ENV: CPU_TARGET_PCT=50, Template: CPU_TARGET_PCT=30
+        >>> getenv_with_template('CPU_TARGET_PCT', '25', template)
+        '50'  # Environment variable wins
+        
+        >>> # ENV: not set, Template: CPU_TARGET_PCT=30  
+        >>> getenv_with_template('CPU_TARGET_PCT', '25', template)
+        '30'  # Template value used
+        
+        >>> # ENV: not set, Template: not set
+        >>> getenv_with_template('CPU_TARGET_PCT', '25', {})
+        '25'  # Default value used
+    """
+    # Priority 1: Environment variable (user override)
+    env_val = os.getenv(name)
+    if env_val is not None:
+        return env_val
+    
+    # Priority 2: Template configuration (shape-specific)
+    template_val = config_template.get(name)
+    if template_val is not None:
+        return template_val
+    
+    # Priority 3: Default value (fallback)
+    return default
+
+def getenv_float_with_template(name, default, config_template):
+    """
+    Get float environment variable with template fallback and error handling.
+    
+    Extends getenv_with_template() with type conversion to float and
+    robust error handling for invalid numeric values.
+    
+    Args:
+        name (str): Environment variable name
+        default: Default numeric value
+        config_template (dict): Template configuration dictionary
+        
+    Returns:
+        float: Parsed float value or default if conversion fails
+        
+    Examples:
+        >>> getenv_float_with_template('CPU_TARGET_PCT', 30.0, {'CPU_TARGET_PCT': '25.5'})
+        25.5
+        
+        >>> getenv_float_with_template('INVALID_NUM', 30.0, {'INVALID_NUM': 'not_a_number'})
+        30.0  # Falls back to default on parse error
+    """
+    try:
+        value = getenv_with_template(name, default, config_template)
+        return float(value)
+    except (ValueError, TypeError) as e:
+        print(f"[config] Warning: Failed to parse {name}='{value}' as float, "
+              f"using default {default}: {e}")
+        return float(default)
+
+def getenv_int_with_template(name, default, config_template):
+    """
+    Get integer environment variable with template fallback and error handling.
+    
+    Extends getenv_with_template() with type conversion to int and
+    robust error handling for invalid numeric values.
+    
+    Args:
+        name (str): Environment variable name
+        default: Default integer value
+        config_template (dict): Template configuration dictionary
+        
+    Returns:
+        int: Parsed integer value or default if conversion fails
+        
+    Examples:
+        >>> getenv_int_with_template('NET_PORT', 15201, {'NET_PORT': '8080'})
+        8080
+        
+        >>> getenv_int_with_template('INVALID_NUM', 15201, {'INVALID_NUM': 'not_a_number'})
+        15201  # Falls back to default on parse error
+    """
+    try:
+        value = getenv_with_template(name, default, config_template)
+        return int(float(value))  # Allow parsing '30.0' -> 30
+    except (ValueError, TypeError) as e:
+        print(f"[config] Warning: Failed to parse {name}='{value}' as int, "
+              f"using default {default}: {e}")
+        return int(default)
+
+# ---------------------------
 # Env / config
 # ---------------------------
 def getenv_float(name, default):
@@ -26,44 +417,48 @@ def getenv_int(name, default):
     except Exception:
         return int(default)
 
-CPU_TARGET_PCT    = getenv_float("CPU_TARGET_PCT", 30.0)
-MEM_TARGET_PCT    = getenv_float("MEM_TARGET_PCT", 60.0)  # excludes cache/buffers
-NET_TARGET_PCT    = getenv_float("NET_TARGET_PCT", 10.0)  # NIC utilization %
+# Initialize Oracle shape detection and template loading
+DETECTED_SHAPE, TEMPLATE_FILE, IS_ORACLE = detect_oracle_shape()
+CONFIG_TEMPLATE = load_config_template(TEMPLATE_FILE)
 
-CPU_STOP_PCT      = getenv_float("CPU_STOP_PCT", 85.0)
-MEM_STOP_PCT      = getenv_float("MEM_STOP_PCT", 90.0)
-NET_STOP_PCT      = getenv_float("NET_STOP_PCT", 60.0)
+CPU_TARGET_PCT    = getenv_float_with_template("CPU_TARGET_PCT", 30.0, CONFIG_TEMPLATE)
+MEM_TARGET_PCT    = getenv_float_with_template("MEM_TARGET_PCT", 60.0, CONFIG_TEMPLATE)  # excludes cache/buffers
+NET_TARGET_PCT    = getenv_float_with_template("NET_TARGET_PCT", 10.0, CONFIG_TEMPLATE)  # NIC utilization %
 
-CONTROL_PERIOD    = getenv_float("CONTROL_PERIOD_SEC", 5.0)
-AVG_WINDOW_SEC    = getenv_float("AVG_WINDOW_SEC", 300.0)
-HYSTERESIS_PCT    = getenv_float("HYSTERESIS_PCT", 5.0)
+CPU_STOP_PCT      = getenv_float_with_template("CPU_STOP_PCT", 85.0, CONFIG_TEMPLATE)
+MEM_STOP_PCT      = getenv_float_with_template("MEM_STOP_PCT", 90.0, CONFIG_TEMPLATE)
+NET_STOP_PCT      = getenv_float_with_template("NET_STOP_PCT", 60.0, CONFIG_TEMPLATE)
 
-LOAD_THRESHOLD    = getenv_float("LOAD_THRESHOLD", 0.6)      # pause when load avg per core > this (conservative for Oracle Free Tier)
-LOAD_RESUME_THRESHOLD = getenv_float("LOAD_RESUME_THRESHOLD", 0.4)  # resume when load avg per core < this (hysteresis)
-LOAD_CHECK_ENABLED = os.getenv("LOAD_CHECK_ENABLED", "true").strip().lower() == "true"
+CONTROL_PERIOD    = getenv_float_with_template("CONTROL_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
+AVG_WINDOW_SEC    = getenv_float_with_template("AVG_WINDOW_SEC", 300.0, CONFIG_TEMPLATE)
+HYSTERESIS_PCT    = getenv_float_with_template("HYSTERESIS_PCT", 5.0, CONFIG_TEMPLATE)
 
-JITTER_PCT        = getenv_float("JITTER_PCT", 10.0)
-JITTER_PERIOD     = getenv_float("JITTER_PERIOD_SEC", 5.0)
+LOAD_THRESHOLD    = getenv_float_with_template("LOAD_THRESHOLD", 0.6, CONFIG_TEMPLATE)      # pause when load avg per core > this (conservative for Oracle Free Tier)
+LOAD_RESUME_THRESHOLD = getenv_float_with_template("LOAD_RESUME_THRESHOLD", 0.4, CONFIG_TEMPLATE)  # resume when load avg per core < this (hysteresis)
+LOAD_CHECK_ENABLED = getenv_with_template("LOAD_CHECK_ENABLED", "true", CONFIG_TEMPLATE).strip().lower() == "true"
 
-MEM_MIN_FREE_MB   = getenv_int("MEM_MIN_FREE_MB", 512)
-MEM_STEP_MB       = getenv_int("MEM_STEP_MB", 64)
+JITTER_PCT        = getenv_float_with_template("JITTER_PCT", 10.0, CONFIG_TEMPLATE)
+JITTER_PERIOD     = getenv_float_with_template("JITTER_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
 
-NET_MODE          = os.getenv("NET_MODE", "client").strip().lower()
-NET_PEERS         = [p.strip() for p in os.getenv("NET_PEERS", "").split(",") if p.strip()]
-NET_PORT          = getenv_int("NET_PORT", 15201)
-NET_BURST_SEC     = getenv_int("NET_BURST_SEC", 10)
-NET_IDLE_SEC      = getenv_int("NET_IDLE_SEC", 10)
-NET_PROTOCOL      = os.getenv("NET_PROTOCOL", "udp").strip().lower()
+MEM_MIN_FREE_MB   = getenv_int_with_template("MEM_MIN_FREE_MB", 512, CONFIG_TEMPLATE)
+MEM_STEP_MB       = getenv_int_with_template("MEM_STEP_MB", 64, CONFIG_TEMPLATE)
+
+NET_MODE          = getenv_with_template("NET_MODE", "client", CONFIG_TEMPLATE).strip().lower()
+NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "", CONFIG_TEMPLATE).split(",") if p.strip()]
+NET_PORT          = getenv_int_with_template("NET_PORT", 15201, CONFIG_TEMPLATE)
+NET_BURST_SEC     = getenv_int_with_template("NET_BURST_SEC", 10, CONFIG_TEMPLATE)
+NET_IDLE_SEC      = getenv_int_with_template("NET_IDLE_SEC", 10, CONFIG_TEMPLATE)
+NET_PROTOCOL      = getenv_with_template("NET_PROTOCOL", "udp", CONFIG_TEMPLATE).strip().lower()
 
 # New: how we "sense" NIC bytes
-NET_SENSE_MODE    = os.getenv("NET_SENSE_MODE", "container").strip().lower()  # container|host
-NET_IFACE         = os.getenv("NET_IFACE", "ens3").strip()        # for host mode (requires /sys mount)
-NET_IFACE_INNER   = os.getenv("NET_IFACE_INNER", "eth0").strip()  # for container mode (/proc/net/dev)
-NET_LINK_MBIT     = getenv_float("NET_LINK_MBIT", 1000.0)         # used directly in container mode
+NET_SENSE_MODE    = getenv_with_template("NET_SENSE_MODE", "container", CONFIG_TEMPLATE).strip().lower()  # container|host
+NET_IFACE         = getenv_with_template("NET_IFACE", "ens3", CONFIG_TEMPLATE).strip()        # for host mode (requires /sys mount)
+NET_IFACE_INNER   = getenv_with_template("NET_IFACE_INNER", "eth0", CONFIG_TEMPLATE).strip()  # for container mode (/proc/net/dev)
+NET_LINK_MBIT     = getenv_float_with_template("NET_LINK_MBIT", 1000.0, CONFIG_TEMPLATE)         # used directly in container mode
 
 # Controller rate bounds (Mbps)
-NET_MIN_RATE      = getenv_float("NET_MIN_RATE_MBIT", 1.0)
-NET_MAX_RATE      = getenv_float("NET_MAX_RATE_MBIT", 800.0)
+NET_MIN_RATE      = getenv_float_with_template("NET_MIN_RATE_MBIT", 1.0, CONFIG_TEMPLATE)
+NET_MAX_RATE      = getenv_float_with_template("NET_MAX_RATE_MBIT", 800.0, CONFIG_TEMPLATE)
 
 # Health check server configuration
 HEALTH_PORT       = getenv_int("HEALTH_PORT", 8080)
@@ -730,9 +1125,12 @@ class EMA4:
 def main():
     load_monitor_status = f"LOAD_THRESHOLD={LOAD_THRESHOLD:.1f}" if LOAD_CHECK_ENABLED else "LOAD_CHECK=disabled"
     health_status = f"HEALTH={HEALTH_HOST}:{HEALTH_PORT}" if HEALTH_ENABLED else "HEALTH=disabled"
+    shape_status = f"Oracle={DETECTED_SHAPE}" if IS_ORACLE else f"Generic={DETECTED_SHAPE}"
+    template_status = f"template={TEMPLATE_FILE}" if TEMPLATE_FILE else "template=none"
     print("[loadshaper v2.2] starting with",
           f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
-          f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status}")
+          f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status} |",
+          f" {shape_status}, {template_status}")
 
     try:
         os.nice(19)  # run controller and workers at lowest priority
