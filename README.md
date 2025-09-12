@@ -223,12 +223,14 @@ For non-Oracle Cloud environments, `loadshaper` safely falls back to conservativ
 
 ## Configuration Reference
 
+> **⚠️ CRITICAL:** For Oracle Free Tier VM protection, ensure **at least one metric target is above 20%**. Setting all targets below 20% will cause Oracle to reclaim your VM. Oracle checks if ALL metrics are below 20% - if so, the VM is reclaimed.
+
 ### Resource Targets
 
 | Variable | Auto-Configured Values | Description | E2.1.Micro | E2.2.Micro | A1.Flex-1 | A1.Flex-4 |
 |----------|---------|-------------|------------|------------|------------|------------|
 | `CPU_TARGET_PCT` | **25**, 30, 35, 40 | Target CPU utilization (%) | 25% | 30% | 35% | 40% |
-| `MEM_TARGET_PCT` | **0**, 50, 10, 10 | Target memory utilization (%) | 0% (disabled) | 50% | 10% (20% rule) | 10% (20% rule) |
+| `MEM_TARGET_PCT` | **0**, 50, 25, 25 | Target memory utilization (%) | 0% (disabled) | 50% | 25% (above 20% rule) | 25% (above 20% rule) |
 | `NET_TARGET_PCT` | **15**, 15, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 30% (4 Gbps) |
 
 ### Safety Thresholds
@@ -297,7 +299,7 @@ NET_LINK_MBIT=50 LOAD_THRESHOLD=0.6
 **A1.Flex (ARM64):**
 ```bash  
 # Higher targets for dedicated resources
-CPU_TARGET_PCT=35 MEM_TARGET_PCT=10 NET_TARGET_PCT=25
+CPU_TARGET_PCT=35 MEM_TARGET_PCT=25 NET_TARGET_PCT=25
 NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 ```
 

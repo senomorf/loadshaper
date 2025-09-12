@@ -1122,11 +1122,56 @@ class EMA4:
         self.net = EMA(period, step)
         self.load = EMA(period, step)
 
+def validate_oracle_configuration():
+    """Validate configuration against Oracle Free Tier reclamation rules."""
+    if not IS_ORACLE:
+        return  # Skip validation for non-Oracle environments
+    
+    warnings = []
+    
+    # Check if all targets are below Oracle's 20% threshold
+    targets_below_20 = []
+    if CPU_TARGET_PCT < 20.0:
+        targets_below_20.append(f"CPU_TARGET_PCT={CPU_TARGET_PCT}%")
+    if MEM_TARGET_PCT < 20.0 and "A1.Flex" in DETECTED_SHAPE:
+        targets_below_20.append(f"MEM_TARGET_PCT={MEM_TARGET_PCT}%")
+    if NET_TARGET_PCT < 20.0:
+        targets_below_20.append(f"NET_TARGET_PCT={NET_TARGET_PCT}%")
+    
+    # For A1.Flex, all three metrics matter
+    if "A1.Flex" in DETECTED_SHAPE:
+        if len(targets_below_20) == 3:
+            warnings.append(f"⚠️  CRITICAL: ALL targets are below 20% on A1.Flex shape! Oracle will reclaim this VM.")
+            warnings.append(f"   Problematic targets: {', '.join(targets_below_20)}")
+            warnings.append(f"   Fix: Set at least one target above 20% to prevent reclamation.")
+        elif len(targets_below_20) == 2:
+            warnings.append(f"⚠️  WARNING: Two targets below 20% on A1.Flex - risky configuration!")
+            warnings.append(f"   Targets below 20%: {', '.join(targets_below_20)}")
+    else:
+        # For E2 shapes, only CPU and NET matter (memory rule doesn't apply)
+        cpu_below = CPU_TARGET_PCT < 20.0
+        net_below = NET_TARGET_PCT < 20.0
+        if cpu_below and net_below:
+            warnings.append(f"⚠️  CRITICAL: Both CPU and NET targets below 20% on E2 shape! Oracle will reclaim this VM.")
+            warnings.append(f"   Fix: Set either CPU_TARGET_PCT or NET_TARGET_PCT above 20%.")
+    
+    # Print all warnings
+    for warning in warnings:
+        print(warning)
+    
+    if warnings and any("CRITICAL" in w for w in warnings):
+        print("⚠️  Configuration may result in VM reclamation! Review targets before proceeding.")
+        print()
+
 def main():
     load_monitor_status = f"LOAD_THRESHOLD={LOAD_THRESHOLD:.1f}" if LOAD_CHECK_ENABLED else "LOAD_CHECK=disabled"
     health_status = f"HEALTH={HEALTH_HOST}:{HEALTH_PORT}" if HEALTH_ENABLED else "HEALTH=disabled"
     shape_status = f"Oracle={DETECTED_SHAPE}" if IS_ORACLE else f"Generic={DETECTED_SHAPE}"
     template_status = f"template={TEMPLATE_FILE}" if TEMPLATE_FILE else "template=none"
+    
+    # Validate configuration for Oracle environments
+    validate_oracle_configuration()
+    
     print("[loadshaper v2.2] starting with",
           f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
           f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status} |",
