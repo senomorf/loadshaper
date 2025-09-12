@@ -65,7 +65,7 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of loadshaper replicas | `1` |
-| `image.repository` | Container image repository | `loadshaper` |
+| `image.repository` | Container image repository | `ghcr.io/arseniopinheiro/loadshaper` |
 | `image.tag` | Container image tag | `""` (uses Chart.AppVersion) |
 | `config.CPU_TARGET_PCT` | Target CPU utilization percentage | `"30.0"` |
 | `config.MEM_TARGET_PCT` | Target memory utilization percentage | `"60.0"` |
@@ -84,7 +84,7 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 
 #### A1.Flex Configuration
 - **CPU**: 35% target for ARM processors
-- **Memory**: 65% target (**critical**: subject to 20% reclamation rule)
+- **Memory**: 45% target (**critical**: reduced to stay well below 80% threshold for reclamation rule)
 - **Network**: 15% of 1 Gbps per vCPU
 - **Resources**: Scalable based on instance size
 
@@ -94,7 +94,7 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 # Core application settings
 replicaCount: 1
 image:
-  repository: loadshaper
+  repository: ghcr.io/arseniopinheiro/loadshaper
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -137,6 +137,7 @@ serviceMonitor:
   enabled: false
   interval: 30s
   scrapeTimeout: 10s
+  port: 8080
 
 # Security
 networkPolicy:
@@ -186,7 +187,7 @@ networkPolicy:
 Default policies allow:
 - Inter-pod communication for iperf traffic
 - DNS resolution
-- External internet access for Oracle threshold compliance
+- Restricted external internet access for Oracle threshold compliance (iperf-servers and load-testing namespaces)
 - Prometheus scraping (if ServiceMonitor enabled)
 
 ### Security Context

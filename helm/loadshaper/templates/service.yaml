@@ -26,6 +26,12 @@ spec:
       {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePort }}
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
+    {{- if .Values.serviceMonitor.enabled }}
+    - port: {{ .Values.serviceMonitor.port | default 8080 }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- end }}
   selector:
     {{- include "loadshaper.selectorLabels" . | nindent 4 }}
 {{- end }}

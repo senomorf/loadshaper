@@ -66,8 +66,17 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.config.NET_PORT }}
-    # Allow external internet traffic for Oracle Cloud threshold compliance
-    - to: []
+    # Allow external internet traffic for Oracle Cloud threshold compliance (restricted to known endpoints)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: iperf-server
+        # Allow communication with well-known internet load testing endpoints
+        - podSelector: {}
+          namespaceSelector:
+            matchLabels:
+              name: load-testing
       ports:
         - protocol: TCP
           port: 80
