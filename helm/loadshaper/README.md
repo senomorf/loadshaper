@@ -65,7 +65,7 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of loadshaper replicas | `1` |
-| `image.repository` | Container image repository | `ghcr.io/arseniopinheiro/loadshaper` |
+| `image.repository` | Container image repository | `ghcr.io/senomorf/loadshaper` |
 | `image.tag` | Container image tag | `""` (uses Chart.AppVersion) |
 | `config.CPU_TARGET_PCT` | Target CPU utilization percentage | `"30.0"` |
 | `config.MEM_TARGET_PCT` | Target memory utilization percentage | `"60.0"` |
@@ -94,7 +94,7 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 # Core application settings
 replicaCount: 1
 image:
-  repository: ghcr.io/arseniopinheiro/loadshaper
+  repository: ghcr.io/senomorf/loadshaper
   tag: ""
   pullPolicy: IfNotPresent
 

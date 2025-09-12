@@ -38,7 +38,7 @@ spec:
               name: {{ .Values.serviceMonitor.namespace | default "monitoring" }}
       ports:
         - protocol: TCP
-          port: {{ .Values.serviceMonitor.port | default 8080 }}
+          port: {{ .Values.config.HEALTH_PORT | default 15201 }}
     {{- end }}
     {{- end }}
   egress:

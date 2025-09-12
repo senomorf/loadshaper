@@ -29,10 +29,11 @@ podSecurityContext:
   fsGroup: 2000
 
 securityContext:
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false  # Application needs write access for metrics database
+  allowPrivilegeEscalation: false
   runAsNonRoot: true
   runAsUser: 1000
   # Run with nice priority for minimal system impact
