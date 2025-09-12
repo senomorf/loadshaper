@@ -11,6 +11,7 @@ import tempfile
 import os
 import sys
 import time
+import socket
 from unittest.mock import patch, mock_open, MagicMock
 
 # Import the module under test
@@ -81,9 +82,15 @@ class TestShapeDetection(unittest.TestCase):
         self.assertTrue(result)
         mock_file.assert_called_with('/sys/class/dmi/id/sys_vendor', 'r')
 
+    @patch('socket.socket')
     @patch('builtins.open', new_callable=mock_open, read_data='Dell Inc.\n')
-    def test_detect_oracle_environment_dmi_not_oracle(self, mock_file):
+    def test_detect_oracle_environment_dmi_not_oracle(self, mock_file, mock_socket):
         """Test non-Oracle environment detection via DMI."""
+        # Mock socket to prevent actual network calls
+        mock_sock_instance = MagicMock()
+        mock_sock_instance.connect_ex.return_value = 1  # Connection failed
+        mock_socket.return_value.__enter__.return_value = mock_sock_instance
+        
         with patch('os.path.exists', return_value=False):  # No Oracle indicators
             result = loadshaper._detect_oracle_environment()
             self.assertFalse(result)
@@ -103,10 +110,16 @@ class TestShapeDetection(unittest.TestCase):
         result = loadshaper._detect_oracle_environment()
         self.assertTrue(result)
 
+    @patch('socket.socket')
     @patch('builtins.open', side_effect=IOError("No access"))
     @patch('os.path.exists', return_value=False)
-    def test_detect_oracle_environment_no_indicators(self, mock_exists, mock_file):
+    def test_detect_oracle_environment_no_indicators(self, mock_exists, mock_file, mock_socket):
         """Test detection when no Oracle indicators are present."""
+        # Mock socket to prevent actual network calls
+        mock_sock_instance = MagicMock()
+        mock_sock_instance.connect_ex.return_value = 1  # Connection failed
+        mock_socket.return_value.__enter__.return_value = mock_sock_instance
+        
         result = loadshaper._detect_oracle_environment()
         self.assertFalse(result)
 

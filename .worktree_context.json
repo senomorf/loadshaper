@@ -1,0 +1,30 @@
+{
+  "worktree_info": {
+    "path": "/Users/arsenio/IdeaProjects/loadshaper-pr-38",
+    "branch": "fix/pr-38",
+    "created_at": "2025-01-15T14:30:00Z",
+    "base_branch": "master"
+  },
+  "task_info": {
+    "type": "pr_fix", 
+    "identifier": "38",
+    "description": "Oracle shape auto-detection fixes including README corrections and unit test additions",
+    "status": "prepared"
+  },
+  "environment": {
+    "git_status": "clean",
+    "master_merged": true,
+    "conflicts_resolved": true,
+    "ready_for_development": true
+  },
+  "next_agents": {
+    "plan_executor": {
+      "ready": true,
+      "context": "Use this worktree path and branch for implementation"
+    },
+    "task_reviewer": {
+      "ready": true,
+      "context": "Review changes in this isolated environment"
+    }
+  }
+}

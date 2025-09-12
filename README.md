@@ -186,7 +186,7 @@ Environment variables can override shape detection and contention limits:
 NET_SENSE_MODE=container NET_LINK_MBIT=10000 NET_STOP_PCT=20 python -u loadshaper.py
 
 # Raise CPU target while lowering the safety stop
-CPU_TARGET_PCT=50 CPU_STOP_PCT=70 MEM_TARGET_PCT=40 MEM_STOP_PCT=80 python -u loadshaper.py
+CPU_TARGET_PCT=50 CPU_STOP_PCT=70 MEM_TARGET_PCT=25 MEM_STOP_PCT=80 python -u loadshaper.py
 
 # Configure load average monitoring thresholds (more aggressive example)
 LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 LOAD_CHECK_ENABLED=true python -u loadshaper.py
