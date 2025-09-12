@@ -5,7 +5,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/arseniopinheiro/loadshaper
+  repository: ghcr.io/senomorf/loadshaper
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -87,13 +87,18 @@ config:
   
   # Network sensing and interface configuration
   NET_SENSE_MODE: "container"  # container|host
-  NET_IFACE: "ens3"           # for host mode (requires /sys mount)
+  NET_IFACE: "ens3"           # for host mode (requires /sys mount and may need privileged access)
   NET_IFACE_INNER: "eth0"     # for container mode (/proc/net/dev)
   NET_LINK_MBIT: "1000.0"     # used directly in container mode
   
   # Network rate limits (Mbps)
   NET_MIN_RATE_MBIT: "1.0"
   NET_MAX_RATE_MBIT: "800.0"
+  
+  # Health endpoints configuration
+  HEALTH_ENABLED: "true"
+  HEALTH_HOST: "0.0.0.0"
+  HEALTH_PORT: "8080"
   
   # Extra configuration (key-value pairs)
   extra: {}
@@ -157,7 +162,7 @@ serviceMonitor:
   interval: 30s
   scrapeTimeout: 10s
   path: /metrics
-  port: 8080
+  # port: 8080  # This will be set from config.HEALTH_PORT
   jobLabel: ""
   metricRelabelings: []
   relabelings: []

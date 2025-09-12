@@ -43,6 +43,11 @@ spec:
             - name: iperf
               containerPort: {{ .Values.config.NET_PORT }}
               protocol: TCP
+            {{- if eq .Values.config.HEALTH_ENABLED "true" }}
+            - name: metrics
+              containerPort: {{ .Values.config.HEALTH_PORT }}
+              protocol: TCP
+            {{- end }}
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
             exec:
@@ -75,9 +80,12 @@ spec:
             - name: proc
               mountPath: /proc
               readOnly: true
+            {{- if eq .Values.config.NET_SENSE_MODE "host" }}
             - name: sys
-              mountPath: /sys
+              mountPath: /host_sys_class_net
+              subPath: class/net
               readOnly: true
+            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -93,10 +101,12 @@ spec:
           hostPath:
             path: /proc
             type: Directory
+        {{- if eq .Values.config.NET_SENSE_MODE "host" }}
         - name: sys
           hostPath:
             path: /sys
             type: Directory
+        {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

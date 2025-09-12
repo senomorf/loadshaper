@@ -26,8 +26,8 @@ spec:
       {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePort }}
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
-    {{- if .Values.serviceMonitor.enabled }}
-    - port: {{ .Values.serviceMonitor.port | default 8080 }}
+    {{- if and (eq .Values.config.HEALTH_ENABLED "true") .Values.serviceMonitor.enabled }}
+    - port: {{ .Values.config.HEALTH_PORT }}
       targetPort: metrics
       protocol: TCP
       name: metrics
