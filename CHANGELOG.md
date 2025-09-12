@@ -106,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **A1.Flex (ARM64):**
 - Up to 4 OCPUs, 24GB RAM, 1 Gbps per vCPU  
-- Default targets: CPU 35%, Memory 40%, Network 25%
+- Default targets: CPU 35%, Memory 25%, Network 25%
 - Higher targets for dedicated resources
 
 ### Breaking Changes

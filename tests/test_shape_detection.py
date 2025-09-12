@@ -187,7 +187,7 @@ class TestConfigTemplateLoading(unittest.TestCase):
         """Test successful template loading."""
         template_content = '''# Test template
 CPU_TARGET_PCT=35
-MEM_TARGET_PCT=10
+MEM_TARGET_PCT=25
 # Comment line
 NET_TARGET_PCT=25
 
@@ -203,7 +203,7 @@ INVALID_LINE_NO_EQUALS
                 
             expected = {
                 'CPU_TARGET_PCT': '35',
-                'MEM_TARGET_PCT': '10', 
+                'MEM_TARGET_PCT': '25', 
                 'NET_TARGET_PCT': '25'
             }
             self.assertEqual(config, expected)
@@ -322,7 +322,7 @@ NET_TARGET_PCT=15'''
             
             # Create a mock A1.Flex template
             template_content = '''CPU_TARGET_PCT=35
-MEM_TARGET_PCT=10
+MEM_TARGET_PCT=25
 NET_TARGET_PCT=25'''
             
             with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as tf:
@@ -338,7 +338,7 @@ NET_TARGET_PCT=25'''
                     
                     # Test template loading with correct A1.Flex memory target
                     config = loadshaper.load_config_template(template_file)
-                    self.assertEqual(config['MEM_TARGET_PCT'], '10')  # Correct 10% not 40%
+                    self.assertEqual(config['MEM_TARGET_PCT'], '25')  # A1.Flex uses 25% for safety margin above Oracle's 20% threshold
                     
                 os.unlink(tf.name)
 

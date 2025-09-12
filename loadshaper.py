@@ -115,10 +115,11 @@ def detect_oracle_shape():
             
     except Exception as e:
         # On any unexpected error, return safe fallback
-        print(f"[shape-detection] Unexpected error during detection: {e}")
-        # Preserve full error context for debugging while maintaining safe fallback
-        error_str = str(e).replace('\n', ' ').replace('\r', ' ')  # Clean line breaks for single-line format
-        fallback = (f"Unknown-Error-{error_str}", None, False)
+        print(f"[shape-detection] Unexpected error during detection: {type(e).__name__}")
+        # Log full error internally but return sanitized message to prevent information disclosure
+        import logging
+        logging.debug(f"Shape detection error details: {e}")
+        fallback = (f"Unknown-Error-{type(e).__name__}", None, False)
         _shape_cache.set_cache(fallback)
         return fallback
 
@@ -220,6 +221,14 @@ def _get_system_specs():
     return cpu_count, total_mem_gb
 
 
+# Memory tolerance constants for Oracle shape detection
+# These ranges account for kernel memory usage and system overhead
+E2_1_MICRO_MEM_RANGE = (0.8, 1.2)   # ±20% tolerance for ~1GB (E2.1.Micro)
+E2_2_MICRO_MEM_RANGE = (1.8, 2.2)   # ±20% tolerance for ~2GB (E2.2.Micro)
+A1_FLEX_1_MEM_RANGE = (5.5, 6.5)    # ±0.5GB tolerance for ~6GB (A1.Flex 1 vCPU)
+A1_FLEX_4_MEM_RANGE = (23, 25)      # ±1GB tolerance for ~24GB (A1.Flex 4 vCPU)
+
+
 def _classify_oracle_shape(cpu_count, total_mem_gb):
     """
     Classify Oracle Cloud shape based on CPU and memory characteristics.
@@ -233,19 +242,17 @@ def _classify_oracle_shape(cpu_count, total_mem_gb):
                - shape_name: Oracle shape identifier
                - template_file: Configuration template filename
     """
-    # Oracle Cloud shape classification with tolerances
+    # Oracle Cloud shape classification with documented tolerances
     # E2 shapes (shared tenancy)
-    if cpu_count == 1 and 0.8 <= total_mem_gb <= 1.2:  # ~1GB
+    if cpu_count == 1 and E2_1_MICRO_MEM_RANGE[0] <= total_mem_gb <= E2_1_MICRO_MEM_RANGE[1]:
         return ("VM.Standard.E2.1.Micro", "e2-1-micro.env")
-    elif cpu_count == 2 and 1.8 <= total_mem_gb <= 2.2:  # ~2GB
+    elif cpu_count == 2 and E2_2_MICRO_MEM_RANGE[0] <= total_mem_gb <= E2_2_MICRO_MEM_RANGE[1]:
         return ("VM.Standard.E2.2.Micro", "e2-2-micro.env")
     
     # A1.Flex shapes (dedicated Ampere)
-    elif cpu_count == 1 and 5.5 <= total_mem_gb <= 6.5:
-        # ~6GB (A1.Flex 1 vCPU)
+    elif cpu_count == 1 and A1_FLEX_1_MEM_RANGE[0] <= total_mem_gb <= A1_FLEX_1_MEM_RANGE[1]:
         return ("VM.Standard.A1.Flex", "a1-flex-1.env")
-    elif cpu_count == 4 and 23 <= total_mem_gb <= 25:
-        # ~24GB (A1.Flex 4 vCPU)
+    elif cpu_count == 4 and A1_FLEX_4_MEM_RANGE[0] <= total_mem_gb <= A1_FLEX_4_MEM_RANGE[1]:
         return ("VM.Standard.A1.Flex", "a1-flex-4.env")
     
     # Unknown Oracle shape - use conservative E2.1.Micro defaults
@@ -277,16 +284,38 @@ def _validate_config_value(key, value):
                 raise
             raise ValueError(f"{key}={value} must be a valid number (percentage)")
     
-    # Validate positive numeric values
+    # Validate positive numeric values with bounds checking
     elif key in ['CONTROL_PERIOD_SEC', 'AVG_WINDOW_SEC', 'MEM_MIN_FREE_MB', 
                  'MEM_STEP_MB', 'NET_PORT', 'NET_BURST_SEC', 'NET_IDLE_SEC',
-                 'NET_LINK_MBIT', 'NET_MIN_RATE_MBIT', 'NET_MAX_RATE_MBIT']:
+                 'NET_LINK_MBIT', 'NET_MIN_RATE_MBIT', 'NET_MAX_RATE_MBIT',
+                 'JITTER_PERIOD_SEC']:
         try:
             num = float(value)
             if num <= 0:
                 raise ValueError(f"{key}={value} must be positive")
+            
+            # Add bounds checking to prevent resource exhaustion
+            bounds = {
+                'CONTROL_PERIOD_SEC': (1.0, 3600.0),      # 1 second to 1 hour
+                'AVG_WINDOW_SEC': (10.0, 7200.0),         # 10 seconds to 2 hours
+                'MEM_MIN_FREE_MB': (50.0, 10000.0),       # 50MB to 10GB
+                'MEM_STEP_MB': (1.0, 1000.0),             # 1MB to 1GB per step
+                'NET_PORT': (1024.0, 65535.0),            # Valid user port range
+                'NET_BURST_SEC': (1.0, 3600.0),           # 1 second to 1 hour
+                'NET_IDLE_SEC': (1.0, 3600.0),            # 1 second to 1 hour
+                'NET_LINK_MBIT': (1.0, 10000.0),          # 1 Mbps to 10 Gbps
+                'NET_MIN_RATE_MBIT': (0.1, 10000.0),      # 0.1 Mbps to 10 Gbps
+                'NET_MAX_RATE_MBIT': (1.0, 10000.0),      # 1 Mbps to 10 Gbps
+                'JITTER_PERIOD_SEC': (1.0, 3600.0),       # 1 second to 1 hour
+            }
+            
+            if key in bounds:
+                min_val, max_val = bounds[key]
+                if not min_val <= num <= max_val:
+                    raise ValueError(f"{key}={value} must be between {min_val}-{max_val}")
+            
         except ValueError as e:
-            if "must be positive" in str(e):
+            if "must be positive" in str(e) or "must be between" in str(e):
                 raise
             raise ValueError(f"{key}={value} must be a valid positive number")
     
