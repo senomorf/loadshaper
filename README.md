@@ -310,6 +310,7 @@ NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 | `HEALTH_ENABLED` | `true` | Enable/disable HTTP health check server |
 | `HEALTH_PORT` | `8080` | Port for health check endpoints |
 | `HEALTH_HOST` | `127.0.0.1` | Host interface to bind (localhost only by default) |
+| `LOADSHAPER_TEMPLATE_DIR` | `config-templates/` | Directory containing Oracle shape configuration templates |
 
 ## Health Check Endpoints
 

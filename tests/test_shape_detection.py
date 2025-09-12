@@ -24,8 +24,7 @@ class TestShapeDetection(unittest.TestCase):
     def setUp(self):
         """Reset cache before each test to ensure isolation."""
         # Clear the module-level cache
-        loadshaper._shape_detection_cache = None
-        loadshaper._cache_timestamp = None
+        loadshaper._shape_cache.clear_cache()
 
     def test_detect_oracle_shape_cache_mechanism(self):
         """Test that shape detection caching works correctly with TTL."""
@@ -41,8 +40,7 @@ class TestShapeDetection(unittest.TestCase):
             self.assertEqual(result1, expected)
             
             # Verify cache is populated
-            self.assertIsNotNone(loadshaper._shape_detection_cache)
-            self.assertIsNotNone(loadshaper._cache_timestamp)
+            self.assertIsNotNone(loadshaper._shape_cache.get_cached())
             
             # Second call should use cache (no calls to underlying functions)
             with patch.object(loadshaper, '_detect_oracle_environment') as mock_detect:
@@ -52,9 +50,9 @@ class TestShapeDetection(unittest.TestCase):
 
     def test_detect_oracle_shape_cache_ttl_expiration(self):
         """Test that cache expires after TTL and triggers new detection."""
-        # Set cache TTL to a short value for testing
-        original_ttl = loadshaper._CACHE_TTL_SECONDS
-        loadshaper._CACHE_TTL_SECONDS = 0.1  # 100ms for fast test
+        # Create temporary cache with short TTL for testing
+        original_cache = loadshaper._shape_cache
+        loadshaper._shape_cache = loadshaper.ShapeDetectionCache(ttl_seconds=0.1)  # 100ms for fast test
         
         try:
             with patch.object(loadshaper, '_detect_oracle_environment', return_value=True), \
@@ -74,7 +72,7 @@ class TestShapeDetection(unittest.TestCase):
                     mock_detect.assert_called_once()  # Cache expired, should re-detect
                     
         finally:
-            loadshaper._CACHE_TTL_SECONDS = original_ttl
+            loadshaper._shape_cache = original_cache
 
     @patch('builtins.open', new_callable=mock_open, read_data='Oracle Corporation\n')
     def test_detect_oracle_environment_dmi_success(self, mock_file):
@@ -264,8 +262,7 @@ class TestIntegrationScenarios(unittest.TestCase):
     def setUp(self):
         """Reset cache before each test to ensure isolation."""
         # Clear the module-level cache
-        loadshaper._shape_detection_cache = None
-        loadshaper._cache_timestamp = None
+        loadshaper._shape_cache.clear_cache()
     """Test complete integration scenarios combining shape detection and templates."""
 
     def test_e2_micro_complete_flow(self):

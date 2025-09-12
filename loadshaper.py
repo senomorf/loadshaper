@@ -15,10 +15,56 @@ from urllib.parse import urlparse, parse_qs
 # Oracle shape auto-detection
 # ---------------------------
 
-# Cache for shape detection results with TTL to avoid repeated API calls
-_shape_detection_cache = None
-_cache_timestamp = None
-_CACHE_TTL_SECONDS = 300  # 5 minutes cache duration
+class ShapeDetectionCache:
+    """
+    Thread-safe cache for Oracle shape detection results with TTL.
+    
+    Manages caching of shape detection to avoid repeated expensive system calls
+    and Oracle Cloud API requests. Uses a 5-minute TTL by default.
+    """
+    
+    def __init__(self, ttl_seconds=300):
+        """
+        Initialize cache with specified TTL.
+        
+        Args:
+            ttl_seconds (int): Time-to-live for cached results in seconds (default: 5 minutes)
+        """
+        self._cache = None
+        self._timestamp = None
+        self._ttl = ttl_seconds
+    
+    def get_cached(self):
+        """
+        Get cached value if still valid.
+        
+        Returns:
+            tuple or None: Cached shape detection result or None if expired/invalid
+        """
+        if (self._cache is not None and 
+            self._timestamp is not None and 
+            time.time() - self._timestamp < self._ttl):
+            return self._cache
+        return None
+    
+    def set_cache(self, value):
+        """
+        Update cache with new value and current timestamp.
+        
+        Args:
+            value (tuple): Shape detection result to cache
+        """
+        self._cache = value
+        self._timestamp = time.time()
+    
+    def clear_cache(self):
+        """Clear cache (for testing purposes)."""
+        self._cache = None
+        self._timestamp = None
+
+
+# Global cache instance for shape detection
+_shape_cache = ShapeDetectionCache()
 
 
 def detect_oracle_shape():
@@ -43,14 +89,10 @@ def detect_oracle_shape():
         >>> detect_oracle_shape()  # On non-Oracle system
         ('Generic-4CPU-8.0GB', None, False)
     """
-    global _shape_detection_cache, _cache_timestamp
-    
     # Check cache validity with TTL mechanism
-    current_time = time.time()
-    if (_shape_detection_cache is not None and 
-        _cache_timestamp is not None and 
-        current_time - _cache_timestamp < _CACHE_TTL_SECONDS):
-        return _shape_detection_cache
+    cached_result = _shape_cache.get_cached()
+    if cached_result is not None:
+        return cached_result
     
     try:
         # Step 1: Try to detect Oracle Cloud instance via DMI/cloud metadata
@@ -68,16 +110,16 @@ def detect_oracle_shape():
             template_file = None
             
         result = (shape_name, template_file, is_oracle)
-        _shape_detection_cache = result
-        _cache_timestamp = current_time
+        _shape_cache.set_cache(result)
         return result
             
     except Exception as e:
         # On any unexpected error, return safe fallback
         print(f"[shape-detection] Unexpected error during detection: {e}")
-        fallback = (f"Unknown-Error-{str(e)[:20]}", None, False)
-        _shape_detection_cache = fallback
-        _cache_timestamp = current_time
+        # Preserve full error context for debugging while maintaining safe fallback
+        error_str = str(e).replace('\n', ' ').replace('\r', ' ')  # Clean line breaks for single-line format
+        fallback = (f"Unknown-Error-{error_str}", None, False)
+        _shape_cache.set_cache(fallback)
         return fallback
 
 
@@ -127,23 +169,15 @@ def _detect_oracle_environment():
         import socket
         # Try to connect to Oracle's metadata service (169.254.169.254)
         # This is a quick check without making actual HTTP requests
-        sock = None
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)  # Very short timeout
-            result = sock.connect_ex(('169.254.169.254', 80))
-            if result == 0:  # Connection successful
-                return True
-        except (socket.error, socket.timeout, OSError) as e:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.5)  # Very short timeout
+                result = sock.connect_ex(('169.254.169.254', 80))
+                if result == 0:  # Connection successful
+                    return True
+        except (socket.error, socket.timeout, OSError):
             # Network connection failed - expected in many environments
             pass
-        finally:
-            # Ensure socket is properly closed even on exceptions
-            if sock is not None:
-                try:
-                    sock.close()
-                except (socket.error, OSError):
-                    pass
     except (ImportError, AttributeError):
         # Socket module unavailable in restricted environments
         pass
@@ -221,6 +255,47 @@ def _classify_oracle_shape(cpu_count, total_mem_gb):
             "e2-1-micro.env"
         )
 
+def _validate_config_value(key, value):
+    """
+    Validate configuration values for security and correctness.
+    
+    Args:
+        key (str): Configuration key name
+        value (str): Configuration value to validate
+        
+    Raises:
+        ValueError: If value is invalid for the given key
+    """
+    # Validate percentage values (0-100)
+    if key.endswith('_PCT'):
+        try:
+            pct = float(value)
+            if not 0 <= pct <= 100:
+                raise ValueError(f"{key}={value} must be between 0-100 (percentage)")
+        except ValueError as e:
+            if "must be between" in str(e):
+                raise
+            raise ValueError(f"{key}={value} must be a valid number (percentage)")
+    
+    # Validate positive numeric values
+    elif key in ['CONTROL_PERIOD_SEC', 'AVG_WINDOW_SEC', 'MEM_MIN_FREE_MB', 
+                 'MEM_STEP_MB', 'NET_PORT', 'NET_BURST_SEC', 'NET_IDLE_SEC',
+                 'NET_LINK_MBIT', 'NET_MIN_RATE_MBIT', 'NET_MAX_RATE_MBIT']:
+        try:
+            num = float(value)
+            if num <= 0:
+                raise ValueError(f"{key}={value} must be positive")
+        except ValueError as e:
+            if "must be positive" in str(e):
+                raise
+            raise ValueError(f"{key}={value} must be a valid positive number")
+    
+    # Validate boolean values
+    elif key.endswith('_ENABLED') or key in ['LOAD_CHECK_ENABLED']:
+        if value.lower() not in ['true', 'false', '1', '0']:
+            raise ValueError(f"{key}={value} must be true/false or 1/0")
+
+
 def load_config_template(template_file):
     """
     Load configuration from an Oracle shape template file.
@@ -246,15 +321,23 @@ def load_config_template(template_file):
         
     Note:
         Template files should be located in the 'config-templates/' directory
-        relative to the loadshaper.py script location.
+        relative to the loadshaper.py script location, or in a custom directory
+        specified by the LOADSHAPER_TEMPLATE_DIR environment variable.
     """
     if not template_file:
         return {}
     
     config = {}
-    template_path = os.path.join(
-        os.path.dirname(__file__), "config-templates", template_file
-    )
+    
+    # Allow override of template directory via environment variable
+    template_dir = os.getenv("LOADSHAPER_TEMPLATE_DIR")
+    if template_dir:
+        template_path = os.path.join(template_dir, template_file)
+    else:
+        # Default: config-templates/ directory relative to this script
+        template_path = os.path.join(
+            os.path.dirname(__file__), "config-templates", template_file
+        )
     
     try:
         with open(template_path, "r", encoding='utf-8') as f:
@@ -277,7 +360,15 @@ def load_config_template(template_file):
                             value = value.split("#", 1)[0].strip()
                             
                         if key and value:  # Only store non-empty keys/values
-                            config[key] = value
+                            try:
+                                # Validate the configuration value
+                                _validate_config_value(key, value)
+                                config[key] = value
+                            except ValueError as validation_error:
+                                # Log validation error but continue loading other values
+                                print(f"[config-template] Warning: Invalid value at "
+                                      f"{template_file}:{line_num}: {validation_error}")
+                                continue
                     except ValueError:
                         # Invalid line format - skip with warning
                         print(f"[config-template] Warning: Invalid format at "
@@ -417,48 +508,108 @@ def getenv_int(name, default):
     except Exception:
         return int(default)
 
-# Initialize Oracle shape detection and template loading
-DETECTED_SHAPE, TEMPLATE_FILE, IS_ORACLE = detect_oracle_shape()
-CONFIG_TEMPLATE = load_config_template(TEMPLATE_FILE)
+# Configuration variables (initialized lazily to avoid issues during testing)
+_config_initialized = False
+DETECTED_SHAPE = None
+TEMPLATE_FILE = None
+IS_ORACLE = None
+CONFIG_TEMPLATE = {}
 
-CPU_TARGET_PCT    = getenv_float_with_template("CPU_TARGET_PCT", 30.0, CONFIG_TEMPLATE)
-MEM_TARGET_PCT    = getenv_float_with_template("MEM_TARGET_PCT", 60.0, CONFIG_TEMPLATE)  # excludes cache/buffers
-NET_TARGET_PCT    = getenv_float_with_template("NET_TARGET_PCT", 10.0, CONFIG_TEMPLATE)  # NIC utilization %
+CPU_TARGET_PCT = None
+MEM_TARGET_PCT = None
+NET_TARGET_PCT = None
+CPU_STOP_PCT = None
+MEM_STOP_PCT = None
+NET_STOP_PCT = None
+CONTROL_PERIOD = None
+AVG_WINDOW_SEC = None
+HYSTERESIS_PCT = None
+LOAD_THRESHOLD = None
+LOAD_RESUME_THRESHOLD = None
+LOAD_CHECK_ENABLED = None
+JITTER_PCT = None
+JITTER_PERIOD = None
+MEM_MIN_FREE_MB = None
+MEM_STEP_MB = None
+NET_MODE = None
+NET_PEERS = None
+NET_PORT = None
+NET_BURST_SEC = None
+NET_IDLE_SEC = None
+NET_PROTOCOL = None
+NET_SENSE_MODE = None
+NET_IFACE = None
+NET_IFACE_INNER = None
+NET_LINK_MBIT = None
+NET_MIN_RATE = None
+NET_MAX_RATE = None
 
-CPU_STOP_PCT      = getenv_float_with_template("CPU_STOP_PCT", 85.0, CONFIG_TEMPLATE)
-MEM_STOP_PCT      = getenv_float_with_template("MEM_STOP_PCT", 90.0, CONFIG_TEMPLATE)
-NET_STOP_PCT      = getenv_float_with_template("NET_STOP_PCT", 60.0, CONFIG_TEMPLATE)
 
-CONTROL_PERIOD    = getenv_float_with_template("CONTROL_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
-AVG_WINDOW_SEC    = getenv_float_with_template("AVG_WINDOW_SEC", 300.0, CONFIG_TEMPLATE)
-HYSTERESIS_PCT    = getenv_float_with_template("HYSTERESIS_PCT", 5.0, CONFIG_TEMPLATE)
+def _initialize_config():
+    """
+    Initialize configuration variables lazily to avoid issues during testing.
+    
+    This function is called on first access to configuration variables to ensure
+    Oracle shape detection and template loading happens only when needed, not
+    during module import.
+    """
+    global _config_initialized, DETECTED_SHAPE, TEMPLATE_FILE, IS_ORACLE, CONFIG_TEMPLATE
+    global CPU_TARGET_PCT, MEM_TARGET_PCT, NET_TARGET_PCT
+    global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
+    global CONTROL_PERIOD, AVG_WINDOW_SEC, HYSTERESIS_PCT
+    global LOAD_THRESHOLD, LOAD_RESUME_THRESHOLD, LOAD_CHECK_ENABLED
+    global JITTER_PCT, JITTER_PERIOD, MEM_MIN_FREE_MB, MEM_STEP_MB
+    global NET_MODE, NET_PEERS, NET_PORT, NET_BURST_SEC, NET_IDLE_SEC, NET_PROTOCOL
+    global NET_SENSE_MODE, NET_IFACE, NET_IFACE_INNER, NET_LINK_MBIT
+    global NET_MIN_RATE, NET_MAX_RATE
+    
+    if _config_initialized:
+        return
+    
+    # Initialize Oracle shape detection and template loading
+    DETECTED_SHAPE, TEMPLATE_FILE, IS_ORACLE = detect_oracle_shape()
+    CONFIG_TEMPLATE = load_config_template(TEMPLATE_FILE)
 
-LOAD_THRESHOLD    = getenv_float_with_template("LOAD_THRESHOLD", 0.6, CONFIG_TEMPLATE)      # pause when load avg per core > this (conservative for Oracle Free Tier)
-LOAD_RESUME_THRESHOLD = getenv_float_with_template("LOAD_RESUME_THRESHOLD", 0.4, CONFIG_TEMPLATE)  # resume when load avg per core < this (hysteresis)
-LOAD_CHECK_ENABLED = getenv_with_template("LOAD_CHECK_ENABLED", "true", CONFIG_TEMPLATE).strip().lower() == "true"
+    CPU_TARGET_PCT    = getenv_float_with_template("CPU_TARGET_PCT", 30.0, CONFIG_TEMPLATE)
+    MEM_TARGET_PCT    = getenv_float_with_template("MEM_TARGET_PCT", 60.0, CONFIG_TEMPLATE)  # excludes cache/buffers
+    NET_TARGET_PCT    = getenv_float_with_template("NET_TARGET_PCT", 10.0, CONFIG_TEMPLATE)  # NIC utilization %
 
-JITTER_PCT        = getenv_float_with_template("JITTER_PCT", 10.0, CONFIG_TEMPLATE)
-JITTER_PERIOD     = getenv_float_with_template("JITTER_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
+    CPU_STOP_PCT      = getenv_float_with_template("CPU_STOP_PCT", 85.0, CONFIG_TEMPLATE)
+    MEM_STOP_PCT      = getenv_float_with_template("MEM_STOP_PCT", 90.0, CONFIG_TEMPLATE)
+    NET_STOP_PCT      = getenv_float_with_template("NET_STOP_PCT", 60.0, CONFIG_TEMPLATE)
 
-MEM_MIN_FREE_MB   = getenv_int_with_template("MEM_MIN_FREE_MB", 512, CONFIG_TEMPLATE)
-MEM_STEP_MB       = getenv_int_with_template("MEM_STEP_MB", 64, CONFIG_TEMPLATE)
+    CONTROL_PERIOD    = getenv_float_with_template("CONTROL_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
+    AVG_WINDOW_SEC    = getenv_float_with_template("AVG_WINDOW_SEC", 300.0, CONFIG_TEMPLATE)
+    HYSTERESIS_PCT    = getenv_float_with_template("HYSTERESIS_PCT", 5.0, CONFIG_TEMPLATE)
 
-NET_MODE          = getenv_with_template("NET_MODE", "client", CONFIG_TEMPLATE).strip().lower()
-NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "", CONFIG_TEMPLATE).split(",") if p.strip()]
-NET_PORT          = getenv_int_with_template("NET_PORT", 15201, CONFIG_TEMPLATE)
-NET_BURST_SEC     = getenv_int_with_template("NET_BURST_SEC", 10, CONFIG_TEMPLATE)
-NET_IDLE_SEC      = getenv_int_with_template("NET_IDLE_SEC", 10, CONFIG_TEMPLATE)
-NET_PROTOCOL      = getenv_with_template("NET_PROTOCOL", "udp", CONFIG_TEMPLATE).strip().lower()
+    LOAD_THRESHOLD    = getenv_float_with_template("LOAD_THRESHOLD", 0.6, CONFIG_TEMPLATE)      # pause when load avg per core > this (conservative for Oracle Free Tier)
+    LOAD_RESUME_THRESHOLD = getenv_float_with_template("LOAD_RESUME_THRESHOLD", 0.4, CONFIG_TEMPLATE)  # resume when load avg per core < this (hysteresis)
+    LOAD_CHECK_ENABLED = getenv_with_template("LOAD_CHECK_ENABLED", "true", CONFIG_TEMPLATE).strip().lower() == "true"
 
-# New: how we "sense" NIC bytes
-NET_SENSE_MODE    = getenv_with_template("NET_SENSE_MODE", "container", CONFIG_TEMPLATE).strip().lower()  # container|host
-NET_IFACE         = getenv_with_template("NET_IFACE", "ens3", CONFIG_TEMPLATE).strip()        # for host mode (requires /sys mount)
-NET_IFACE_INNER   = getenv_with_template("NET_IFACE_INNER", "eth0", CONFIG_TEMPLATE).strip()  # for container mode (/proc/net/dev)
-NET_LINK_MBIT     = getenv_float_with_template("NET_LINK_MBIT", 1000.0, CONFIG_TEMPLATE)         # used directly in container mode
+    JITTER_PCT        = getenv_float_with_template("JITTER_PCT", 10.0, CONFIG_TEMPLATE)
+    JITTER_PERIOD     = getenv_float_with_template("JITTER_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
 
-# Controller rate bounds (Mbps)
-NET_MIN_RATE      = getenv_float_with_template("NET_MIN_RATE_MBIT", 1.0, CONFIG_TEMPLATE)
-NET_MAX_RATE      = getenv_float_with_template("NET_MAX_RATE_MBIT", 800.0, CONFIG_TEMPLATE)
+    MEM_MIN_FREE_MB   = getenv_int_with_template("MEM_MIN_FREE_MB", 512, CONFIG_TEMPLATE)
+    MEM_STEP_MB       = getenv_int_with_template("MEM_STEP_MB", 64, CONFIG_TEMPLATE)
+
+    NET_MODE          = getenv_with_template("NET_MODE", "client", CONFIG_TEMPLATE).strip().lower()
+    NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "", CONFIG_TEMPLATE).split(",") if p.strip()]
+    NET_PORT          = getenv_int_with_template("NET_PORT", 15201, CONFIG_TEMPLATE)
+    NET_BURST_SEC     = getenv_int_with_template("NET_BURST_SEC", 10, CONFIG_TEMPLATE)
+    NET_IDLE_SEC      = getenv_int_with_template("NET_IDLE_SEC", 10, CONFIG_TEMPLATE)
+    NET_PROTOCOL      = getenv_with_template("NET_PROTOCOL", "udp", CONFIG_TEMPLATE).strip().lower()
+
+    # New: how we "sense" NIC bytes
+    NET_SENSE_MODE    = getenv_with_template("NET_SENSE_MODE", "container", CONFIG_TEMPLATE).strip().lower()  # container|host
+    NET_IFACE         = getenv_with_template("NET_IFACE", "ens3", CONFIG_TEMPLATE).strip()        # for host mode (requires /sys mount)
+    NET_IFACE_INNER   = getenv_with_template("NET_IFACE_INNER", "eth0", CONFIG_TEMPLATE).strip()  # for container mode (/proc/net/dev)
+    NET_LINK_MBIT     = getenv_float_with_template("NET_LINK_MBIT", 1000.0, CONFIG_TEMPLATE)         # used directly in container mode
+
+    # Controller rate bounds (Mbps)
+    NET_MIN_RATE      = getenv_float_with_template("NET_MIN_RATE_MBIT", 1.0, CONFIG_TEMPLATE)
+    NET_MAX_RATE      = getenv_float_with_template("NET_MAX_RATE_MBIT", 800.0, CONFIG_TEMPLATE)
+    
+    _config_initialized = True
 
 # Health check server configuration
 HEALTH_PORT       = getenv_int("HEALTH_PORT", 8080)
@@ -1164,6 +1315,9 @@ def validate_oracle_configuration():
         print()
 
 def main():
+    # Initialize configuration on first use
+    _initialize_config()
+    
     load_monitor_status = f"LOAD_THRESHOLD={LOAD_THRESHOLD:.1f}" if LOAD_CHECK_ENABLED else "LOAD_CHECK=disabled"
     health_status = f"HEALTH={HEALTH_HOST}:{HEALTH_PORT}" if HEALTH_ENABLED else "HEALTH=disabled"
     shape_status = f"Oracle={DETECTED_SHAPE}" if IS_ORACLE else f"Generic={DETECTED_SHAPE}"
