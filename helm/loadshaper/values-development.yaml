@@ -80,16 +80,12 @@ config:
   NET_PROTOCOL: "udp"
   NET_PEERS: ""  # Usually empty in development
 
-# Enable both iperf and metrics services for development testing
+# Enable metrics service for development testing
 service:
   enabled: true
   type: ClusterIP
-  iperf:
-    enabled: true   # Enable for development testing
-    port: 15201
   metrics:
     enabled: true
-    
+
 # Allow debugging with port-forward
 # kubectl port-forward svc/loadshaper 8080:8080  # metrics
-# kubectl port-forward svc/loadshaper 15201:15201  # iperf

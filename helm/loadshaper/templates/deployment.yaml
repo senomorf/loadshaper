@@ -42,11 +42,6 @@ spec:
             {{- toYaml .Values.env | nindent 12 }}
           {{- end }}
           ports:
-            {{- if and .Values.service.iperf.enabled .Values.service.enabled }}
-            - name: iperf
-              containerPort: {{ .Values.config.NET_PORT }}
-              protocol: {{ .Values.config.NET_PROTOCOL | upper }}
-            {{- end }}
             {{- if and (eq .Values.config.HEALTH_ENABLED "true") .Values.service.metrics.enabled .Values.service.enabled }}
             - name: metrics
               containerPort: {{ .Values.config.HEALTH_PORT }}

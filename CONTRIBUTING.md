@@ -69,7 +69,7 @@ This approach allows us to quickly iterate toward optimal Oracle Cloud VM protec
 - API documentation
 
 ### 🧪 Testing
-- Additional test cases (see [AGENTS.md](AGENTS.md) for testing guidelines)
+- Additional test cases (see [AGENTS.md](AGENTS.md) for comprehensive testing guidelines including network generator tests)
 - Platform-specific tests
 - Performance benchmarks
 - Edge case coverage
@@ -97,9 +97,20 @@ This approach allows us to quickly iterate toward optimal Oracle Cloud VM protec
    # Test basic functionality
    docker compose up -d --build
    docker logs -f loadshaper
-   
+
    # Look for telemetry output showing metrics
    # Verify CPU/memory/network targets are being reached
+
+   # Test network generator specifically
+   # Check for network traffic in telemetry logs
+   # Verify adaptive fallback behavior with NET_ACTIVATION=adaptive
+
+   # Test different protocols
+   NET_PROTOCOL=tcp docker compose up -d --build
+   NET_PROTOCOL=udp docker compose up -d --build
+
+   # Test custom targets (optional)
+   NET_PEERS=8.8.8.8:53 NET_PROTOCOL=udp docker compose up -d --build
    ```
 
 3. **Safety verification:**

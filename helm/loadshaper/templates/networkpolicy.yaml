@@ -16,24 +16,6 @@ spec:
     {{- if .Values.networkPolicy.ingress }}
     {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
     {{- else }}
-    # Allow iperf traffic for network load generation between loadshaper instances (if iperf service enabled)
-    {{- if .Values.service.iperf.enabled }}
-    - from:
-        {{- if .Values.networkPolicy.allowPeersFromSameApp }}
-        - podSelector:
-            matchLabels:
-              {{- include "loadshaper.selectorLabels" . | nindent 14 }}
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace }}
-          podSelector:
-            matchLabels:
-              {{- include "loadshaper.selectorLabels" . | nindent 14 }}
-        {{- end }}
-      ports:
-        - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
-          port: {{ .Values.config.NET_PORT }}
-    {{- end }}
     # Allow Prometheus scraping if ServiceMonitor is enabled
     {{- if .Values.serviceMonitor.enabled }}
     - from:
@@ -74,7 +56,7 @@ spec:
         - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
           port: {{ .Values.config.NET_PORT }}
     {{- end }}
-    # Extra egress rules for specific network peers (e.g., configured iperf servers)
+    # Extra egress rules for specific network peers (e.g., configured NET_PEERS)
     {{- with .Values.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

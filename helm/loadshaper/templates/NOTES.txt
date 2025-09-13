@@ -31,19 +31,9 @@
 {{- end }}
 {{- end }}
 
-{{- if and .Values.service.enabled .Values.service.iperf.enabled }}
-{{- if eq .Values.service.type "LoadBalancer" }}
-8. Get the external IP for iperf network testing:
-  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "loadshaper.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo "iperf service available at: $SERVICE_IP:{{ .Values.service.iperf.port }}"
-{{- else if eq .Values.service.type "ClusterIP" }}
-8. Port-forward to access iperf service:
-  kubectl port-forward svc/{{ include "loadshaper.fullname" . }} {{ .Values.service.iperf.port }}:{{ .Values.service.iperf.port }}
-{{- end }}
-{{- else if .Values.service.enabled }}
-8. Service configuration:
-  # iperf service is disabled (default) - loadshaper runs in client mode only
-  # Enable with: service.iperf.enabled=true if running iperf server
+{{- if .Values.service.enabled }}
+8. Network generation:
+  # loadshaper uses native Python network generator - no external services required
 {{- end }}
 
 Oracle Cloud Always Free Compliance:

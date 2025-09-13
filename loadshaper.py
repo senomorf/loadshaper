@@ -2,12 +2,13 @@ import os
 import time
 import random
 import threading
-import subprocess
 import sqlite3
 import json
 import logging
 import signal
 import platform
+import socket
+import struct
 from typing import Tuple, Optional, Dict, Any
 from multiprocessing import Process, Value
 from math import isfinite, exp, ceil
@@ -664,7 +665,6 @@ def _validate_final_config():
     global MEM_TARGET_PCT, NET_TARGET_PCT
     global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
     global NET_PORT, LOAD_CHECK_ENABLED
-
     # Validate percentage values
     for var_name, var_value in [
         ("MEM_TARGET_PCT", MEM_TARGET_PCT), 
@@ -813,6 +813,21 @@ NET_IFACE_INNER = None
 NET_LINK_MBIT = None
 NET_MIN_RATE = None
 NET_MAX_RATE = None
+NET_TTL = None
+NET_PACKET_SIZE = None
+
+# Network fallback configuration globals
+NET_ACTIVATION = None
+NET_FALLBACK_START_PCT = None
+NET_FALLBACK_STOP_PCT = None
+NET_FALLBACK_RISK_THRESHOLD_PCT = None
+NET_FALLBACK_DEBOUNCE_SEC = None
+NET_FALLBACK_MIN_ON_SEC = None
+NET_FALLBACK_MIN_OFF_SEC = None
+NET_FALLBACK_RAMP_SEC = None
+
+# Control shared variables
+paused = None
 
 
 def _initialize_config():
@@ -831,6 +846,8 @@ def _initialize_config():
     global JITTER_PCT, JITTER_PERIOD, MEM_MIN_FREE_MB, MEM_STEP_MB, MEM_TOUCH_INTERVAL_SEC
     global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT, CPU_P95_EXCEEDANCE_TARGET
     global CPU_P95_SLOT_DURATION, CPU_P95_HIGH_INTENSITY, CPU_P95_BASELINE_INTENSITY
+    global NET_ACTIVATION, NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
+    global NET_FALLBACK_DEBOUNCE_SEC, NET_FALLBACK_MIN_ON_SEC, NET_FALLBACK_MIN_OFF_SEC, NET_FALLBACK_RAMP_SEC
     global NET_MODE, NET_PEERS, NET_PORT, NET_BURST_SEC, NET_IDLE_SEC, NET_PROTOCOL
     global NET_SENSE_MODE, NET_IFACE, NET_IFACE_INNER, NET_LINK_MBIT
     global NET_MIN_RATE, NET_MAX_RATE
@@ -899,6 +916,10 @@ def _initialize_config():
     NET_MIN_RATE      = getenv_float_with_template("NET_MIN_RATE_MBIT", 1.0, CONFIG_TEMPLATE)
     NET_MAX_RATE      = getenv_float_with_template("NET_MAX_RATE_MBIT", 800.0, CONFIG_TEMPLATE)
 
+    # Native network generator configuration
+    NET_TTL           = getenv_int_with_template("NET_TTL", 1, CONFIG_TEMPLATE)
+    NET_PACKET_SIZE   = getenv_int_with_template("NET_PACKET_SIZE", 8900, CONFIG_TEMPLATE)
+
     # Network fallback configuration
     NET_ACTIVATION          = getenv_with_template("NET_ACTIVATION", "adaptive", CONFIG_TEMPLATE).strip().lower()
     NET_FALLBACK_START_PCT  = getenv_float_with_template("NET_FALLBACK_START_PCT", 19.0, CONFIG_TEMPLATE)
@@ -924,7 +945,8 @@ HEALTH_ENABLED    = _parse_boolean(os.getenv("HEALTH_ENABLED", "true"))
 N_WORKERS = os.cpu_count() or 1
 
 # Controller gains (gentle)
-KP_NET = 0.60       # proportional gain for iperf rate (Mbps)
+KP_CPU = 0.30       # proportional gain for CPU duty
+KP_NET = 0.60       # proportional gain for network generation rate (Mbps)
 MAX_DUTY = 0.95     # CPU duty cap
 
 # Sleep slice for yielding scheduler - critical for system responsiveness
@@ -1869,7 +1891,6 @@ def set_mem_target_bytes(target_bytes):
         target_bytes (int): Desired memory allocation size in bytes
     """
     import gc
-    global mem_block
     
     with mem_lock:
         cur = len(mem_block)
@@ -1895,7 +1916,6 @@ def mem_nurse_thread(stop_evt: threading.Event):
     ensuring they count toward memory utilization metrics. Uses system page
     size for efficient touching and respects load thresholds.
     """
-    global paused
     
     # Use system page size for portable and efficient memory touching
     try:
@@ -2010,47 +2030,536 @@ def nic_utilization_pct(prev, cur, dt_sec, link_mbit):
     return util
 
 # ---------------------------
-# Network client (iperf3) with rate control
+# Native network generator
+# ---------------------------
+
+class TokenBucket:
+    """
+    Token bucket rate limiter with 5ms precision for smooth traffic generation.
+
+    Implements a classic token bucket algorithm with elapsed-time based accumulation
+    to prevent dead zones at very low rates. Supports both UDP and TCP traffic
+    generation with configurable burst sizes.
+    """
+
+    def __init__(self, rate_mbps: float):
+        """
+        Initialize token bucket with specified rate.
+
+        Args:
+            rate_mbps: Target rate in megabits per second
+        """
+        self.rate_mbps = max(0.001, rate_mbps)  # Minimum rate to prevent division by zero
+        self.capacity_bits = max(1000, self.rate_mbps * 1_000_000 * 0.1)  # 100ms burst capacity
+        self.tokens = self.capacity_bits
+        self.last_update = time.time()
+        self.tick_interval = 0.005  # 5ms precision
+
+    def update_rate(self, new_rate_mbps: float):
+        """Update bucket rate and recalculate capacity."""
+        self.rate_mbps = max(0.001, new_rate_mbps)
+        self.capacity_bits = max(1000, self.rate_mbps * 1_000_000 * 0.1)
+        # Clamp current tokens to new capacity
+        self.tokens = min(self.tokens, self.capacity_bits)
+
+    def can_send(self, packet_size_bytes: int) -> bool:
+        """
+        Check if packet can be sent based on available tokens.
+
+        Args:
+            packet_size_bytes: Size of packet to send in bytes
+
+        Returns:
+            bool: True if packet can be sent immediately
+        """
+        packet_bits = packet_size_bytes * 8
+        self._add_tokens()
+        return self.tokens >= packet_bits
+
+    def consume(self, packet_size_bytes: int) -> bool:
+        """
+        Consume tokens for sending a packet.
+
+        Args:
+            packet_size_bytes: Size of packet being sent in bytes
+
+        Returns:
+            bool: True if tokens were consumed, False if insufficient tokens
+        """
+        packet_bits = packet_size_bytes * 8
+        self._add_tokens()
+
+        if self.tokens >= packet_bits:
+            self.tokens -= packet_bits
+            return True
+        return False
+
+    def wait_time(self, packet_size_bytes: int) -> float:
+        """
+        Calculate time to wait before packet can be sent.
+
+        Args:
+            packet_size_bytes: Size of packet to send in bytes
+
+        Returns:
+            float: Time to wait in seconds (0 if can send immediately)
+        """
+        packet_bits = packet_size_bytes * 8
+        self._add_tokens()
+
+        if self.tokens >= packet_bits:
+            return 0.0
+
+        needed_bits = packet_bits - self.tokens
+        wait_seconds = needed_bits / (self.rate_mbps * 1_000_000)
+        return max(0.0, wait_seconds)
+
+    def _add_tokens(self):
+        """Add tokens based on elapsed time since last update."""
+        now = time.time()
+        elapsed = now - self.last_update
+
+        if elapsed > 0:
+            tokens_to_add = elapsed * self.rate_mbps * 1_000_000
+            self.tokens = min(self.capacity_bits, self.tokens + tokens_to_add)
+            self.last_update = now
+
+
+class NetworkGenerator:
+    """
+    Native Python network traffic generator with token bucket rate limiting.
+
+    Provides UDP and TCP traffic generation with RFC 2544 benchmark addresses
+    as safe defaults. Supports jumbo frames (MTU 9000) optimization and
+    configurable TTL for network safety.
+    """
+
+    # RFC 2544 benchmark addresses - safe for testing
+    RFC2544_ADDRESSES = ["198.18.0.1", "198.19.255.254"]
+
+    def __init__(self, rate_mbps: float, protocol: str = "udp", ttl: int = 1,
+                 packet_size: int = 8900, port: int = 15201, timeout: float = 0.5):
+        """
+        Initialize network generator.
+
+        Args:
+            rate_mbps: Target rate in megabits per second
+            protocol: 'udp' or 'tcp'
+            ttl: IP Time-to-Live (1 = first hop only for safety)
+            packet_size: Packet payload size in bytes
+            port: Target port number
+            timeout: Connection timeout in seconds for TCP connections
+        """
+        self.bucket = TokenBucket(rate_mbps)
+        self.protocol = protocol.lower()
+        self.ttl = max(1, ttl)
+        self.packet_size = max(64, min(65507, packet_size))  # UDP max is 65507
+        self.port = max(1024, min(65535, port))
+        self.timeout = max(0.1, timeout)  # Minimum 0.1s timeout
+        self.socket = None
+        self.packet_data = None
+        self.tcp_connections = {}  # Cache for persistent TCP connections
+        self.resolved_targets = {}  # Cache for DNS resolutions
+        self.tcp_retry_delays = {}  # Exponential backoff for failed connections
+        self.tcp_retry_base_delay = 1.0  # Base delay in seconds
+        self.tcp_retry_max_delay = 30.0  # Maximum delay in seconds
+        self._prepare_packet_data()
+
+        # Pre-allocate socket buffers for efficiency
+        self.send_buffer_size = max(1024 * 1024, self.packet_size * 10)  # 1MB minimum
+
+    def _prepare_packet_data(self):
+        """Pre-allocate packet data for zero-copy sending."""
+        # Create packet with timestamp and sequence pattern
+        timestamp = struct.pack('!d', time.time())
+        sequence_pattern = b'LoadShaper-' + (b'x' * (self.packet_size - len(timestamp) - 11))
+        self.packet_data = timestamp + sequence_pattern[:self.packet_size - len(timestamp)]
+
+    def update_rate(self, new_rate_mbps: float):
+        """Update target transmission rate."""
+        self.bucket.update_rate(new_rate_mbps)
+
+    def _resolve_targets(self, target_addresses: list):
+        """
+        Resolve target addresses to IP addresses with IPv6 support and caching.
+
+        Args:
+            target_addresses: List of hostnames or IP addresses to resolve
+        """
+        resolved = {}
+        for target in target_addresses:
+            if target in self.resolved_targets:
+                # Use cached resolution
+                resolved[target] = self.resolved_targets[target]
+                continue
+
+            try:
+                # Try to resolve hostname to IP address(es)
+                # This supports both IPv4 and IPv6
+                addr_info = socket.getaddrinfo(target, self.port, socket.AF_UNSPEC,
+                                              socket.SOCK_DGRAM if self.protocol == "udp" else socket.SOCK_STREAM)
+
+                # Use first available address (prefer IPv4 for compatibility)
+                ipv4_addr = None
+                ipv6_addr = None
+
+                for family, sock_type, proto, canonname, sockaddr in addr_info:
+                    if family == socket.AF_INET and not ipv4_addr:
+                        ipv4_addr = (sockaddr[0], family)
+                    elif family == socket.AF_INET6 and not ipv6_addr:
+                        ipv6_addr = (sockaddr[0], family)
+
+                # Prefer IPv4 for compatibility, fallback to IPv6
+                if ipv4_addr:
+                    resolved[target] = ipv4_addr
+                elif ipv6_addr:
+                    resolved[target] = ipv6_addr
+                else:
+                    logger.warning(f"Could not resolve {target}, skipping")
+                    continue
+
+                # Cache the resolution
+                self.resolved_targets[target] = resolved[target]
+
+            except socket.gaierror as e:
+                logger.warning(f"Failed to resolve {target}: {e}, skipping")
+                continue
+
+        self.target_addresses = resolved
+
+    def start(self, target_addresses: list):
+        """
+        Start network generation session.
+
+        Args:
+            target_addresses: List of target IP addresses/hostnames
+        """
+        if not target_addresses:
+            target_addresses = self.RFC2544_ADDRESSES
+            logger.info(f"Using RFC 2544 benchmark addresses for network generation: {target_addresses}")
+
+        # Resolve and cache target addresses with IPv6 support
+        self._resolve_targets(target_addresses)
+
+        try:
+            if self.protocol == "udp":
+                self._start_udp()
+            elif self.protocol == "tcp":
+                self._start_tcp()
+            else:
+                raise ValueError(f"Unsupported protocol: {self.protocol}")
+        except Exception as e:
+            logger.error(f"Failed to start network generator: {e}")
+            self.stop()
+
+    def _start_udp(self):
+        """Initialize UDP socket for traffic generation with IPv4/IPv6 support."""
+        # Determine address family from first resolved target
+        if not self.target_addresses:
+            raise ValueError("No target addresses resolved")
+
+        # Get address family from first target
+        first_target = next(iter(self.target_addresses.values()))
+        family = first_target[1]  # AF_INET or AF_INET6
+
+        self.socket = socket.socket(family, socket.SOCK_DGRAM)
+
+        # Set TTL/hop limit for safety
+        if family == socket.AF_INET:
+            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
+        elif family == socket.AF_INET6:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
+
+        # Optimize send buffer
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
+
+        # Non-blocking mode for better control
+        self.socket.setblocking(False)
+
+    def _start_tcp(self):
+        """Initialize TCP socket settings for traffic generation."""
+        # TCP uses persistent connections managed in tcp_connections dict
+        # Set socket to None to indicate TCP mode
+        self.socket = None
+        # Connections will be created on-demand in _get_tcp_connection()
+
+    def _get_tcp_connection(self, target: str):
+        """
+        Get or create a persistent TCP connection for the target.
+
+        Args:
+            target: Target hostname/IP (key in self.target_addresses)
+
+        Returns:
+            socket.socket: Connected TCP socket or None if failed
+        """
+        if target not in self.target_addresses:
+            return None
+
+        ip_addr, family = self.target_addresses[target]
+
+        # Check if we have a cached connection
+        if target in self.tcp_connections:
+            conn = self.tcp_connections[target]
+            try:
+                # Test if connection is still alive by trying to send 0 bytes
+                conn.send(b'')
+                return conn
+            except (socket.error, OSError):
+                # Connection is dead, remove it
+                try:
+                    conn.close()
+                except:
+                    pass
+                del self.tcp_connections[target]
+
+        # Check exponential backoff for failed connections
+        current_time = time.time()
+        if target in self.tcp_retry_delays:
+            retry_time, delay = self.tcp_retry_delays[target]
+            if current_time < retry_time:
+                # Still in backoff period
+                return None
+
+        # Create new connection
+        try:
+            tcp_sock = socket.socket(family, socket.SOCK_STREAM)
+
+            # Apply socket options
+            if family == socket.AF_INET:
+                tcp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
+            elif family == socket.AF_INET6:
+                tcp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
+
+            tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
+            tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            tcp_sock.settimeout(self.timeout)  # Configurable timeout
+
+            tcp_sock.connect((ip_addr, self.port))
+
+            # Cache the connection and clear any retry delay
+            self.tcp_connections[target] = tcp_sock
+            if target in self.tcp_retry_delays:
+                del self.tcp_retry_delays[target]
+            return tcp_sock
+
+        except (socket.error, OSError) as e:
+            # Apply exponential backoff for failed connections
+            current_delay = self.tcp_retry_base_delay
+            if target in self.tcp_retry_delays:
+                _, previous_delay = self.tcp_retry_delays[target]
+                current_delay = min(previous_delay * 2, self.tcp_retry_max_delay)
+
+            retry_time = time.time() + current_delay
+            self.tcp_retry_delays[target] = (retry_time, current_delay)
+
+            logger.debug(f"Failed to connect to {target} ({ip_addr}): {e}. "
+                        f"Retrying after {current_delay:.1f}s")
+            return None
+
+    def send_burst(self, duration_seconds: float) -> int:
+        """
+        Send traffic burst for specified duration.
+
+        Args:
+            duration_seconds: How long to send traffic
+
+        Returns:
+            int: Number of packets sent
+        """
+        if not self.target_addresses:
+            return 0
+
+        # UDP requires socket, TCP creates connections per packet
+        if self.protocol == "udp" and not self.socket:
+            return 0
+
+        packets_sent = 0
+        start_time = time.time()
+
+        while (time.time() - start_time) < duration_seconds:
+            # Check if we can send a packet
+            if not self.bucket.can_send(self.packet_size):
+                wait_time = self.bucket.wait_time(self.packet_size)
+                if wait_time > 0:
+                    time.sleep(min(wait_time, 0.001))  # Max 1ms sleep
+                continue
+
+            # Select random target
+            target = random.choice(list(self.target_addresses.keys()))
+
+            try:
+                if self.protocol == "udp":
+                    packets_sent += self._send_udp_packet(target)
+                elif self.protocol == "tcp":
+                    packets_sent += self._send_tcp_packet(target)
+
+                # Consume tokens after successful send
+                self.bucket.consume(self.packet_size)
+
+            except Exception as e:
+                # Log errors but continue generation
+                if packets_sent == 0:  # Only log first error to avoid spam
+                    logger.debug(f"Network send error to {target}: {e}")
+                time.sleep(0.001)  # Brief pause on error
+
+            # Yield CPU every few packets
+            if packets_sent % 100 == 0:
+                time.sleep(0.0001)
+
+        return packets_sent
+
+    def _send_udp_packet(self, target: str) -> int:
+        """Send single UDP packet with IPv4/IPv6 support."""
+        try:
+            if target not in self.target_addresses:
+                return 0
+            ip_addr, family = self.target_addresses[target]
+
+            # Refresh packet timestamp
+            current_time = struct.pack('!d', time.time())
+            packet = current_time + self.packet_data[8:]
+
+            self.socket.sendto(packet, (ip_addr, self.port))
+            return 1
+        except socket.error:
+            # Expected for non-blocking UDP - just continue
+            return 0
+
+    def _send_tcp_packet(self, target: str) -> int:
+        """Send TCP packet using persistent connection pool."""
+        try:
+            # Get or create persistent connection
+            tcp_sock = self._get_tcp_connection(target)
+            if not tcp_sock:
+                return 0
+
+            # Send packet data with current timestamp
+            current_time = struct.pack('!d', time.time())
+            packet = current_time + self.packet_data[8:]
+            tcp_sock.send(packet)
+            return 1
+        except (socket.error, OSError):
+            # Connection failed, remove from pool
+            if target in self.tcp_connections:
+                try:
+                    self.tcp_connections[target].close()
+                except:
+                    pass
+                del self.tcp_connections[target]
+            return 0
+
+    def stop(self):
+        """Stop network generation and cleanup resources."""
+        # Close UDP socket
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
+
+        # Close all TCP connections
+        for target, conn in list(self.tcp_connections.items()):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self.tcp_connections.clear()
+        self.tcp_retry_delays.clear()  # Clear retry delays
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with guaranteed cleanup."""
+        self.stop()
+        return False
+
+
+# ---------------------------
+# Network client with native generator
 # ---------------------------
 def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value):
-    """Background thread for iperf3 network client traffic generation.
+    """
+    Native network traffic generation thread.
+
+    Native Python network traffic generator using token bucket
+    rate limiting and socket-based packet generation.
 
     Args:
         stop_evt: Threading event to signal thread shutdown
         paused_fn: Function returning True if operations should pause
         rate_mbit_val: Shared Value containing target network rate in Mbit/s
     """
-    if NET_MODE != "client" or not NET_PEERS:
+    if NET_MODE != "client":
         return
-    proto_args = ["-u"] if NET_PROTOCOL == "udp" else []
-    while not stop_evt.is_set():
-        if paused_fn():
-            time.sleep(2.0)
-            continue
-        peer = random.choice(NET_PEERS)
-        rate = float(rate_mbit_val.value)
-        rate = max(NET_MIN_RATE, min(NET_MAX_RATE, rate))
-        burst = max(1, NET_BURST_SEC)
 
-        cmd = ["iperf3"] + proto_args + [
-            "-b", f"{rate}M", "-t", str(burst), "-p", str(NET_PORT), "-c", peer
-        ]
-        try:
-            subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=burst + 5,
-            )
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            pass
+    # Initialize network generator
+    generator = None
+    last_rate = 0.0
 
-        # idle window (low CPU)
-        end = time.time() + NET_IDLE_SEC
-        while time.time() < end and not stop_evt.is_set():
-            time.sleep(0.5)
+    try:
+        while not stop_evt.is_set():
+            if paused_fn():
+                if generator:
+                    generator.stop()
+                    generator = None
+                time.sleep(2.0)
+                continue
+
+            # Get current rate and clamp to bounds
+            current_rate = float(rate_mbit_val.value)
+            current_rate = max(NET_MIN_RATE, min(NET_MAX_RATE, current_rate))
+
+            # Create or update generator if rate changed
+            if generator is None or abs(current_rate - last_rate) > 0.1:
+                if generator:
+                    generator.stop()
+
+                generator = NetworkGenerator(
+                    rate_mbps=current_rate,
+                    protocol=NET_PROTOCOL,
+                    ttl=NET_TTL,
+                    packet_size=NET_PACKET_SIZE,
+                    port=NET_PORT
+                )
+
+                # Start generator with configured peers or RFC 2544 defaults
+                generator.start(NET_PEERS if NET_PEERS else [])
+                last_rate = current_rate
+                logger.debug(f"Network generator started: {current_rate:.1f} Mbps, {NET_PROTOCOL.upper()}")
+
+            elif generator:
+                # Just update rate if generator exists
+                generator.update_rate(current_rate)
+                last_rate = current_rate
+
+            # Send traffic burst
+            if generator:
+                burst_duration = max(1, NET_BURST_SEC)
+                try:
+                    packets_sent = generator.send_burst(burst_duration)
+                    if packets_sent > 0:
+                        logger.debug(f"Sent {packets_sent} packets in {burst_duration}s burst")
+                except Exception as e:
+                    logger.debug(f"Network burst error: {e}")
+
+            # Idle window (low CPU usage)
+            idle_end = time.time() + NET_IDLE_SEC
+            while time.time() < idle_end and not stop_evt.is_set():
+                if paused_fn():
+                    break
+                time.sleep(0.5)
+
+    except Exception as e:
+        logger.error(f"Network client thread error: {e}")
+    finally:
+        # Clean up generator
+        if generator:
+            generator.stop()
+            logger.debug("Network generator stopped")
 
 # ---------------------------
 # Health check server
@@ -2499,6 +3008,7 @@ def main():
         'net_target': NET_TARGET_PCT
     }
 
+    global paused
     duty = Value('d', 0.0)
     paused = Value('d', 0.0)  # 1.0 => paused
     net_rate_mbit = Value('d', max(NET_MIN_RATE, min(NET_MAX_RATE, (NET_MAX_RATE + NET_MIN_RATE)/2.0)))
