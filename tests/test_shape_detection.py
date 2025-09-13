@@ -168,7 +168,7 @@ class TestShapeDetection(unittest.TestCase):
     def test_classify_oracle_shape_unknown(self):
         """Test classification of unknown Oracle shape."""
         shape_name, template_file = loadshaper._classify_oracle_shape(8, 64.0)
-        self.assertEqual(shape_name, 'Oracle-Unknown-A1-8CPU-64.0GB')  # Updated to match actual output
+        self.assertEqual(shape_name, 'VM.Standard.A1.Flex-Unknown-8CPU-64.0GB')  # Updated to match fixed output
         self.assertEqual(template_file, 'a1-flex-1.env')  # Falls back to A1 template for unknown shapes
 
     def test_detect_oracle_shape_non_oracle_environment(self):
@@ -484,6 +484,137 @@ NET_TARGET_PCT=25'''
             
             self.assertEqual(mem_result, 30)  # Template value
             self.assertEqual(protocol, 'udp')  # Template value
+
+
+class TestConfigValidation(unittest.TestCase):
+    """Test configuration validation functions."""
+
+    def test_validate_config_value_percentage_valid(self):
+        """Test valid percentage values pass validation."""
+        # These should not raise exceptions
+        loadshaper._validate_config_value("CPU_TARGET_PCT", "50")
+        loadshaper._validate_config_value("MEM_TARGET_PCT", "0")
+        loadshaper._validate_config_value("NET_TARGET_PCT", "100")
+
+    def test_validate_config_value_percentage_invalid(self):
+        """Test invalid percentage values raise ValueError."""
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("CPU_TARGET_PCT", "150")
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("MEM_TARGET_PCT", "-10")
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("NET_TARGET_PCT", "abc")
+
+    def test_validate_config_value_integer_fields(self):
+        """Test integer field validation."""
+        # Valid integer values
+        loadshaper._validate_config_value("NET_PORT", "8080")
+        loadshaper._validate_config_value("MEM_STEP_MB", "64")
+        loadshaper._validate_config_value("NET_BURST_SEC", "10")
+        
+        # Invalid integer values
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("NET_PORT", "80.5")  # Not integer
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("NET_PORT", "80000")  # Out of range
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("NET_PORT", "abc")    # Not numeric
+
+    def test_validate_config_value_boolean_fields(self):
+        """Test boolean field validation."""
+        # Valid boolean values
+        loadshaper._validate_config_value("LOAD_CHECK_ENABLED", "true")
+        loadshaper._validate_config_value("LOAD_CHECK_ENABLED", "false")
+        loadshaper._validate_config_value("LOAD_CHECK_ENABLED", "1")
+        loadshaper._validate_config_value("LOAD_CHECK_ENABLED", "0")
+        
+        # Invalid boolean values
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("LOAD_CHECK_ENABLED", "maybe")
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value("LOAD_CHECK_ENABLED", "yes")
+
+    def test_parse_boolean_function(self):
+        """Test the _parse_boolean helper function."""
+        # Truthy values
+        self.assertTrue(loadshaper._parse_boolean("true"))
+        self.assertTrue(loadshaper._parse_boolean("True"))
+        self.assertTrue(loadshaper._parse_boolean("1"))
+        self.assertTrue(loadshaper._parse_boolean("yes"))
+        self.assertTrue(loadshaper._parse_boolean("on"))
+        self.assertTrue(loadshaper._parse_boolean("enabled"))
+        self.assertTrue(loadshaper._parse_boolean(True))
+        
+        # Falsy values
+        self.assertFalse(loadshaper._parse_boolean("false"))
+        self.assertFalse(loadshaper._parse_boolean("False"))
+        self.assertFalse(loadshaper._parse_boolean("0"))
+        self.assertFalse(loadshaper._parse_boolean("no"))
+        self.assertFalse(loadshaper._parse_boolean("off"))
+        self.assertFalse(loadshaper._parse_boolean("disabled"))
+        self.assertFalse(loadshaper._parse_boolean(False))
+        self.assertFalse(loadshaper._parse_boolean("anything_else"))
+
+    def test_unknown_a1_shape_validation(self):
+        """Test that unknown A1 shapes trigger A1.Flex validation rules."""
+        # Test that unknown A1 shape names include "A1.Flex" for validation
+        shape_name, template_file = loadshaper._classify_oracle_shape(8, 64.0)  # Unknown large A1
+        self.assertIn("A1.Flex", shape_name)
+        self.assertEqual(template_file, "a1-flex-1.env")
+
+    def test_memory_tolerance_boundaries(self):
+        """Test shape detection at memory tolerance boundaries."""
+        # Test E2.1.Micro boundaries (0.8-1.2 GB)
+        shape_name, _ = loadshaper._classify_oracle_shape(1, 0.8)  # Lower bound
+        self.assertEqual(shape_name, "VM.Standard.E2.1.Micro")
+        
+        shape_name, _ = loadshaper._classify_oracle_shape(1, 1.2)  # Upper bound
+        self.assertEqual(shape_name, "VM.Standard.E2.1.Micro")
+        
+        # Test A1.Flex boundaries (5.5-6.5 GB)
+        shape_name, _ = loadshaper._classify_oracle_shape(1, 5.5)  # Lower bound
+        self.assertEqual(shape_name, "VM.Standard.A1.Flex")
+        
+        shape_name, _ = loadshaper._classify_oracle_shape(1, 6.5)  # Upper bound
+        self.assertEqual(shape_name, "VM.Standard.A1.Flex")
+
+
+class TestEnvironmentValidation(unittest.TestCase):
+    """Test environment variable override validation."""
+
+    def test_invalid_env_override_handling(self):
+        """Test that invalid environment overrides are handled gracefully."""
+        # This test verifies that _validate_final_config handles invalid values
+        # Note: This is a conceptual test - the actual implementation would need
+        # to be tested with proper mocking of global variables
+        pass  # Implementation would require complex mocking
+
+
+class TestConcurrentShapeDetection(unittest.TestCase):
+    """Test thread safety of shape detection."""
+
+    def test_concurrent_shape_detection(self):
+        """Test that concurrent shape detection calls are thread-safe."""
+        import threading
+        results = []
+        
+        def detect_shape():
+            result = loadshaper.detect_oracle_shape()
+            results.append(result)
+        
+        # Create multiple threads calling detect_oracle_shape
+        threads = []
+        for _ in range(10):
+            thread = threading.Thread(target=detect_shape)
+            threads.append(thread)
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        # All results should be the same (cache should work correctly)
+        self.assertEqual(len(set(results)), 1)
 
 
 if __name__ == '__main__':

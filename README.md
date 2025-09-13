@@ -206,6 +206,8 @@ LOAD_THRESHOLD=0.4 LOAD_RESUME_THRESHOLD=0.2 python -u loadshaper.py
 | **VM.Standard.E2.1.Micro** | 1/8 OCPU | 1GB | 50 Mbps | `e2-1-micro.env` |
 | **VM.Standard.E2.2.Micro** | 2/8 OCPU | 2GB | 50 Mbps | `e2-2-micro.env` |
 | **VM.Standard.A1.Flex** (1 vCPU) | 1 vCPU | 6GB | 1 Gbps | `a1-flex-1.env` |
+| **VM.Standard.A1.Flex** (2 vCPU) | 2 vCPU | 12GB | 2 Gbps | `a1-flex-2.env` |
+| **VM.Standard.A1.Flex** (3 vCPU) | 3 vCPU | 18GB | 3 Gbps | `a1-flex-3.env` |
 | **VM.Standard.A1.Flex** (4 vCPU) | 4 vCPU | 24GB | 4 Gbps | `a1-flex-4.env` |
 
 ### Configuration Priority
@@ -272,7 +274,7 @@ For non-Oracle Cloud environments, `loadshaper` safely falls back to conservativ
 |----------|---------|-------------|
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
-| `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses |
+| `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
 | `NET_PORT` | `15201` | iperf3 port for communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
@@ -312,6 +314,15 @@ NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 | `HEALTH_HOST` | `127.0.0.1` | Host interface to bind (localhost only by default) |
 | `LOADSHAPER_TEMPLATE_DIR` | `config-templates/` | Directory containing Oracle shape configuration templates |
 | `ORACLE_METADATA_PROBE` | `0` | Enable Oracle-specific metadata service probe (0=disabled, 1=enabled) |
+
+### Shape Detection Cache
+
+Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid repeated system calls. The cache includes:
+- Detected shape name and template file
+- Oracle environment detection result
+- System specifications (CPU count, memory size)
+
+**Note**: In containerized environments, memory detection reflects the host system, not container limits.
 
 ## Health Check Endpoints
 

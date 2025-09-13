@@ -286,7 +286,7 @@ def _classify_oracle_shape(cpu_count, total_mem_gb):
         # This ensures compliance with Oracle's 20% memory rule for A1 shapes
         if total_mem_gb > 4.0:
             return (
-                f"Oracle-Unknown-A1-{cpu_count}CPU-{total_mem_gb:.1f}GB",
+                f"VM.Standard.A1.Flex-Unknown-{cpu_count}CPU-{total_mem_gb:.1f}GB",
                 "a1-flex-1.env"  # Use safe A1.Flex template with memory targeting
             )
         else:
@@ -352,6 +352,31 @@ def _validate_config_value(key, value):
             if "must be positive" in str(e) or "must be between" in str(e):
                 raise
             raise ValueError(f"{key}={value} must be a valid positive number")
+    
+    # Validate integer-only values
+    elif key in ['NET_PORT', 'MEM_STEP_MB', 'NET_BURST_SEC', 'NET_IDLE_SEC']:
+        try:
+            int_value = int(float(value))
+            if int_value != float(value):  # Check if it was actually an integer
+                raise ValueError(f"{key}={value} must be an integer")
+            
+            # Specific bounds for integer fields
+            int_bounds = {
+                'NET_PORT': (1024, 65535),
+                'MEM_STEP_MB': (1, 1000),
+                'NET_BURST_SEC': (1, 3600),
+                'NET_IDLE_SEC': (1, 3600),
+            }
+            
+            if key in int_bounds:
+                min_val, max_val = int_bounds[key]
+                if not min_val <= int_value <= max_val:
+                    raise ValueError(f"{key}={value} must be integer between {min_val}-{max_val}")
+                    
+        except ValueError as e:
+            if "must be" in str(e):
+                raise
+            raise ValueError(f"{key}={value} must be a valid integer")
     
     # Validate boolean values
     elif key.endswith('_ENABLED') or key in ['LOAD_CHECK_ENABLED']:
@@ -573,6 +598,66 @@ def getenv_int_with_template(name, default, config_template):
         logger.warning(f"Failed to parse {name}='{value}' as int, using default {default}: {e}")
         return int(default)
 
+
+def _parse_boolean(value):
+    """
+    Parse a boolean value from string with consistent truthy/falsy handling.
+    
+    Args:
+        value (str): String value to parse
+        
+    Returns:
+        bool: True for truthy values, False for falsy values
+    """
+    if isinstance(value, bool):
+        return value
+    
+    value_str = str(value).strip().lower()
+    return value_str in {"1", "true", "yes", "on", "enabled"}
+
+
+def _validate_final_config():
+    """
+    Validate final configuration values including environment overrides.
+    
+    This ensures that even environment variable overrides are validated
+    for security and correctness, logging warnings for invalid values
+    and falling back to defaults where possible.
+    """
+    global CPU_TARGET_PCT, MEM_TARGET_PCT, NET_TARGET_PCT
+    global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
+    global NET_PORT, LOAD_CHECK_ENABLED
+    
+    # Validate percentage values
+    for var_name, var_value in [
+        ("CPU_TARGET_PCT", CPU_TARGET_PCT),
+        ("MEM_TARGET_PCT", MEM_TARGET_PCT), 
+        ("NET_TARGET_PCT", NET_TARGET_PCT),
+        ("CPU_STOP_PCT", CPU_STOP_PCT),
+        ("MEM_STOP_PCT", MEM_STOP_PCT),
+        ("NET_STOP_PCT", NET_STOP_PCT)
+    ]:
+        if not (0 <= var_value <= 100):
+            logger.warning(f"Invalid {var_name}={var_value} (must be 0-100%), using default")
+            if "CPU_TARGET" in var_name:
+                CPU_TARGET_PCT = 30.0
+            elif "MEM_TARGET" in var_name:
+                MEM_TARGET_PCT = 60.0
+            elif "NET_TARGET" in var_name:
+                NET_TARGET_PCT = 10.0
+            elif "CPU_STOP" in var_name:
+                CPU_STOP_PCT = 70.0
+            elif "MEM_STOP" in var_name:
+                MEM_STOP_PCT = 85.0
+            elif "NET_STOP" in var_name:
+                NET_STOP_PCT = 50.0
+    
+    # Validate NET_PORT as integer in valid range
+    if not (1024 <= NET_PORT <= 65535):
+        logger.warning(f"Invalid NET_PORT={NET_PORT} (must be 1024-65535), using default 15201")
+        NET_PORT = 15201
+
+
 # ---------------------------
 # Env / config
 # ---------------------------
@@ -664,7 +749,7 @@ def _initialize_config():
 
     LOAD_THRESHOLD    = getenv_float_with_template("LOAD_THRESHOLD", 0.6, CONFIG_TEMPLATE)      # pause when load avg per core > this (conservative for Oracle Free Tier)
     LOAD_RESUME_THRESHOLD = getenv_float_with_template("LOAD_RESUME_THRESHOLD", 0.4, CONFIG_TEMPLATE)  # resume when load avg per core < this (hysteresis)
-    LOAD_CHECK_ENABLED = getenv_with_template("LOAD_CHECK_ENABLED", "true", CONFIG_TEMPLATE).strip().lower() == "true"
+    LOAD_CHECK_ENABLED = _parse_boolean(getenv_with_template("LOAD_CHECK_ENABLED", "true", CONFIG_TEMPLATE))
 
     JITTER_PCT        = getenv_float_with_template("JITTER_PCT", 10.0, CONFIG_TEMPLATE)
     JITTER_PERIOD     = getenv_float_with_template("JITTER_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
@@ -689,12 +774,15 @@ def _initialize_config():
     NET_MIN_RATE      = getenv_float_with_template("NET_MIN_RATE_MBIT", 1.0, CONFIG_TEMPLATE)
     NET_MAX_RATE      = getenv_float_with_template("NET_MAX_RATE_MBIT", 800.0, CONFIG_TEMPLATE)
     
+    # Validate final configuration values (including environment overrides)
+    _validate_final_config()
+    
     _config_initialized = True
 
 # Health check server configuration
 HEALTH_PORT       = getenv_int("HEALTH_PORT", 8080)
 HEALTH_HOST       = os.getenv("HEALTH_HOST", "127.0.0.1").strip()
-HEALTH_ENABLED    = os.getenv("HEALTH_ENABLED", "true").strip().lower() == "true"
+HEALTH_ENABLED    = _parse_boolean(os.getenv("HEALTH_ENABLED", "true"))
 
 # Workers equal to CPU count for smoother shaping
 N_WORKERS = os.cpu_count() or 1
