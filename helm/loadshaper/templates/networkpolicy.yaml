@@ -16,8 +16,10 @@ spec:
     {{- if .Values.networkPolicy.ingress }}
     {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
     {{- else }}
-    # Allow iperf traffic for network load generation between loadshaper instances
+    # Allow iperf traffic for network load generation between loadshaper instances (if iperf service enabled)
+    {{- if .Values.service.iperf.enabled }}
     - from:
+        {{- if .Values.networkPolicy.allowPeersFromSameApp }}
         - podSelector:
             matchLabels:
               {{- include "loadshaper.selectorLabels" . | nindent 14 }}
@@ -27,9 +29,11 @@ spec:
           podSelector:
             matchLabels:
               {{- include "loadshaper.selectorLabels" . | nindent 14 }}
+        {{- end }}
       ports:
         - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
           port: {{ .Values.config.NET_PORT }}
+    {{- end }}
     # Allow Prometheus scraping if ServiceMonitor is enabled
     {{- if .Values.serviceMonitor.enabled }}
     - from:
@@ -46,13 +50,16 @@ spec:
     {{- toYaml .Values.networkPolicy.egress | nindent 4 }}
     {{- else }}
     # Allow DNS resolution
+    {{- if .Values.networkPolicy.allowDNS }}
     - to: []
       ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
           port: 53
-    # Allow iperf traffic for network load generation between loadshaper instances
+    {{- end }}
+    # Allow communication with peers from same app (if enabled)
+    {{- if .Values.networkPolicy.allowPeersFromSameApp }}
     - to:
         - podSelector:
             matchLabels:
@@ -66,22 +73,10 @@ spec:
       ports:
         - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
           port: {{ .Values.config.NET_PORT }}
-    # Allow external internet traffic for Oracle Cloud threshold compliance
-    # Note: For true internet access, configure ipBlock with appropriate CIDR ranges
-    # The following rules allow communication with specific pod labels in the cluster
-    - to:
-        - namespaceSelector: {}
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: iperf-server
-      ports:
-        - protocol: TCP
-          port: 80
-        - protocol: TCP
-          port: 443
-        - protocol: UDP
-          port: 80
-        - protocol: UDP
-          port: 443
+    {{- end }}
+    # Extra egress rules for specific network peers (e.g., configured iperf servers)
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
     {{- end }}
 {{- end }}

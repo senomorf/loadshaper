@@ -24,6 +24,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "loadshaper.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount | default false }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -40,10 +41,12 @@ spec:
             {{- toYaml .Values.env | nindent 12 }}
           {{- end }}
           ports:
+            {{- if and .Values.service.iperf.enabled .Values.service.enabled }}
             - name: iperf
               containerPort: {{ .Values.config.NET_PORT }}
               protocol: {{ .Values.config.NET_PROTOCOL | upper }}
-            {{- if eq .Values.config.HEALTH_ENABLED "true" }}
+            {{- end }}
+            {{- if and (eq .Values.config.HEALTH_ENABLED "true") .Values.service.metrics.enabled .Values.service.enabled }}
             - name: metrics
               containerPort: {{ .Values.config.HEALTH_PORT }}
               protocol: TCP
@@ -89,15 +92,20 @@ spec:
           volumeMounts:
             - name: metrics-storage
               mountPath: /var/lib/loadshaper
+            {{- if .Values.security.procHostMountEnabled }}
             - name: proc
               mountPath: /proc
               readOnly: true
+            {{- end }}
             {{- if eq .Values.config.NET_SENSE_MODE "host" }}
             - name: sys
               mountPath: /host_sys_class_net
               subPath: class/net
               readOnly: true
             {{- end }}
+            # Add tmpfs for any temporary files since root filesystem is read-only
+            - name: tmp
+              mountPath: /tmp
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -109,10 +117,17 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        # tmpfs volume for temporary files (read-only root filesystem)
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        {{- if .Values.security.procHostMountEnabled }}
         - name: proc
           hostPath:
             path: /proc
             type: Directory
+        {{- end }}
         {{- if eq .Values.config.NET_SENSE_MODE "host" }}
         - name: sys
           hostPath:

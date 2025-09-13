@@ -19,14 +19,16 @@ spec:
     {{- toYaml .Values.service.loadBalancerSourceRanges | nindent 4 }}
   {{- end }}
   ports:
-    - port: {{ .Values.service.port }}
+    {{- if .Values.service.iperf.enabled }}
+    - port: {{ .Values.service.iperf.port }}
       targetPort: iperf
       protocol: {{ .Values.config.NET_PROTOCOL | upper }}
       name: iperf
       {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePort }}
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
-    {{- if eq .Values.config.HEALTH_ENABLED "true" }}
+    {{- end }}
+    {{- if and (eq .Values.config.HEALTH_ENABLED "true") .Values.service.metrics.enabled }}
     - port: {{ .Values.config.HEALTH_PORT }}
       targetPort: metrics
       protocol: TCP
