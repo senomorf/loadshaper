@@ -1103,6 +1103,35 @@ class TestHighLoadFallback(unittest.TestCase):
     def tearDown(self):
         self.patches.stop()
 
+    def test_safety_gating_proportional_scaling(self):
+        """Test proportional scaling of intensity when load is in the scaling range"""
+        # Set load to 0.65, halfway between SAFETY_SCALE_START (0.5) and SAFETY_SCALE_FULL (0.8)
+        # This should result in an intensity halfway between normal and the minimum scaled intensity.
+        load_avg = 0.65
+        self.controller.SAFETY_PROPORTIONAL_ENABLED = True
+        self.controller.SAFETY_SCALE_START = 0.5
+        self.controller.SAFETY_SCALE_FULL = 0.8
+        self.controller.SAFETY_MIN_INTENSITY_SCALE = 0.7
+
+        # Assuming a high slot is decided, the normal intensity would be ~35.0
+        # The minimum scaled intensity would be 35.0 * 0.7 = 24.5
+        # Halfway between 35.0 and 24.5 is 29.75
+        # The baseline is 20.0, so the result should be max(20.0, 29.75) = 29.75
+        with patch.object(self.controller, 'get_target_intensity', return_value=35.0):
+            scaled_intensity = self.controller._calculate_safety_scaled_intensity(load_avg)
+            self.assertAlmostEqual(scaled_intensity, 29.75, places=2)
+
+    def test_fallback_forces_high_slot_after_min_interval(self):
+        """Test that fallback forces high slot after MIN_HIGH_SLOT_INTERVAL_SEC"""
+        # Set last high slot time to be far in the past
+        min_interval = self.controller.MIN_HIGH_SLOT_INTERVAL_SEC
+        self.controller.last_high_slot_time = time.monotonic() - min_interval - 1
+        self.controller.consecutive_skipped_slots = 1  # Low skip count
+
+        # Even with high load, the time-based trigger should force a high slot
+        is_high, intensity = self.controller.should_run_high_slot(0.8)
+        self.assertTrue(is_high, "A high slot should be forced due to time since last high slot")
+
     def test_fallback_mechanism_tracks_consecutive_skips(self):
         """Test that consecutive skipped slots are tracked correctly"""
         # Initial state should have zero consecutive skips

@@ -915,8 +915,8 @@ NET_INTERFACE=eth0 docker compose up -d --build
 
 **For resource-constrained VMs (1 vCPU/1GB):**
 ```shell
-# Optimize for minimal overhead
-CPU_TARGET_PCT=22
+# Optimize for minimal overhead with P95 control
+CPU_P95_SETPOINT=22.0
 MEM_TARGET_PCT=0
 NET_TARGET_PCT=22
 LOAD_THRESHOLD=0.4

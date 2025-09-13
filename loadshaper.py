@@ -1054,6 +1054,9 @@ class CPUP95Controller:
         self._p95_cache_time = 0
         self._p95_cache_ttl_sec = self.P95_CACHE_TTL_SEC
 
+        # Ring buffer persistence optimization (reduce disk I/O)
+        self.slots_since_last_save = 0
+
         # Try to load persisted ring buffer state to solve cold start problem
         self._load_ring_buffer_state()
 
@@ -1075,6 +1078,7 @@ class CPUP95Controller:
         if p95 is not None:
             self._p95_cache = p95
             self._p95_cache_time = now
+        # Note: If p95 is None, we keep the existing cached value (if any) as a fallback
 
         return p95
 
@@ -1240,7 +1244,6 @@ class CPUP95Controller:
             return base_intensity
         else:
             # In production mode - add dithering for better P95 control
-            import random
             dither = random.uniform(-self.DITHER_RANGE_PCT, self.DITHER_RANGE_PCT)
             dithered_intensity = base_intensity + dither
             # Ensure we stay within reasonable bounds after dithering
@@ -1288,8 +1291,11 @@ class CPUP95Controller:
         if self.slots_recorded < self.slot_history_size:
             self.slots_recorded += 1  # Don't exceed buffer size
 
-        # Persist ring buffer state for cold start protection
-        self._save_ring_buffer_state()
+        # Persist ring buffer state periodically for cold start protection (reduce disk I/O)
+        self.slots_since_last_save += 1
+        if self.slots_since_last_save >= 10:
+            self._save_ring_buffer_state()
+            self.slots_since_last_save = 0
 
     def _start_new_slot(self, current_load_avg):
         """Start new slot and determine its type"""
