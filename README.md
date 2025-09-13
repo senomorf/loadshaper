@@ -111,7 +111,7 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 ### 3. **Intelligent Load Generation**
 - **CPU stress**: Low-priority workers (nice 19) with arithmetic operations
 - **Memory occupation**: Gradual allocation with periodic page touching for A1.Flex shapes  
-- **Network traffic**: iperf3-based bursts to peer instances when needed
+- **Network traffic**: Native Python network bursts to peer instances when needed
 - **Load balancing**: Automatic pausing when real workloads need resources
 
 ### Operation Flow
@@ -345,7 +345,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `CONTROL_PERIOD_SEC` | `5` | Seconds between control decisions |
 | `AVG_WINDOW_SEC` | `300` | Exponential moving average window for memory/network (5 min) |
 | `HYSTERESIS_PCT` | `5` | Percentage hysteresis to prevent oscillation |
-| `JITTER_PCT` | `15` | Random jitter in load generation (%) |
+| `JITTER_PCT` | `10` | Random jitter in load generation (%) |
 | `JITTER_PERIOD_SEC` | `5` | Seconds between jitter adjustments |
 
 ### P95 Controller Configuration
@@ -385,7 +385,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
 | `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
-| `NET_PORT` | `15201` | iperf3 port for communication |
+| `NET_PORT` | `15201` | TCP port for network communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
 
@@ -748,7 +748,7 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
 **Q: Network traffic isn't being generated**  
-A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify iperf3 servers are running on peer instances and firewall rules allow traffic on `NET_PORT`.
+A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify peer instances are reachable and firewall rules allow traffic on `NET_PORT`.
 
 **Q: Memory usage isn't increasing on A1.Flex**  
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
@@ -857,7 +857,7 @@ docker logs -f loadshaper | grep "nic("
 
 **Network traffic not generating:**
 - Confirm `NET_MODE=client` and `NET_PEERS` are set correctly
-- Verify peers are running iperf3 servers on the specified port
+- Verify peers are reachable on the specified port
 - Check firewall rules between instances
 - Try `NET_PROTOCOL=tcp` if UDP traffic is filtered
 

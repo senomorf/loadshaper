@@ -31,9 +31,9 @@ class TestMetricsStorage:
     def test_init_fails_on_permission_error(self):
         """Test that MetricsStorage fails when path is not writable (no fallback)."""
         # Try to create storage with a non-existent/non-writable path
-        with pytest.raises(PermissionError) as exc_info:
+        with pytest.raises(FileNotFoundError) as exc_info:
             MetricsStorage("/non/existent/path/metrics.db")
-        assert "LoadShaper requires persistent storage" in str(exc_info.value)
+        assert "A persistent volume must be mounted" in str(exc_info.value)
 
     def test_store_sample_basic(self, temp_db):
         """Test basic sample storage functionality."""
@@ -219,14 +219,14 @@ class TestMetricsStorage:
     def test_database_init_failure_handling(self):
         """Test handling of database initialization failures."""
         # Try to create storage with invalid path that will fail
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(FileNotFoundError) as exc_info:
             MetricsStorage("/dev/null/invalid")
-        assert "Cannot create metrics database" in str(exc_info.value)
+        assert "A persistent volume must be mounted" in str(exc_info.value)
         
     def test_complete_database_failure_handling(self):
         """Test handling when database creation fails completely."""
-        # Try with non-writable directory to trigger permission error first
-        with pytest.raises(PermissionError):
+        # Try with non-writable directory to trigger file not found error first
+        with pytest.raises(FileNotFoundError):
             MetricsStorage("/some/path")
 
         # For corruption/access issues, it should raise RuntimeError during _init_db

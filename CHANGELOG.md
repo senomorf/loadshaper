@@ -135,7 +135,6 @@ volumes:
 - **iperf3 dependency**: Completely eliminated from codebase and Docker images
 - **iperf3 service**: Removed from Docker Compose configuration
 - **Legacy memory calculation**: Removed support for kernels without MemAvailable
-- **DEBUG_MEM_METRICS**: Removed debug environment variable and dual metric display
 
 ### Fixed
 - **Network fallback logic**: Corrected A1 shape logic (AND instead of OR for risk conditions)

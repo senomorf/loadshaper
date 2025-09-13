@@ -720,7 +720,6 @@ def _validate_network_fallback_config():
         ("NET_FALLBACK_DEBOUNCE_SEC", 30),
         ("NET_FALLBACK_MIN_ON_SEC", 60),
         ("NET_FALLBACK_MIN_OFF_SEC", 30),
-        ("NET_FALLBACK_RAMP_SEC", 10)
     ]:
         if var_name in global_vars:
             var_value = global_vars[var_name]
@@ -824,7 +823,6 @@ NET_FALLBACK_RISK_THRESHOLD_PCT = None
 NET_FALLBACK_DEBOUNCE_SEC = None
 NET_FALLBACK_MIN_ON_SEC = None
 NET_FALLBACK_MIN_OFF_SEC = None
-NET_FALLBACK_RAMP_SEC = None
 
 # Control shared variables
 paused = None
@@ -847,7 +845,7 @@ def _initialize_config():
     global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT, CPU_P95_EXCEEDANCE_TARGET
     global CPU_P95_SLOT_DURATION, CPU_P95_HIGH_INTENSITY, CPU_P95_BASELINE_INTENSITY
     global NET_ACTIVATION, NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
-    global NET_FALLBACK_DEBOUNCE_SEC, NET_FALLBACK_MIN_ON_SEC, NET_FALLBACK_MIN_OFF_SEC, NET_FALLBACK_RAMP_SEC
+    global NET_FALLBACK_DEBOUNCE_SEC, NET_FALLBACK_MIN_ON_SEC, NET_FALLBACK_MIN_OFF_SEC
     global NET_MODE, NET_PEERS, NET_PORT, NET_BURST_SEC, NET_IDLE_SEC, NET_PROTOCOL
     global NET_SENSE_MODE, NET_IFACE, NET_IFACE_INNER, NET_LINK_MBIT
     global NET_MIN_RATE, NET_MAX_RATE
@@ -928,7 +926,6 @@ def _initialize_config():
     NET_FALLBACK_DEBOUNCE_SEC = getenv_int_with_template("NET_FALLBACK_DEBOUNCE_SEC", 30, CONFIG_TEMPLATE)
     NET_FALLBACK_MIN_ON_SEC = getenv_int_with_template("NET_FALLBACK_MIN_ON_SEC", 60, CONFIG_TEMPLATE)
     NET_FALLBACK_MIN_OFF_SEC = getenv_int_with_template("NET_FALLBACK_MIN_OFF_SEC", 30, CONFIG_TEMPLATE)
-    NET_FALLBACK_RAMP_SEC   = getenv_int_with_template("NET_FALLBACK_RAMP_SEC", 10, CONFIG_TEMPLATE)
 
     # Validate final configuration values (including environment overrides)
     _validate_final_config()
@@ -966,6 +963,7 @@ class CPUP95Controller:
     # State machine timing constants
     STATE_CHANGE_COOLDOWN_SEC = 300  # 5 minutes cooldown after state change
     P95_CACHE_TTL_SEC = 300          # Cache P95 calculations for 5 minutes (aligned with state change cooldown)
+    PERSISTENT_STORAGE_PATH = "/var/lib/loadshaper"  # Persistent storage directory for metrics DB and ring buffer
 
     # Hysteresis values for adaptive deadbands
     HYSTERESIS_SMALL_PCT = 0.5       # Small hysteresis for stable periods
@@ -1080,7 +1078,7 @@ class CPUP95Controller:
 
     def _get_ring_buffer_path(self):
         """Get path for ring buffer persistence file in persistent storage"""
-        return "/var/lib/loadshaper/p95_ring_buffer.json"
+        return os.path.join(self.PERSISTENT_STORAGE_PATH, "p95_ring_buffer.json")
 
     def _save_ring_buffer_state(self):
         """Save ring buffer state to disk for persistence across restarts"""
@@ -1105,7 +1103,7 @@ class CPUP95Controller:
             logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
 
         except (OSError, PermissionError, json.JSONEncodeError) as e:
-            logger.debug(f"Failed to save P95 ring buffer state: {e}")
+            logger.warning(f"Failed to save P95 ring buffer state: {e}")
             # Non-fatal error - continue operation without persistence
 
     def _load_ring_buffer_state(self):
@@ -1475,7 +1473,7 @@ def cpu_percent_over(dt, prev=None):
     usage = max(0.0, 100.0 * (totald - idled) / totald)
     return usage, cur
 
-def read_meminfo() -> Tuple[int, float, int]:
+def read_meminfo() -> Tuple[int, int, float, int, float]:
     """
     Read memory usage from /proc/meminfo using industry standards.
 
@@ -1484,10 +1482,12 @@ def read_meminfo() -> Tuple[int, float, int]:
     AWS CloudWatch, Azure Monitor, and Oracle's VM reclamation criteria.
 
     Returns:
-        tuple: (total_bytes, used_pct, used_bytes)
+        tuple: (total_bytes, free_bytes, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
                - total_bytes: Total system memory in bytes
-               - used_pct: Memory usage percentage excluding cache/buffers
-               - used_bytes: Memory usage in bytes excluding cache/buffers
+               - free_bytes: Free memory in bytes (MemFree)
+               - used_pct_excl_cache: Memory usage percentage excluding cache/buffers (Oracle-compliant)
+               - used_bytes_excl_cache: Memory usage in bytes excluding cache/buffers
+               - used_pct_incl_cache: Memory usage percentage including cache/buffers (for comparison)
 
     Raises:
         RuntimeError: If /proc/meminfo is not readable, MemAvailable is missing,
@@ -1631,13 +1631,16 @@ class MetricsStorage:
         Requires persistent storage to maintain Oracle compliance.
         """
         if db_path is None:
-            db_path = "/var/lib/loadshaper/metrics.db"
+            db_path = os.path.join(CPUP95Controller.PERSISTENT_STORAGE_PATH, "metrics.db")
 
-        # Validate that the directory is writable for persistent storage
+        # Validate persistent storage directory for 7-day P95 calculations
         db_dir = os.path.dirname(db_path)
+        if not os.path.isdir(db_dir):
+            raise FileNotFoundError(f"Metrics directory does not exist: {db_dir}. "
+                                    f"A persistent volume must be mounted.")
         if not os.access(db_dir, os.W_OK):
             raise PermissionError(f"Cannot write to metrics directory: {db_dir}. "
-                                  f"LoadShaper requires persistent storage for 7-day P95 calculations.")
+                                  f"Check volume permissions for persistent storage.")
 
         self.db_path = db_path
         self.lock = threading.Lock()
@@ -2619,7 +2622,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             
             # Check if persistent metrics storage is working
             storage_ok = self.metrics_storage is not None and self.metrics_storage.db_path is not None
-            persistence_ok = storage_ok and "/var/lib/loadshaper" in self.metrics_storage.db_path
+            persistence_ok = storage_ok and CPUP95Controller.PERSISTENT_STORAGE_PATH in self.metrics_storage.db_path
             
             # Determine overall health status - direct access to avoid copy
             is_healthy = True
@@ -3078,8 +3081,8 @@ def main():
             cpu_avg = ema.cpu.update(cpu_pct)
 
             # MEM% (EXCLUDING cache/buffers for Oracle compliance)
-            total_b, mem_used_pct, used_b = read_meminfo()
-            mem_avg = ema.mem.update(mem_used_pct)
+            total_b, free_b, mem_used_no_cache_pct, used_no_cache_b, mem_used_incl_cache_pct = read_meminfo()
+            mem_avg = ema.mem.update(mem_used_no_cache_pct)
 
             # NIC utilization
             if NET_SENSE_MODE == "host":

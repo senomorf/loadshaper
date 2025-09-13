@@ -67,7 +67,7 @@ services:
       NET_LINK_MBIT: "${NET_LINK_MBIT:-1000}"         # fallback link speed if /sys speed is unknown
 
       # Limits for the controller -> client sending rate (Mbps)
-      NET_MIN_RATE_MBIT: "${NET_MIN_RATE_MBIT:-0}"          # Allow true idle (0 Mbps minimum)
+      NET_MIN_RATE_MBIT: "${NET_MIN_RATE_MBIT:-1}"          # Minimum 1 Mbps to maintain activity
       NET_MAX_RATE_MBIT: "${NET_MAX_RATE_MBIT:-800}"  # cap below link speed for safety
 
       # === Health check server ===

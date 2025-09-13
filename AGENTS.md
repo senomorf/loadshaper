@@ -99,19 +99,18 @@ def should_activate(self, is_e2: bool, cpu_p95: float, net_avg: float, mem_avg: 
 #### Anti-Oscillation Features
 - **Debounce timing**: `NET_FALLBACK_DEBOUNCE_SEC` prevents rapid state changes
 - **Minimum on/off periods**: Ensures stable activation cycles
-- **Gradual ramp-up**: `NET_FALLBACK_RAMP_SEC` for smooth rate transitions
 - **EMA-based rate control**: Exponential moving average for stable network generation
 
 #### Implementation Benefits
 - **Oracle compliance**: Uses simple thresholds (not P95) for network measurements matching Oracle's method
 - **Minimal impact**: Only generates traffic when multiple metrics simultaneously approach danger
-- **Resource efficient**: Native Python UDP generation replaces external iperf3 dependency
+- **Resource efficient**: Native Python socket-based network generation
 - **Shape optimized**: Different activation logic for E2 vs A1 Oracle reclamation rules
 
 ## Project Structure & Module Organization
 - `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
-- `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
-- `compose.yaml` — two services: `loadshaper` (client/loader) and `iperf3` (receiver) with configurable env vars; mounts config templates.
+- `Dockerfile` — Python 3 Alpine image with minimal dependencies; runs `loadshaper.py`.
+- `compose.yaml` — single service: `loadshaper` (client/loader) with configurable env vars; mounts config templates and persistent storage.
 - `README.md`, `LICENSE` — usage and licensing.
 - `CLAUDE.md` — additional guidance for Anthropic contributors; keep in sync with this file.
 - `config-templates/` — Oracle shape-specific configuration templates (e2-1-micro.env, e2-2-micro.env, a1-flex-1.env, a1-flex-4.env) with optimized settings for each shape.
@@ -135,7 +134,7 @@ The system automatically detects Oracle Cloud shapes via:
 ## Coding Style & Naming Conventions
 - Language: Python 3; 4‑space indentation; PEP 8 style.
 - Names: functions/variables `snake_case`; constants `UPPER_SNAKE_CASE` (matches existing env-backed config).
-- Keep dependencies minimal (standard library + `iperf3` binary). Avoid adding Python deps unless essential.
+- Keep dependencies minimal (standard library only). Avoid adding Python deps unless essential.
 - Prefer small, testable helpers; keep I/O at edges; maintain clear separation between sensing, control, and workers.
 
 ## Testing Guidelines
@@ -148,7 +147,7 @@ The system automatically detects Oracle Cloud shapes via:
 ### Integration Testing
 - Validate behavior by running the stack and observing `[loadshaper]` telemetry.
 - CPU/RAM only: `NET_MODE=off docker compose up -d`.
-- Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
+- Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` to establish TCP connections on `NET_PORT`.
 
 ### Memory Occupation Testing
 **For A1.Flex shapes (memory reclamation applies):**

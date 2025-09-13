@@ -4,12 +4,11 @@
 
 echo "[INFO] LoadShaper container starting..."
 
-# Check if persistent storage directory is writable
-if [ -w /var/lib/loadshaper ]; then
-    echo "[INFO] Persistent storage verified at /var/lib/loadshaper"
-    echo "[INFO] Metrics database will maintain 7-day P95 history across container restarts"
-else
-    echo "[ERROR] Cannot write to /var/lib/loadshaper - persistent volume not properly mounted"
+# Check persistent storage directory
+PERSISTENCE_DIR="/var/lib/loadshaper"
+
+if [ ! -d "$PERSISTENCE_DIR" ]; then
+    echo "[ERROR] Persistent storage directory does not exist: $PERSISTENCE_DIR"
     echo "[ERROR] LoadShaper requires persistent storage to maintain 7-day P95 CPU history"
     echo "[ERROR] Without persistent metrics, Oracle VM reclamation detection will not work correctly"
     echo ""
@@ -24,6 +23,29 @@ else
     echo "      driver: local"
     echo ""
     exit 1
+elif [ ! -w "$PERSISTENCE_DIR" ]; then
+    USER_ID=$(id -u)
+    GROUP_ID=$(id -g)
+    echo "[ERROR] Cannot write to $PERSISTENCE_DIR - check volume permissions"
+    echo "[ERROR] The container is running as user $USER_ID (group $GROUP_ID)"
+    echo "[ERROR] Please ensure the mounted volume is writable by this user"
+    echo "[ERROR] LoadShaper requires persistent storage for 7-day P95 calculations"
+    echo ""
+    echo "Volume permission fix (run on host):"
+    echo "  sudo chown -R $USER_ID:$GROUP_ID /path/to/volume/mount"
+    echo ""
+    echo "Or use Docker Compose with proper user mapping:"
+    echo "  services:"
+    echo "    loadshaper:"
+    echo "      user: \"$USER_ID:$GROUP_ID\""
+    echo "      volumes:"
+    echo "        - loadshaper-metrics:/var/lib/loadshaper"
+    echo ""
+    exit 1
+else
+    echo "[INFO] Persistent storage verified at $PERSISTENCE_DIR"
+    echo "[INFO] Running as user $(id -u):$(id -g)"
+    echo "[INFO] Metrics database will maintain 7-day P95 history across container restarts"
 fi
 
 # Execute the main application
