@@ -14,6 +14,8 @@ services:
     ports:
       - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"   # health check endpoints
     volumes:
+      # Persistent storage for metrics database (REQUIRED)
+      - loadshaper-metrics:/var/lib/loadshaper
       # Mount config templates for Oracle shape auto-detection
       - ./config-templates:/app/config-templates:ro
     healthcheck:
@@ -71,3 +73,10 @@ services:
       # === Health check server ===
       HEALTH_ENABLED: "${HEALTH_ENABLED:-true}"       # enable HTTP health endpoints
       HEALTH_PORT: "${HEALTH_PORT:-8080}"             # port for /health and /metrics endpoints
+
+# Persistent volume for metrics database
+# This volume is REQUIRED for LoadShaper to function correctly
+# Without it, 7-day P95 CPU history will be lost on container restart
+volumes:
+  loadshaper-metrics:
+    driver: local

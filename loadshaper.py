@@ -1079,18 +1079,8 @@ class CPUP95Controller:
         return p95
 
     def _get_ring_buffer_path(self):
-        """Get path for ring buffer persistence file"""
-        # Use same directory as metrics database for consistency
-        try:
-            # Try primary location first
-            db_dir = "/var/lib/loadshaper"
-            if os.path.exists(db_dir) and os.access(db_dir, os.W_OK):
-                return os.path.join(db_dir, "p95_ring_buffer.json")
-        except (OSError, PermissionError):
-            pass
-
-        # Fall back to temp directory
-        return "/tmp/loadshaper_p95_ring_buffer.json"
+        """Get path for ring buffer persistence file in persistent storage"""
+        return "/var/lib/loadshaper/p95_ring_buffer.json"
 
     def _save_ring_buffer_state(self):
         """Save ring buffer state to disk for persistence across restarts"""
@@ -1636,27 +1626,29 @@ class MetricsStorage:
 
         Args:
             db_path: Path to SQLite database file. If None, uses /var/lib/loadshaper/metrics.db
-                    with fallback to /tmp/loadshaper_metrics.db if permission denied.
 
         Creates database schema for 7-day metrics storage with thread-safe access.
+        Requires persistent storage to maintain Oracle compliance.
         """
         if db_path is None:
-            # Try to use /var/lib/loadshaper, fallback to /tmp
-            try:
-                os.makedirs("/var/lib/loadshaper", exist_ok=True)
-                db_path = "/var/lib/loadshaper/metrics.db"
-            except (OSError, PermissionError):
-                db_path = "/tmp/loadshaper_metrics.db"
+            db_path = "/var/lib/loadshaper/metrics.db"
+
+        # Validate that the directory is writable for persistent storage
+        db_dir = os.path.dirname(db_path)
+        if not os.access(db_dir, os.W_OK):
+            raise PermissionError(f"Cannot write to metrics directory: {db_dir}. "
+                                  f"LoadShaper requires persistent storage for 7-day P95 calculations.")
 
         self.db_path = db_path
         self.lock = threading.Lock()
+        logger.info(f"Metrics database initialized at: {self.db_path}")
         self._init_db()
     
     def _init_db(self):
-        """Initialize database schema and handle connection errors.
+        """Initialize database schema for persistent storage.
 
-        Creates the metrics table if it doesn't exist and handles database
-        connectivity issues gracefully.
+        Creates the metrics table if it doesn't exist. Fails fast if database
+        cannot be created, as persistent storage is required for Oracle compliance.
         """
         with self.lock:
             try:
@@ -1673,32 +1665,11 @@ class MetricsStorage:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
                 conn.commit()
                 conn.close()
+                logger.info(f"Metrics database schema initialized successfully")
             except Exception as e:
-                logger.error(f"Failed to initialize database: {e}")
-                # If explicit path was given and failed, try fallback to /tmp
-                if self.db_path != "/tmp/loadshaper_metrics.db":
-                    logger.warning("Attempting fallback to /tmp")
-                    self.db_path = "/tmp/loadshaper_metrics.db"
-                    try:
-                        conn = sqlite3.connect(self.db_path)
-                        conn.execute("""
-                            CREATE TABLE IF NOT EXISTS metrics (
-                                timestamp REAL PRIMARY KEY,
-                                cpu_pct REAL,
-                                mem_pct REAL,
-                                net_pct REAL,
-                                load_avg REAL
-                            )
-                        """)
-                        conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
-                        conn.commit()
-                        conn.close()
-                        logger.info(f"Successfully initialized fallback database at {self.db_path}")
-                    except Exception as e2:
-                        logger.error(f"Fallback to /tmp also failed: {e2}")
-                        self.db_path = None
-                else:
-                    self.db_path = None
+                logger.error(f"Failed to initialize metrics database at {self.db_path}: {e}")
+                raise RuntimeError(f"Cannot create metrics database. "
+                                   f"LoadShaper requires persistent storage for 7-day P95 calculations.")
     
     def store_sample(self, cpu_pct, mem_pct, net_pct, load_avg):
         """Store a metrics sample in the database.
@@ -1712,9 +1683,6 @@ class MetricsStorage:
         Returns:
             bool: True if stored successfully, False otherwise
         """
-        if self.db_path is None:
-            return False
-        
         with self.lock:
             try:
                 conn = sqlite3.connect(self.db_path)
@@ -1741,8 +1709,6 @@ class MetricsStorage:
         Returns:
             float: Calculated percentile value, or None if insufficient data
         """
-        if self.db_path is None:
-            return None
         
         column_map = {
             'cpu': 'cpu_pct',
@@ -1792,8 +1758,6 @@ class MetricsStorage:
         Returns:
             int: Number of records deleted, or 0 if database unavailable
         """
-        if self.db_path is None:
-            return 0
 
         cutoff_time = time.time() - (days_to_keep * 24 * 3600)
         
@@ -1818,8 +1782,6 @@ class MetricsStorage:
         Returns:
             int: Number of samples found, or 0 if database unavailable/error
         """
-        if self.db_path is None:
-            return 0
 
         cutoff_time = time.time() - (days_back * 24 * 3600)
         
@@ -2655,8 +2617,9 @@ class HealthHandler(BaseHTTPRequestHandler):
             with self.controller_state_lock:
                 uptime = time.time() - self.controller_state.get('start_time', time.time())
             
-            # Check if metrics storage is working
+            # Check if persistent metrics storage is working
             storage_ok = self.metrics_storage is not None and self.metrics_storage.db_path is not None
+            persistence_ok = storage_ok and "/var/lib/loadshaper" in self.metrics_storage.db_path
             
             # Determine overall health status - direct access to avoid copy
             is_healthy = True
@@ -2669,9 +2632,13 @@ class HealthHandler(BaseHTTPRequestHandler):
                 is_healthy = False
                 status_checks.append("system_paused_safety_stop")
             
-            # Check if metrics storage is functional
+            # Check if persistent metrics storage is functional
             if not storage_ok:
-                status_checks.append("metrics_storage_degraded")
+                is_healthy = False
+                status_checks.append("metrics_storage_failed")
+            elif not persistence_ok:
+                is_healthy = False
+                status_checks.append("persistence_not_available")
                 # Note: Don't mark unhealthy for storage issues, as core functionality still works
             
             # Check for extreme resource usage that might indicate issues
@@ -2688,7 +2655,9 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "uptime_seconds": round(uptime, 1),
                 "timestamp": time.time(),
                 "checks": status_checks if status_checks else ["all_systems_operational"],
-                "metrics_storage": "available" if storage_ok else "degraded",
+                "metrics_storage": "available" if storage_ok else "failed",
+                "persistence_storage": "available" if persistence_ok else "not_mounted",
+                "database_path": self.metrics_storage.db_path if self.metrics_storage else None,
                 "load_generation": "paused" if paused_state == 1.0 else "active"
             }
             

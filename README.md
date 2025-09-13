@@ -41,12 +41,18 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 
 ## Quick Start
 
+**📋 Prerequisites:**
+- Docker and Docker Compose installed
+- **Persistent storage required** - LoadShaper needs persistent volume for 7-day P95 metrics
+
 **1. Clone and deploy:**
 ```bash
 git clone https://github.com/senomorf/loadshaper.git
 cd loadshaper
 docker compose up -d --build
 ```
+
+> **⚠️ Important**: The `compose.yaml` includes a persistent volume (`loadshaper-metrics`) that is **required** for LoadShaper to function. Without it, the container will exit with an error.
 
 **2. Monitor activity:**
 ```bash
@@ -97,10 +103,10 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 - **Load average**: Monitor from `/proc/loadavg` to detect CPU contention
 
 ### 2. **7-Day Metrics Storage**
-- **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis
+- **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis in persistent storage (`/var/lib/loadshaper/metrics.db`)
 - **95th percentile calculation**: CPU only (mirrors Oracle's measurement method)
 - **Automatic cleanup**: Removes data older than 7 days
-- **Storage locations**: `/var/lib/loadshaper/metrics.db` (preferred) or `/tmp/loadshaper_metrics.db` (fallback)
+- **Persistent storage requirement**: Database must be stored at `/var/lib/loadshaper/metrics.db` for 7-day history preservation
 
 ### 3. **Intelligent Load Generation**
 - **CPU stress**: Low-priority workers (nice 19) with arithmetic operations

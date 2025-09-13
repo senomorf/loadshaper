@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **📖 Related Documentation:** [README.md](README.md) | [CONTRIBUTING.md](CONTRIBUTING.md) | [AGENTS.md](AGENTS.md)
 
+## [Unreleased] - 2025-01-15
+
+### ⚠️ BREAKING CHANGES - CRITICAL FIX
+- **Persistent volume storage now REQUIRED** - Docker Compose deployments must include persistent volume or container will not start
+- **Container now runs as non-root user** (uid/gid 1000) for security
+- **No fallback to ephemeral storage** - LoadShaper requires persistent storage for Oracle compliance
+
+### Fixed
+- **CRITICAL**: Added persistent volume storage for metrics database in Docker Compose ([#74](https://github.com/senomorf/loadshaper/issues/74))
+- **Metrics database persistence**: 7-day P95 history now preserved across container restarts
+- **Oracle compliance**: P95 calculations maintain complete history required for reclamation detection
+- **Container security**: Application now runs as non-root user (loadshaper:1000)
+
+### Added
+- **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
+- **Health endpoint enhancement**: Added `persistence_storage` status and `database_path` fields
+- **Clear error messages**: Detailed guidance when persistent volume configuration is missing
+
+### Changed
+- **BREAKING**: Docker Compose now requires `loadshaper-metrics` named volume
+- **BREAKING**: Container exits if `/var/lib/loadshaper` is not writable
+- **BREAKING**: Removed all fallback logic to `/tmp` storage paths
+- **Dockerfile**: Added non-root user setup and entrypoint script
+- **Health checks**: Now validate persistence status explicitly
+
+### Migration Required
+Existing Docker Compose users must update their configuration:
+
+```yaml
+services:
+  loadshaper:
+    volumes:
+      - loadshaper-metrics:/var/lib/loadshaper
+      - ./config-templates:/app/config-templates:ro
+
+volumes:
+  loadshaper-metrics:
+    driver: local
+```
+
 ## [3.0.0] - Breaking Change Release
 
 ### ⚠️ BREAKING CHANGES
