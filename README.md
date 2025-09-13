@@ -357,10 +357,10 @@ Jumbo templates are recommended for Oracle Cloud environments with MTU 9000 supp
 | `NET_FALLBACK_START_PCT` | `19` | Start network generation below this % |
 | `NET_FALLBACK_STOP_PCT` | `23` | Stop network generation above this % |
 | `NET_FALLBACK_RISK_THRESHOLD_PCT` | `22` | Oracle reclamation risk threshold for CPU/memory |
-| `NET_DEBOUNCE_SEC` | `30` | Seconds to wait before changing state |
-| `NET_MIN_ON_SEC` | `20` | Minimum seconds to stay active |
-| `NET_MIN_OFF_SEC` | `60` | Minimum seconds to stay inactive |
-| `NET_RATE_STEP_MBIT` | `10` | Rate change step size (Mbps) |
+| `NET_FALLBACK_DEBOUNCE_SEC` | `30` | Seconds to wait before changing state |
+| `NET_FALLBACK_MIN_ON_SEC` | `60` | Minimum seconds to stay active |
+| `NET_FALLBACK_MIN_OFF_SEC` | `30` | Minimum seconds to stay inactive |
+| `NET_FALLBACK_RAMP_SEC` | `10` | Rate ramp time for smooth transitions (seconds) |
 
 ### Network Performance Features
 
