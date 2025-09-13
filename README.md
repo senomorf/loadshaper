@@ -135,9 +135,48 @@ CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is design
 
 **Workload Selection Criteria**: When choosing between stress methods that produce similar CPU utilization metrics, always prioritize the approach with the **least impact on system responsiveness and latency** for other processes. The current implementation uses simple arithmetic operations that minimize context switching overhead and avoid cache pollution.
 
-## Network shaping as fallback
+## Intelligent Network Fallback
 
-Network traffic should only be generated when CPU activity risks falling below Oracle's 20% threshold. Since Oracle uses simple threshold monitoring (not P95) for network utilization, loadshaper can use basic averaging to maintain network levels when needed as a fallback to CPU-based protection.
+`loadshaper` implements smart network fallback to provide additional protection when CPU-based protection alone is insufficient. This feature generates network traffic only when Oracle's reclamation thresholds are at risk.
+
+### How Network Fallback Works
+
+**Activation Logic:**
+- **E2 shapes**: Activates when CPU P95 AND network both approach Oracle's 20% threshold
+- **A1 shapes**: Activates when CPU P95, network, AND memory all approach Oracle's 20% threshold
+
+**Oracle Compliance:**
+- Uses simple threshold monitoring for network (not P95) matching Oracle's measurement method
+- Generates traffic only when needed as a fallback to CPU-based protection
+- Smart debouncing prevents oscillation and reduces system impact
+
+### Network Fallback Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NET_ACTIVATION` | `adaptive` | Fallback mode: `adaptive`, `always`, `off` |
+| `NET_FALLBACK_START_PCT` | `19.0` | Activate fallback below this CPU P95 threshold |
+| `NET_FALLBACK_STOP_PCT` | `23.0` | Deactivate fallback above this CPU P95 threshold |
+| `NET_FALLBACK_RISK_THRESHOLD_PCT` | `22.0` | Combined risk threshold for activation |
+| `NET_FALLBACK_DEBOUNCE_SEC` | `30` | Minimum time between activation changes |
+| `NET_FALLBACK_MIN_ON_SEC` | `60` | Minimum time to stay active once triggered |
+| `NET_FALLBACK_MIN_OFF_SEC` | `30` | Minimum time to stay inactive once stopped |
+| `NET_FALLBACK_RAMP_SEC` | `10` | Ramp-up time for gradual rate adjustment |
+
+### Network Activation Modes
+
+**`adaptive` (recommended):** Smart activation based on Oracle reclamation rules
+- Monitors CPU P95, network, and memory utilization
+- Activates only when multiple metrics approach danger thresholds
+- Provides maximum protection with minimal system impact
+
+**`always`:** Continuous network generation
+- Useful for testing or environments with strict network requirements
+- Higher resource usage but maximum network protection
+
+**`off`:** Disables network fallback entirely
+- CPU-only protection mode
+- Recommended only when network generation is not desired
 
 ## Load average monitoring
 

@@ -71,6 +71,43 @@ else:
 
 This approach ensures precise P95 positioning while maintaining Oracle compliance and system stability.
 
+### Network Fallback Controller Technical Details
+
+The **NetworkFallbackState** provides intelligent network generation as a backup protection mechanism when CPU-based protection alone is insufficient.
+
+#### Oracle Shape-Aware Logic
+- **E2 shapes**: Activates when CPU P95 AND network both approach Oracle's 20% threshold
+- **A1 shapes**: Activates when CPU P95, network, AND memory all approach Oracle's 20% threshold
+
+#### State Management Architecture
+```python
+# Core activation logic based on Oracle reclamation rules
+def should_activate(self, is_e2: bool, cpu_p95: float, net_avg: float, mem_avg: float):
+    if is_e2:
+        # E2: CPU + network criteria only
+        cpu_at_risk = cpu_p95 < NET_FALLBACK_START_PCT
+        net_at_risk = net_avg < NET_FALLBACK_RISK_THRESHOLD_PCT
+        return cpu_at_risk and net_at_risk
+    else:
+        # A1: CPU + network + memory criteria
+        cpu_at_risk = cpu_p95 < NET_FALLBACK_START_PCT
+        net_at_risk = net_avg < NET_FALLBACK_RISK_THRESHOLD_PCT
+        mem_at_risk = mem_avg < NET_FALLBACK_RISK_THRESHOLD_PCT
+        return cpu_at_risk and net_at_risk and mem_at_risk
+```
+
+#### Anti-Oscillation Features
+- **Debounce timing**: `NET_FALLBACK_DEBOUNCE_SEC` prevents rapid state changes
+- **Minimum on/off periods**: Ensures stable activation cycles
+- **Gradual ramp-up**: `NET_FALLBACK_RAMP_SEC` for smooth rate transitions
+- **EMA-based rate control**: Exponential moving average for stable network generation
+
+#### Implementation Benefits
+- **Oracle compliance**: Uses simple thresholds (not P95) for network measurements matching Oracle's method
+- **Minimal impact**: Only generates traffic when multiple metrics simultaneously approach danger
+- **Resource efficient**: Native Python UDP generation replaces external iperf3 dependency
+- **Shape optimized**: Different activation logic for E2 vs A1 Oracle reclamation rules
+
 ## Project Structure & Module Organization
 - `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
 - `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.

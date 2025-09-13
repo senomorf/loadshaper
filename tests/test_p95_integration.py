@@ -235,6 +235,129 @@ class TestP95ControllerIntegration(unittest.TestCase):
         # All accesses should succeed
         self.assertTrue(all(results), "Some concurrent accesses failed")
 
+    def test_cold_start_recovery_with_persisted_ring_buffer(self):
+        """Test P95 controller cold start recovery with persisted ring buffer state"""
+        import tempfile
+        import json
+
+        # Create temporary ring buffer persistence file
+        temp_ring_buffer = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='_p95_ring_buffer.json')
+
+        # Simulate a ring buffer state from 30 minutes ago (valid for 2h limit)
+        old_timestamp = time.time() - 1800  # 30 minutes ago
+        ring_buffer_state = {
+            'slot_history': [True, False, True, False] * 360,  # 24 hours of slots at 60s each
+            'slot_history_index': 100,
+            'slots_recorded': 1440,  # 24 hours worth
+            'slot_history_size': 1440,
+            'timestamp': old_timestamp,
+            'current_slot_is_high': True
+        }
+
+        json.dump(ring_buffer_state, temp_ring_buffer)
+        temp_ring_buffer.close()
+
+        try:
+            # Temporarily disable test mode to allow ring buffer loading
+            original_test_env = os.environ.get('PYTEST_CURRENT_TEST')
+            if 'PYTEST_CURRENT_TEST' in os.environ:
+                del os.environ['PYTEST_CURRENT_TEST']
+
+            try:
+                # Mock the ring buffer path to return our test file
+                with patch.object(CPUP95Controller, '_get_ring_buffer_path', return_value=temp_ring_buffer.name):
+                    controller = CPUP95Controller(self.metrics_storage)
+            finally:
+                # Restore test environment
+                if original_test_env:
+                    os.environ['PYTEST_CURRENT_TEST'] = original_test_env
+
+                # Verify that ring buffer state was loaded
+                self.assertEqual(controller.slots_recorded, 1440)
+                self.assertEqual(controller.slot_history_index, 100)
+                self.assertEqual(controller.slot_history_size, 1440)
+
+                # Verify exceedance calculation works with restored state
+                exceedance = controller.get_current_exceedance()
+                self.assertIsInstance(exceedance, float)
+                self.assertGreaterEqual(exceedance, 0.0)
+                self.assertLessEqual(exceedance, 100.0)
+
+                # Verify controller status includes restoration info
+                status = controller.get_status()
+                self.assertIn('slots_recorded', status)
+                self.assertEqual(status['slots_recorded'], 1440)
+
+                # Test that slot decisions work normally after cold start
+                should_run_high, intensity = controller.should_run_high_slot(current_load_avg=0.3)
+                self.assertIsInstance(should_run_high, bool)
+                self.assertIsInstance(intensity, (int, float))
+                self.assertGreaterEqual(intensity, 20.0)  # At least baseline
+
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_ring_buffer.name)
+            except (OSError, FileNotFoundError):
+                pass
+
+    def test_cold_start_with_stale_ring_buffer_fallback(self):
+        """Test P95 controller gracefully handles stale ring buffer (>2h old)"""
+        import tempfile
+        import json
+
+        # Create temporary ring buffer persistence file
+        temp_ring_buffer = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='_p95_ring_buffer.json')
+
+        # Simulate a ring buffer state from 3 hours ago (exceeds 2h validity limit)
+        old_timestamp = time.time() - 10800  # 3 hours ago
+        stale_ring_buffer_state = {
+            'slot_history': [True, False, True, False] * 360,
+            'slot_history_index': 200,
+            'slots_recorded': 1440,
+            'slot_history_size': 1440,
+            'timestamp': old_timestamp,
+            'current_slot_is_high': False
+        }
+
+        json.dump(stale_ring_buffer_state, temp_ring_buffer)
+        temp_ring_buffer.close()
+
+        try:
+            # Temporarily disable test mode to allow ring buffer loading
+            original_test_env = os.environ.get('PYTEST_CURRENT_TEST')
+            if 'PYTEST_CURRENT_TEST' in os.environ:
+                del os.environ['PYTEST_CURRENT_TEST']
+
+            try:
+                # Mock the ring buffer path to return our test file
+                with patch.object(CPUP95Controller, '_get_ring_buffer_path', return_value=temp_ring_buffer.name):
+                    controller = CPUP95Controller(self.metrics_storage)
+            finally:
+                # Restore test environment
+                if original_test_env:
+                    os.environ['PYTEST_CURRENT_TEST'] = original_test_env
+
+                # Verify that stale state was rejected and fresh state initialized
+                self.assertEqual(controller.slots_recorded, 0)  # Fresh start
+                self.assertEqual(controller.slot_history_index, 0)
+                self.assertGreater(controller.slot_history_size, 0)  # Should be calculated from slot duration
+
+                # All slot history should be initialized to False (fresh ring buffer)
+                self.assertTrue(all(not slot for slot in controller.slot_history))
+
+                # Controller should still function normally with fresh state
+                status = controller.get_status()
+                self.assertEqual(status['slots_recorded'], 0)
+                self.assertEqual(status['exceedance_pct'], 0.0)  # No high slots recorded yet
+
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_ring_buffer.name)
+            except (OSError, FileNotFoundError):
+                pass
+
 
 class TestP95ConfigurationValidation(unittest.TestCase):
     """Test P95 configuration validation and error handling"""
@@ -298,6 +421,7 @@ class TestP95ConfigurationValidation(unittest.TestCase):
             except Exception as e:
                 # Expected - database creation should fail with invalid path or config
                 self.assertIsInstance(e, (OSError, PermissionError, TypeError))
+
 
 
 if __name__ == '__main__':

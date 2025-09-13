@@ -943,7 +943,7 @@ class CPUP95Controller:
 
     # State machine timing constants
     STATE_CHANGE_COOLDOWN_SEC = 300  # 5 minutes cooldown after state change
-    P95_CACHE_TTL_SEC = 180  # Cache P95 calculations for 3 minutes
+    P95_CACHE_TTL_SEC = 300          # Cache P95 calculations for 5 minutes (aligned with state change cooldown)
 
     # Hysteresis values for adaptive deadbands
     HYSTERESIS_SMALL_PCT = 0.5       # Small hysteresis for stable periods
@@ -1114,6 +1114,8 @@ class CPUP95Controller:
                 state = json.load(f)
 
             # Validate state age - only use if less than 2 hours old
+            # Note: Ring buffer validity (2h) is intentionally much longer than P95 cache TTL (5min)
+            # This allows cold start recovery while ensuring fresh P95 data drives control decisions
             state_age_hours = (time.time() - state.get('timestamp', 0)) / 3600
             if state_age_hours > 2:
                 logger.debug(f"P95 ring buffer state too old ({state_age_hours:.1f}h), ignoring")

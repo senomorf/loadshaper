@@ -76,7 +76,7 @@ class TestCPUP95Controller(unittest.TestCase):
         # Caching fields (should be populated after initialization call)
         self.assertEqual(self.controller._p95_cache, 25.0)  # From MockMetricsStorage default
         self.assertGreater(self.controller._p95_cache_time, 0)
-        self.assertEqual(self.controller._p95_cache_ttl_sec, 180)
+        self.assertEqual(self.controller._p95_cache_ttl_sec, 300)
 
     def test_dynamic_ring_buffer_sizing(self):
         """Test ring buffer size calculation with different slot durations"""
@@ -137,8 +137,8 @@ class TestP95Caching(unittest.TestCase):
         self.assertEqual(p95_1, 25.0)
         self.assertEqual(self.mock_storage.call_count, 1)
 
-        # Advance time beyond TTL
-        with patch('time.monotonic', return_value=time.monotonic() + 200):
+        # Advance time beyond TTL (cache TTL is now 300 seconds)
+        with patch('time.monotonic', return_value=time.monotonic() + 400):
             self.mock_storage.set_p95(30.0)
             p95_2 = self.controller.get_cpu_p95()
             self.assertEqual(p95_2, 30.0)
@@ -152,8 +152,8 @@ class TestP95Caching(unittest.TestCase):
         p95_1 = self.controller.get_cpu_p95()
         self.assertEqual(p95_1, 25.0)
 
-        # Advance time and return None
-        with patch('time.monotonic', return_value=time.monotonic() + 200):
+        # Advance time beyond TTL and return None
+        with patch('time.monotonic', return_value=time.monotonic() + 400):
             self.mock_storage.set_p95(None)
             p95_2 = self.controller.get_cpu_p95()
             self.assertIsNone(p95_2)
