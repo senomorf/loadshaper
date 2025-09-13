@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+import loadshaper
 from loadshaper import (
     MetricsStorage, HealthHandler, health_server_thread,
-    CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT, LOAD_THRESHOLD, LOAD_CHECK_ENABLED,
-    N_WORKERS, CONTROL_PERIOD, AVG_WINDOW_SEC, CPU_TARGET_PCT, MEM_TARGET_PCT, NET_TARGET_PCT
+    N_WORKERS
 )
 from http.server import HTTPServer
 from io import BytesIO
@@ -52,6 +52,12 @@ class MockHealthHandler(HealthHandler):
 
 
 class TestHealthEndpoints:
+    @pytest.fixture(autouse=True)
+    def setup_config(self):
+        """Initialize configuration for tests."""
+        import loadshaper
+        loadshaper._initialize_config()
+    
     @pytest.fixture
     def temp_db(self):
         """Create a temporary database file for testing."""
@@ -82,9 +88,9 @@ class TestHealthEndpoints:
             'duty': 0.5,
             'net_rate': 100.0,
             'paused': 0.0,
-            'cpu_target': CPU_TARGET_PCT,
-            'mem_target': MEM_TARGET_PCT,
-            'net_target': NET_TARGET_PCT
+            'cpu_target': loadshaper.CPU_TARGET_PCT,
+            'mem_target': loadshaper.MEM_TARGET_PCT,
+            'net_target': loadshaper.NET_TARGET_PCT
         }
 
     @pytest.fixture
@@ -102,9 +108,9 @@ class TestHealthEndpoints:
             'duty': 0.0,
             'net_rate': 1.0,
             'paused': 1.0,  # System is paused due to safety stop
-            'cpu_target': CPU_TARGET_PCT,
-            'mem_target': MEM_TARGET_PCT,
-            'net_target': NET_TARGET_PCT
+            'cpu_target': loadshaper.CPU_TARGET_PCT,
+            'mem_target': loadshaper.MEM_TARGET_PCT,
+            'net_target': loadshaper.NET_TARGET_PCT
         }
 
     def test_health_endpoint_healthy(self, healthy_state, metrics_storage):
@@ -146,8 +152,8 @@ class TestHealthEndpoints:
         # Modify state to have critical resource usage
         critical_state = healthy_state.copy()
         critical_state.update({
-            'cpu_avg': CPU_STOP_PCT + 5,  # Above stop threshold
-            'mem_avg': MEM_STOP_PCT + 10  # Above stop threshold
+            'cpu_avg': loadshaper.CPU_STOP_PCT + 5,  # Above stop threshold
+            'mem_avg': loadshaper.MEM_STOP_PCT + 10  # Above stop threshold
         })
         
         handler = MockHealthHandler("/health", critical_state, metrics_storage)
@@ -208,18 +214,18 @@ class TestHealthEndpoints:
         
         # Check targets
         targets = response_data['targets']
-        assert targets['cpu_target'] == CPU_TARGET_PCT
-        assert targets['memory_target'] == MEM_TARGET_PCT
-        assert targets['network_target'] == NET_TARGET_PCT
+        assert targets['cpu_target'] == loadshaper.CPU_TARGET_PCT
+        assert targets['memory_target'] == loadshaper.MEM_TARGET_PCT
+        assert targets['network_target'] == loadshaper.NET_TARGET_PCT
         
         # Check configuration
         config = response_data['configuration']
-        assert config['cpu_stop_threshold'] == CPU_STOP_PCT
-        assert config['memory_stop_threshold'] == MEM_STOP_PCT
-        assert config['network_stop_threshold'] == NET_STOP_PCT
+        assert config['cpu_stop_threshold'] == loadshaper.CPU_STOP_PCT
+        assert config['memory_stop_threshold'] == loadshaper.MEM_STOP_PCT
+        assert config['network_stop_threshold'] == loadshaper.NET_STOP_PCT
         assert config['worker_count'] == N_WORKERS
-        assert config['control_period'] == CONTROL_PERIOD
-        assert config['averaging_window'] == AVG_WINDOW_SEC
+        assert config['control_period'] == loadshaper.CONTROL_PERIOD
+        assert config['averaging_window'] == loadshaper.AVG_WINDOW_SEC
         
         # Check percentiles
         percentiles = response_data['percentiles_7d']
@@ -277,8 +283,8 @@ class TestHealthEndpoints:
         response_data = json.loads(handler.response_body.decode('utf-8'))
         config = response_data['configuration']
         
-        if LOAD_CHECK_ENABLED:
-            assert config['load_threshold'] == LOAD_THRESHOLD
+        if loadshaper.LOAD_CHECK_ENABLED:
+            assert config['load_threshold'] == loadshaper.LOAD_THRESHOLD
         else:
             assert config['load_threshold'] is None
 

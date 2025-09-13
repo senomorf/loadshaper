@@ -1,11 +1,10 @@
 version: "3.9"
 
-# Default configuration optimized for VM.Standard.E2.1.Micro (1/8 OCPU, 1GB RAM, 50 Mbps external)
-# For A1.Flex shapes, consider these overrides:
-# - CPU_TARGET_PCT=35 (more CPU available)
-# - MEM_TARGET_PCT=40 (memory reclamation applies)
-# - NET_TARGET_PCT=25 (1 Gbps per vCPU available)
-# - NET_LINK_MBIT=1000 (or higher for multi-vCPU)
+# Oracle shape auto-detection and configuration templates:
+# - Automatically detects Oracle Cloud shapes (E2.1.Micro, E2.2.Micro, A1.Flex-1, A1.Flex-4)
+# - Loads shape-specific configuration templates from config-templates/ directory
+# - Environment variables override template values (ENV > TEMPLATE > DEFAULT)
+# - For non-Oracle environments, uses conservative E2.1.Micro-like defaults
 
 services:
   loadshaper:
@@ -14,6 +13,9 @@ services:
     restart: ${RESTART_POLICY:-always}
     ports:
       - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"   # health check endpoints
+    volumes:
+      # Mount config templates for Oracle shape auto-detection
+      - ./config-templates:/app/config-templates:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${HEALTH_PORT:-8080}/health"]
       interval: 30s
@@ -21,15 +23,15 @@ services:
       start_period: 60s
       retries: 3
     environment:
-      # === Targets (conservative defaults for E2.1.Micro) ===
-      CPU_TARGET_PCT: "${CPU_TARGET_PCT:-25}"         # target average CPU (system-wide)
-      MEM_TARGET_PCT: "${MEM_TARGET_PCT:-0}"          # target RAM used (EXCLUDING cache/buffers) - disabled for E2 (1GB RAM)
-      NET_TARGET_PCT: "${NET_TARGET_PCT:-15}"         # target NIC utilization % (conservative for 50 Mbps external)
+      # === Targets (auto-detected from Oracle shape or fallback defaults) ===
+      CPU_TARGET_PCT: "${CPU_TARGET_PCT}"             # target average CPU (auto-configured per shape)
+      MEM_TARGET_PCT: "${MEM_TARGET_PCT}"             # target RAM used (auto-configured per shape, disabled for E2)
+      NET_TARGET_PCT: "${NET_TARGET_PCT}"             # target NIC utilization % (auto-configured per shape bandwidth)
 
-      # === Safety stop thresholds (conservative for shared tenancy) ===
-      CPU_STOP_PCT: "${CPU_STOP_PCT:-45}"             # lower for E2 shared tenancy
-      MEM_STOP_PCT: "${MEM_STOP_PCT:-80}"             # safe when MEM targeting disabled - system can use cache/buffers freely
-      NET_STOP_PCT: "${NET_STOP_PCT:-40}"             # conservative for external bandwidth
+      # === Safety stop thresholds (auto-configured per Oracle shape) ===
+      CPU_STOP_PCT: "${CPU_STOP_PCT}"                 # auto-configured per tenancy type (E2 vs A1)
+      MEM_STOP_PCT: "${MEM_STOP_PCT}"                 # auto-configured per shape memory rules
+      NET_STOP_PCT: "${NET_STOP_PCT}"                 # auto-configured per shape bandwidth capacity
 
       # === Control behavior ===
       CONTROL_PERIOD_SEC: "${CONTROL_PERIOD_SEC:-5}"

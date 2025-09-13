@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Oracle shape auto-detection**: Automatically detects Oracle Cloud shapes (E2.1.Micro, E2.2.Micro, A1.Flex-1, A1.Flex-4)
+- **Shape-specific configuration templates**: Pre-configured templates optimized for each Oracle shape
+- **Template system**: ENV > TEMPLATE > DEFAULT priority for configuration management
 - **HTTP health check endpoints**: `/health` and `/metrics` endpoints for Docker health checks and monitoring systems
 - **Configurable health server**: `HEALTH_ENABLED`, `HEALTH_PORT`, and `HEALTH_HOST` environment variables
 - **Docker integration examples**: Health check configuration for docker-compose.yml and Dockerfile
@@ -103,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **A1.Flex (ARM64):**
 - Up to 4 OCPUs, 24GB RAM, 1 Gbps per vCPU  
-- Default targets: CPU 35%, Memory 40%, Network 25%
+- Default targets: CPU 35%, Memory 25%, Network 25%
 - Higher targets for dedicated resources
 
 ### Breaking Changes

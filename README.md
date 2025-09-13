@@ -186,7 +186,7 @@ Environment variables can override shape detection and contention limits:
 NET_SENSE_MODE=container NET_LINK_MBIT=10000 NET_STOP_PCT=20 python -u loadshaper.py
 
 # Raise CPU target while lowering the safety stop
-CPU_TARGET_PCT=50 CPU_STOP_PCT=70 MEM_TARGET_PCT=40 MEM_STOP_PCT=80 python -u loadshaper.py
+CPU_TARGET_PCT=50 CPU_STOP_PCT=70 MEM_TARGET_PCT=25 MEM_STOP_PCT=80 python -u loadshaper.py
 
 # Configure load average monitoring thresholds (more aggressive example)
 LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 LOAD_CHECK_ENABLED=true python -u loadshaper.py
@@ -195,23 +195,53 @@ LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 LOAD_CHECK_ENABLED=true python -u l
 LOAD_THRESHOLD=0.4 LOAD_RESUME_THRESHOLD=0.2 python -u loadshaper.py
 ```
 
+## Oracle Shape Auto-Detection
+
+`loadshaper` automatically detects your Oracle Cloud shape and applies optimized configuration templates:
+
+### Supported Shapes
+
+| Shape | CPU | RAM | Network | Template |
+|-------|-----|-----|---------|----------|
+| **VM.Standard.E2.1.Micro** | 1/8 OCPU | 1GB | 50 Mbps | `e2-1-micro.env` |
+| **VM.Standard.E2.2.Micro** | 2/8 OCPU | 2GB | 50 Mbps | `e2-2-micro.env` |
+| **VM.Standard.A1.Flex** (1 vCPU) | 1 vCPU | 6GB | 1 Gbps | `a1-flex-1.env` |
+| **VM.Standard.A1.Flex** (2 vCPU) | 2 vCPU | 12GB | 2 Gbps | `a1-flex-2.env` |
+| **VM.Standard.A1.Flex** (3 vCPU) | 3 vCPU | 18GB | 3 Gbps | `a1-flex-3.env` |
+| **VM.Standard.A1.Flex** (4 vCPU) | 4 vCPU | 24GB | 4 Gbps | `a1-flex-4.env` |
+
+### Configuration Priority
+
+The system uses a three-tier configuration priority:
+1. **Environment Variables** (highest priority)
+2. **Shape-specific Template** (automatic detection)
+3. **Built-in Defaults** (conservative fallback)
+
+This means you can override any template value with environment variables while still benefiting from automatic shape-optimized defaults.
+
+### Non-Oracle Environments
+
+For non-Oracle Cloud environments, `loadshaper` safely falls back to conservative E2.1.Micro-like defaults, making it safe to run anywhere.
+
 ## Configuration Reference
+
+> **⚠️ CRITICAL:** For Oracle Free Tier VM protection, ensure **at least one metric target is above 20%**. Setting all targets below 20% will cause Oracle to reclaim your VM. Oracle checks if ALL metrics are below 20% - if so, the VM is reclaimed.
 
 ### Resource Targets
 
-| Variable | Default | Description | E2.1.Micro | A1.Flex |
-|----------|---------|-------------|------------|----------|
-| `CPU_TARGET_PCT` | `25` | Target CPU utilization (%) | 25% (conservative) | 35% (more CPU available) |
-| `MEM_TARGET_PCT` | `0` | Target memory utilization (%) | 0% (disabled) | 40% (memory rule applies) |
-| `NET_TARGET_PCT` | `15` | Target network utilization (%) | 15% (50 Mbps limit) | 25% (1 Gbps per vCPU) |
+| Variable | Auto-Configured Values | Description | E2.1.Micro | E2.2.Micro | A1.Flex-1 | A1.Flex-2 | A1.Flex-3 | A1.Flex-4 |
+|----------|---------|-------------|------------|------------|------------|------------|------------|------------|
+| `CPU_TARGET_PCT` | **25**, 30, 35, 35, 35, 40 | Target CPU utilization (%) | 25% | 30% | 35% | 35% | 35% | 40% |
+| `MEM_TARGET_PCT` | **0**, 0, 30, 30, 30, 30 | Target memory utilization (%) | 0% (disabled) | 0% (disabled) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) |
+| `NET_TARGET_PCT` | **15**, 15, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
 
 ### Safety Thresholds
 
-| Variable | Default | Description | Notes |
-|----------|---------|-------------|-------|
-| `CPU_STOP_PCT` | `45` | CPU % to pause load generation | Conservative for shared tenancy |
-| `MEM_STOP_PCT` | `80` | Memory % to pause allocation | Safe when MEM targeting disabled |
-| `NET_STOP_PCT` | `40` | Network % to pause traffic | Conservative for external bandwidth |
+| Variable | Auto-Configured Values | Description | E2 Shapes | A1 Shapes |
+|----------|---------|-------------|-----------|-----------|
+| `CPU_STOP_PCT` | **45**, 50, 85, 85 | CPU % to pause load generation | 45-50% (shared tenancy) | 85% (dedicated) |
+| `MEM_STOP_PCT` | **80**, 85, 90, 90 | Memory % to pause allocation | 80-85% (conservative) | 90% (with 20% rule) |
+| `NET_STOP_PCT` | **40**, 40, 60, 60 | Network % to pause traffic | 40% (50 Mbps limit) | 60% (higher capacity) |
 
 ### Control Behavior
 
@@ -244,7 +274,7 @@ LOAD_THRESHOLD=0.4 LOAD_RESUME_THRESHOLD=0.2 python -u loadshaper.py
 |----------|---------|-------------|
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
-| `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses |
+| `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
 | `NET_PORT` | `15201` | iperf3 port for communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
@@ -271,7 +301,7 @@ NET_LINK_MBIT=50 LOAD_THRESHOLD=0.6
 **A1.Flex (ARM64):**
 ```bash  
 # Higher targets for dedicated resources
-CPU_TARGET_PCT=35 MEM_TARGET_PCT=40 NET_TARGET_PCT=25
+CPU_TARGET_PCT=35 MEM_TARGET_PCT=25 NET_TARGET_PCT=25
 NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 ```
 
@@ -282,6 +312,17 @@ NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 | `HEALTH_ENABLED` | `true` | Enable/disable HTTP health check server |
 | `HEALTH_PORT` | `8080` | Port for health check endpoints |
 | `HEALTH_HOST` | `127.0.0.1` | Host interface to bind (localhost only by default) |
+| `LOADSHAPER_TEMPLATE_DIR` | `config-templates/` | Directory containing Oracle shape configuration templates |
+| `ORACLE_METADATA_PROBE` | `0` | Enable Oracle-specific metadata service probe (0=disabled, 1=enabled) |
+
+### Shape Detection Cache
+
+Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid repeated system calls. The cache includes:
+- Detected shape name and template file
+- Oracle environment detection result
+- System specifications (CPU count, memory size)
+
+**Note**: In containerized environments, memory detection reflects the host system, not container limits.
 
 ## Health Check Endpoints
 
