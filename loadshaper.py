@@ -664,7 +664,7 @@ def _validate_final_config():
     """
     global CPU_TARGET_PCT, MEM_TARGET_PCT, NET_TARGET_PCT
     global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
-    global NET_PORT, LOAD_CHECK_ENABLED
+    global NET_PORT
     
     # Validate percentage values
     for var_name, var_value in [
@@ -794,6 +794,19 @@ NET_MAX_RATE = None
 NET_TTL = None
 NET_PACKET_SIZE = None
 
+# Network fallback configuration globals
+NET_ACTIVATION = None
+NET_FALLBACK_START_PCT = None
+NET_FALLBACK_STOP_PCT = None
+NET_FALLBACK_RISK_THRESHOLD_PCT = None
+NET_FALLBACK_DEBOUNCE_SEC = None
+NET_FALLBACK_MIN_ON_SEC = None
+NET_FALLBACK_MIN_OFF_SEC = None
+NET_FALLBACK_RAMP_SEC = None
+
+# Control shared variables
+paused = None
+
 
 def _initialize_config():
     """
@@ -809,6 +822,8 @@ def _initialize_config():
     global CONTROL_PERIOD, AVG_WINDOW_SEC, HYSTERESIS_PCT
     global LOAD_THRESHOLD, LOAD_RESUME_THRESHOLD, LOAD_CHECK_ENABLED
     global JITTER_PCT, JITTER_PERIOD, MEM_MIN_FREE_MB, MEM_STEP_MB, MEM_TOUCH_INTERVAL_SEC
+    global NET_ACTIVATION, NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
+    global NET_FALLBACK_DEBOUNCE_SEC, NET_FALLBACK_MIN_ON_SEC, NET_FALLBACK_MIN_OFF_SEC, NET_FALLBACK_RAMP_SEC
     global NET_MODE, NET_PEERS, NET_PORT, NET_BURST_SEC, NET_IDLE_SEC, NET_PROTOCOL
     global NET_SENSE_MODE, NET_IFACE, NET_IFACE_INNER, NET_LINK_MBIT
     global NET_MIN_RATE, NET_MAX_RATE
@@ -1232,7 +1247,6 @@ def set_mem_target_bytes(target_bytes):
         target_bytes (int): Desired memory allocation size in bytes
     """
     import gc
-    global mem_block
     
     with mem_lock:
         cur = len(mem_block)
@@ -1258,7 +1272,6 @@ def mem_nurse_thread(stop_evt: threading.Event):
     ensuring they count toward memory utilization metrics. Uses system page
     size for efficient touching and respects load thresholds.
     """
-    global paused
     
     # Use system page size for portable and efficient memory touching
     try:
@@ -2273,6 +2286,7 @@ def main():
         'net_target': NET_TARGET_PCT
     }
 
+    global paused
     duty = Value('d', 0.0)
     paused = Value('d', 0.0)  # 1.0 => paused
     net_rate_mbit = Value('d', max(NET_MIN_RATE, min(NET_MAX_RATE, (NET_MAX_RATE + NET_MIN_RATE)/2.0)))
