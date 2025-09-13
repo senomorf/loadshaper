@@ -1374,7 +1374,11 @@ class CPUP95Controller:
             self.current_target_intensity = self.get_target_intensity()
             # Use reduced intensity for forced slots to minimize system impact
             if current_load_avg is not None and current_load_avg > LOAD_THRESHOLD:
+                original_intensity = self.current_target_intensity
                 self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg)
+                # Log when forced high slot gets intensity reduced for visibility
+                if self.current_target_intensity < original_intensity:
+                    logger.debug(f"P95 controller: forced high slot intensity scaled down from {original_intensity:.1f}% to {self.current_target_intensity:.1f}% due to load {current_load_avg:.2f}")
             logger.info(f"P95 controller: forced high slot (consecutive_skipped={self.consecutive_skipped_slots}, hours_since_high={time_since_high_slot/3600:.1f})")
         elif current_exceedance < exceedance_target:
             self.current_slot_is_high = True
@@ -1485,8 +1489,8 @@ class CPUP95Controller:
             intensity_range = normal_intensity - (normal_intensity * self.SAFETY_MIN_INTENSITY_SCALE)
             scaled_intensity = normal_intensity - (intensity_range * scale_progress)
 
-            # Ensure we never go below baseline
-            return max(CPU_P95_BASELINE_INTENSITY, scaled_intensity)
+            # Ensure we never go below baseline or above high intensity
+            return max(CPU_P95_BASELINE_INTENSITY, min(CPU_P95_HIGH_INTENSITY, scaled_intensity))
 
 # ---------------------------
 # Helpers: CPU & memory read

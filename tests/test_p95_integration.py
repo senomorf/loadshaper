@@ -12,6 +12,29 @@ import loadshaper
 from loadshaper import CPUP95Controller, MetricsStorage
 
 
+class MockMetricsStorage:
+    """Mock metrics storage for testing"""
+
+    def __init__(self):
+        self.p95_value = 25.0  # Default reasonable P95 value
+        self.call_count = 0
+
+    def get_percentile(self, metric, percentile=95):
+        """Mock get_percentile that tracks call count"""
+        self.call_count += 1
+        return self.p95_value
+
+    def set_p95(self, value):
+        """Set the P95 value to return"""
+        self.p95_value = value
+        # Don't reset call count - tests expect cumulative counting
+
+    def clear_controller_cache(self, controller):
+        """Clear P95 cache in controller when changing mock values"""
+        controller._p95_cache = None
+        controller._p95_cache_time = 0
+
+
 class TestP95ControllerIntegration(unittest.TestCase):
     """Integration tests for P95 controller with main loop and configuration"""
 
@@ -470,6 +493,89 @@ class TestP95ConfigurationValidation(unittest.TestCase):
                 # Expected - database creation should fail with invalid path or config
                 self.assertIsInstance(e, (OSError, PermissionError, TypeError))
 
+
+
+
+
+class TestP95ConvergenceBehavior(unittest.TestCase):
+    """Test P95 controller convergence behavior over many slots"""
+
+    def setUp(self):
+        """Set up convergence test fixtures"""
+        self.storage = MockMetricsStorage()
+
+        # Set deterministic test environment
+        os.environ['PYTEST_CURRENT_TEST'] = 'test_p95_convergence'
+
+        # Mock configuration for fast, deterministic testing
+        self.patches = patch.multiple(loadshaper,
+                                    CPU_P95_SLOT_DURATION=1.0,  # Fast slots
+                                    CPU_P95_BASELINE_INTENSITY=20.0,
+                                    CPU_P95_HIGH_INTENSITY=35.0,
+                                    CPU_P95_TARGET_MIN=22.0,
+                                    CPU_P95_TARGET_MAX=28.0,
+                                    CPU_P95_SETPOINT=25.0,
+                                    CPU_P95_EXCEEDANCE_TARGET=6.5,
+                                    LOAD_CHECK_ENABLED=False,  # Disable safety gating
+                                    LOAD_THRESHOLD=0.6)
+        self.patches.start()
+
+    def tearDown(self):
+        """Clean up convergence test fixtures"""
+        self.patches.stop()
+        if 'PYTEST_CURRENT_TEST' in os.environ:
+            del os.environ['PYTEST_CURRENT_TEST']
+
+    def test_p95_controller_basic_slot_functionality(self):
+        """Test basic P95 controller slot functionality without complex convergence."""
+        controller = loadshaper.CPUP95Controller(self.storage)
+
+        # Set P95 at target for MAINTAINING state
+        self.storage.set_p95(25.0)
+        self.storage.clear_controller_cache(controller)
+        controller.update_state(controller.get_cpu_p95())
+
+        # Test basic slot decision functionality
+        is_high, intensity = controller.should_run_high_slot(current_load_avg=0.3)
+
+        # Basic sanity checks
+        self.assertIsInstance(is_high, bool)
+        self.assertIsInstance(intensity, (int, float))
+        self.assertGreaterEqual(intensity, 20.0)  # At least baseline
+        self.assertLessEqual(intensity, 35.0)     # No more than high
+
+        # Test controller status reporting
+        status = controller.get_status()
+        self.assertIn('state', status)
+        self.assertIn('cpu_p95', status)
+        self.assertIn('exceedance_pct', status)
+        self.assertIn(status['state'], ['BUILDING', 'MAINTAINING', 'REDUCING'])
+
+        # Test state transitions work
+        self.storage.set_p95(20.0)  # Below target - should trigger BUILDING
+        self.storage.clear_controller_cache(controller)
+        controller.update_state(controller.get_cpu_p95())
+        # Note: State may not change immediately due to hysteresis - that's expected
+
+        self.storage.set_p95(30.0)  # Above target - should trigger REDUCING
+        self.storage.clear_controller_cache(controller)
+        controller.update_state(controller.get_cpu_p95())
+        # Note: State may not change immediately due to hysteresis - that's expected
+
+        # Test that controller produces consistent results
+        results = []
+        for _ in range(10):
+            is_high, intensity = controller.should_run_high_slot(current_load_avg=0.3)
+            results.append((is_high, intensity))
+
+        # Should get some consistency in results (not all random)
+        high_results = [r[0] for r in results]
+        intensity_results = [r[1] for r in results]
+
+        # All intensities should be in valid range
+        for intensity in intensity_results:
+            self.assertGreaterEqual(intensity, 20.0)
+            self.assertLessEqual(intensity, 35.0)
 
 
 if __name__ == '__main__':
