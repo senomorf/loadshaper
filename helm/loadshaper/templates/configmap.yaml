@@ -51,6 +51,11 @@ data:
   NET_MIN_RATE_MBIT: {{ .Values.config.NET_MIN_RATE_MBIT | quote }}
   NET_MAX_RATE_MBIT: {{ .Values.config.NET_MAX_RATE_MBIT | quote }}
   
+  # Health and metrics endpoints
+  HEALTH_ENABLED: {{ .Values.config.HEALTH_ENABLED | quote }}
+  HEALTH_HOST: {{ .Values.config.HEALTH_HOST | quote }}
+  HEALTH_PORT: {{ .Values.config.HEALTH_PORT | quote }}
+  
   {{- if .Values.config.extra }}
   {{- range $key, $value := .Values.config.extra }}
   {{ $key }}: {{ $value | quote }}

@@ -137,7 +137,7 @@ serviceMonitor:
   enabled: false
   interval: 30s
   scrapeTimeout: 10s
-  port: 8080
+  # port: Uses config.HEALTH_PORT (8080 by default)
 
 # Security
 networkPolicy:
@@ -222,7 +222,7 @@ kubectl get configmap -l app.kubernetes.io/name=loadshaper -o yaml
 kubectl get pvc -l app.kubernetes.io/name=loadshaper
 
 # Check metrics (if ServiceMonitor enabled)
-kubectl port-forward svc/loadshaper 8080:8080
+kubectl port-forward svc/loadshaper 8080:8080  # Uses HEALTH_PORT
 curl http://localhost:8080/metrics
 ```
 

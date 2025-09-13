@@ -21,12 +21,12 @@ spec:
   ports:
     - port: {{ .Values.service.port }}
       targetPort: iperf
-      protocol: TCP
+      protocol: {{ .Values.config.NET_PROTOCOL | upper }}
       name: iperf
       {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePort }}
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
-    {{- if and (eq .Values.config.HEALTH_ENABLED "true") .Values.serviceMonitor.enabled }}
+    {{- if eq .Values.config.HEALTH_ENABLED "true" }}
     - port: {{ .Values.config.HEALTH_PORT }}
       targetPort: metrics
       protocol: TCP

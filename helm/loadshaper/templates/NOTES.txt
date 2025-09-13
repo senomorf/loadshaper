@@ -20,8 +20,8 @@
 
 {{- if .Values.serviceMonitor.enabled }}
 7. Prometheus metrics endpoint:
-  kubectl port-forward svc/{{ include "loadshaper.fullname" . }} 8080:{{ .Values.serviceMonitor.port | default 8080 }}
-  # Then visit http://127.0.0.1:8080/metrics
+  kubectl port-forward svc/{{ include "loadshaper.fullname" . }} {{ .Values.config.HEALTH_PORT }}:{{ .Values.config.HEALTH_PORT }}
+  # Then visit http://127.0.0.1:{{ .Values.config.HEALTH_PORT }}/metrics
 {{- end }}
 
 {{- if .Values.service.enabled }}

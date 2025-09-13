@@ -23,22 +23,22 @@ spec:
               {{- include "loadshaper.selectorLabels" . | nindent 14 }}
         - namespaceSelector:
             matchLabels:
-              name: {{ .Release.Namespace }}
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
               {{- include "loadshaper.selectorLabels" . | nindent 14 }}
       ports:
-        - protocol: TCP
+        - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
           port: {{ .Values.config.NET_PORT }}
     # Allow Prometheus scraping if ServiceMonitor is enabled
     {{- if .Values.serviceMonitor.enabled }}
     - from:
         - namespaceSelector:
             matchLabels:
-              name: {{ .Values.serviceMonitor.namespace | default "monitoring" }}
+              kubernetes.io/metadata.name: {{ .Values.serviceMonitor.namespace | default "monitoring" }}
       ports:
         - protocol: TCP
-          port: {{ .Values.config.HEALTH_PORT | default 15201 }}
+          port: {{ .Values.config.HEALTH_PORT | default 8080 }}
     {{- end }}
     {{- end }}
   egress:
@@ -59,24 +59,21 @@ spec:
               {{- include "loadshaper.selectorLabels" . | nindent 14 }}
         - namespaceSelector:
             matchLabels:
-              name: {{ .Release.Namespace }}
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
               {{- include "loadshaper.selectorLabels" . | nindent 14 }}
       ports:
-        - protocol: TCP
+        - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
           port: {{ .Values.config.NET_PORT }}
-    # Allow external internet traffic for Oracle Cloud threshold compliance (restricted to known endpoints)
+    # Allow external internet traffic for Oracle Cloud threshold compliance
+    # Note: For true internet access, configure ipBlock with appropriate CIDR ranges
+    # The following rules allow communication with specific pod labels in the cluster
     - to:
         - namespaceSelector: {}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: iperf-server
-        # Allow communication with well-known internet load testing endpoints
-        - podSelector: {}
-          namespaceSelector:
-            matchLabels:
-              name: load-testing
       ports:
         - protocol: TCP
           port: 80

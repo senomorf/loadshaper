@@ -2,7 +2,7 @@ apiVersion: v2
 name: loadshaper
 description: Oracle Cloud Always Free VM Keeper - Intelligent baseline load generator
 type: application
-version: 0.1.0
+version: 1.0.0
 appVersion: "1.0.0"
 keywords:
   - oracle-cloud

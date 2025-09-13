@@ -42,7 +42,7 @@ spec:
           ports:
             - name: iperf
               containerPort: {{ .Values.config.NET_PORT }}
-              protocol: TCP
+              protocol: {{ .Values.config.NET_PROTOCOL | upper }}
             {{- if eq .Values.config.HEALTH_ENABLED "true" }}
             - name: metrics
               containerPort: {{ .Values.config.HEALTH_PORT }}
