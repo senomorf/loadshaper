@@ -363,6 +363,36 @@ Jumbo templates are recommended for Oracle Cloud environments with MTU 9000 supp
 | `NET_MIN_OFF_SEC` | `60` | Minimum seconds to stay inactive |
 | `NET_RATE_STEP_MBIT` | `10` | Rate change step size (Mbps) |
 
+### Network Performance Optimizations
+
+The native network generator provides several performance improvements over external tools:
+
+**TCP Connection Pooling:**
+- Persistent connections per target reduce connection overhead
+- Automatic reconnection with exponential backoff on failures
+- Significant performance improvement for sustained TCP traffic
+
+**IPv6 Support:**
+- Dual-stack networking with IPv4/IPv6 auto-detection
+- Prefers IPv4 for compatibility, falls back to IPv6
+- Proper TTL/hop limit handling for both address families
+
+**DNS Resolution Caching:**
+- Hostnames resolved once per session and cached
+- Reduces DNS query overhead for repeated connections
+- Supports both A and AAAA record resolution
+
+**Protocol-Specific Optimizations:**
+- UDP: Non-blocking sockets with optimized send buffers (1MB+)
+- TCP: Connection pooling with TCP_NODELAY for low latency
+- Jumbo frame support (MTU 9000) with 8900-byte packets for 30-50% CPU reduction
+
+**Performance Considerations:**
+- Rate limiting accuracy: 5ms token bucket precision
+- Packet generation: Pre-allocated buffers for zero-copy operation
+- Resource usage: Automatic cleanup with context manager support
+- Thread safety: Designed for single-threaded operation per generator
+
 ### Shape-Specific Recommendations
 
 **VM.Standard.E2.1.Micro (x86-64):**

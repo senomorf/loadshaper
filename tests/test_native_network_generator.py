@@ -4,6 +4,7 @@ import unittest
 import unittest.mock
 import time
 import threading
+import socket
 import sys
 import os
 
@@ -253,6 +254,113 @@ class TestNetworkGenerator(unittest.TestCase):
 
         # Socket should be cleaned up after context exit
         self.assertIsNone(gen.socket)
+
+    def test_tcp_connection_pooling(self):
+        """Test TCP connection pooling functionality."""
+        gen = loadshaper.NetworkGenerator(rate_mbps=1.0, protocol="tcp")
+
+        # Mock socket creation
+        mock_sock1 = unittest.mock.MagicMock()
+        mock_sock2 = unittest.mock.MagicMock()
+
+        with unittest.mock.patch('socket.socket', side_effect=[mock_sock1, mock_sock2]):
+            # Manually set resolved targets
+            gen.target_addresses = {
+                'host1': ('192.168.1.1', socket.AF_INET),
+                'host2': ('192.168.1.2', socket.AF_INET)
+            }
+
+            # Get first connection
+            conn1 = gen._get_tcp_connection('host1')
+            self.assertIs(conn1, mock_sock1)
+            self.assertIn('host1', gen.tcp_connections)
+
+            # Get same connection again - should reuse
+            conn1_again = gen._get_tcp_connection('host1')
+            self.assertIs(conn1_again, mock_sock1)
+
+            # Get different connection
+            conn2 = gen._get_tcp_connection('host2')
+            self.assertIs(conn2, mock_sock2)
+            self.assertIn('host2', gen.tcp_connections)
+
+        gen.stop()
+
+    def test_ipv6_address_resolution(self):
+        """Test IPv6 address resolution and caching."""
+        gen = loadshaper.NetworkGenerator(rate_mbps=1.0, protocol="udp")
+
+        # Mock getaddrinfo to return both IPv4 and IPv6
+        mock_addr_info = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, '', ('192.168.1.1', 15201)),
+            (socket.AF_INET6, socket.SOCK_DGRAM, 0, '', ('2001:db8::1', 15201, 0, 0))
+        ]
+
+        with unittest.mock.patch('socket.getaddrinfo', return_value=mock_addr_info):
+            gen._resolve_targets(['example.com'])
+
+            # Should prefer IPv4
+            self.assertIn('example.com', gen.target_addresses)
+            ip_addr, family = gen.target_addresses['example.com']
+            self.assertEqual(ip_addr, '192.168.1.1')
+            self.assertEqual(family, socket.AF_INET)
+
+            # Should be cached
+            self.assertIn('example.com', gen.resolved_targets)
+
+    def test_dns_resolution_caching(self):
+        """Test DNS resolution caching."""
+        gen = loadshaper.NetworkGenerator(rate_mbps=1.0, protocol="udp")
+
+        mock_addr_info = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, '', ('192.168.1.1', 15201))
+        ]
+
+        with unittest.mock.patch('socket.getaddrinfo', return_value=mock_addr_info) as mock_getaddrinfo:
+            # First resolution
+            gen._resolve_targets(['example.com'])
+            self.assertEqual(mock_getaddrinfo.call_count, 1)
+
+            # Second resolution should use cache
+            gen._resolve_targets(['example.com'])
+            self.assertEqual(mock_getaddrinfo.call_count, 1)  # Should not increase
+
+            # Verify cached result
+            self.assertIn('example.com', gen.resolved_targets)
+
+    def test_ipv6_only_fallback(self):
+        """Test fallback to IPv6 when no IPv4 available."""
+        gen = loadshaper.NetworkGenerator(rate_mbps=1.0, protocol="udp")
+
+        # Mock getaddrinfo to return only IPv6
+        mock_addr_info = [
+            (socket.AF_INET6, socket.SOCK_DGRAM, 0, '', ('2001:db8::1', 15201, 0, 0))
+        ]
+
+        with unittest.mock.patch('socket.getaddrinfo', return_value=mock_addr_info):
+            gen._resolve_targets(['ipv6only.example.com'])
+
+            # Should use IPv6
+            self.assertIn('ipv6only.example.com', gen.target_addresses)
+            ip_addr, family = gen.target_addresses['ipv6only.example.com']
+            self.assertEqual(ip_addr, '2001:db8::1')
+            self.assertEqual(family, socket.AF_INET6)
+
+    def test_tcp_connection_cleanup_on_stop(self):
+        """Test that all TCP connections are closed on stop."""
+        gen = loadshaper.NetworkGenerator(rate_mbps=1.0, protocol="tcp")
+
+        # Create mock connections
+        mock_conn1 = unittest.mock.MagicMock()
+        mock_conn2 = unittest.mock.MagicMock()
+        gen.tcp_connections = {'host1': mock_conn1, 'host2': mock_conn2}
+
+        gen.stop()
+
+        # All connections should be closed
+        mock_conn1.close.assert_called_once()
+        mock_conn2.close.assert_called_once()
+        self.assertEqual(len(gen.tcp_connections), 0)
 
     def test_protocol_validation(self):
         """Test invalid protocol handling."""

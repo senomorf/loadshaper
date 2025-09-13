@@ -1465,6 +1465,8 @@ class NetworkGenerator:
         self.port = max(1024, min(65535, port))
         self.socket = None
         self.packet_data = None
+        self.tcp_connections = {}  # Cache for persistent TCP connections
+        self.resolved_targets = {}  # Cache for DNS resolutions
         self._prepare_packet_data()
 
         # Pre-allocate socket buffers for efficiency
@@ -1481,6 +1483,54 @@ class NetworkGenerator:
         """Update target transmission rate."""
         self.bucket.update_rate(new_rate_mbps)
 
+    def _resolve_targets(self, target_addresses: list):
+        """
+        Resolve target addresses to IP addresses with IPv6 support and caching.
+
+        Args:
+            target_addresses: List of hostnames or IP addresses to resolve
+        """
+        resolved = {}
+        for target in target_addresses:
+            if target in self.resolved_targets:
+                # Use cached resolution
+                resolved[target] = self.resolved_targets[target]
+                continue
+
+            try:
+                # Try to resolve hostname to IP address(es)
+                # This supports both IPv4 and IPv6
+                addr_info = socket.getaddrinfo(target, self.port, socket.AF_UNSPEC,
+                                              socket.SOCK_DGRAM if self.protocol == "udp" else socket.SOCK_STREAM)
+
+                # Use first available address (prefer IPv4 for compatibility)
+                ipv4_addr = None
+                ipv6_addr = None
+
+                for family, sock_type, proto, canonname, sockaddr in addr_info:
+                    if family == socket.AF_INET and not ipv4_addr:
+                        ipv4_addr = (sockaddr[0], family)
+                    elif family == socket.AF_INET6 and not ipv6_addr:
+                        ipv6_addr = (sockaddr[0], family)
+
+                # Prefer IPv4 for compatibility, fallback to IPv6
+                if ipv4_addr:
+                    resolved[target] = ipv4_addr
+                elif ipv6_addr:
+                    resolved[target] = ipv6_addr
+                else:
+                    logger.warning(f"Could not resolve {target}, skipping")
+                    continue
+
+                # Cache the resolution
+                self.resolved_targets[target] = resolved[target]
+
+            except socket.gaierror as e:
+                logger.warning(f"Failed to resolve {target}: {e}, skipping")
+                continue
+
+        self.target_addresses = resolved
+
     def start(self, target_addresses: list):
         """
         Start network generation session.
@@ -1492,7 +1542,8 @@ class NetworkGenerator:
             target_addresses = self.RFC2544_ADDRESSES
             logger.info(f"Using RFC 2544 benchmark addresses for network generation: {target_addresses}")
 
-        self.target_addresses = target_addresses
+        # Resolve and cache target addresses with IPv6 support
+        self._resolve_targets(target_addresses)
 
         try:
             if self.protocol == "udp":
@@ -1506,11 +1557,22 @@ class NetworkGenerator:
             self.stop()
 
     def _start_udp(self):
-        """Initialize UDP socket for traffic generation."""
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        """Initialize UDP socket for traffic generation with IPv4/IPv6 support."""
+        # Determine address family from first resolved target
+        if not self.target_addresses:
+            raise ValueError("No target addresses resolved")
 
-        # Set TTL for safety
-        self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
+        # Get address family from first target
+        first_target = next(iter(self.target_addresses.values()))
+        family = first_target[1]  # AF_INET or AF_INET6
+
+        self.socket = socket.socket(family, socket.SOCK_DGRAM)
+
+        # Set TTL/hop limit for safety
+        if family == socket.AF_INET:
+            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
+        elif family == socket.AF_INET6:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
 
         # Optimize send buffer
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
@@ -1520,9 +1582,64 @@ class NetworkGenerator:
 
     def _start_tcp(self):
         """Initialize TCP socket settings for traffic generation."""
-        # TCP uses per-connection sockets created in _send_tcp_packet
+        # TCP uses persistent connections managed in tcp_connections dict
         # Set socket to None to indicate TCP mode
         self.socket = None
+        # Connections will be created on-demand in _get_tcp_connection()
+
+    def _get_tcp_connection(self, target: str):
+        """
+        Get or create a persistent TCP connection for the target.
+
+        Args:
+            target: Target hostname/IP (key in self.target_addresses)
+
+        Returns:
+            socket.socket: Connected TCP socket or None if failed
+        """
+        if target not in self.target_addresses:
+            return None
+
+        ip_addr, family = self.target_addresses[target]
+
+        # Check if we have a cached connection
+        if target in self.tcp_connections:
+            conn = self.tcp_connections[target]
+            try:
+                # Test if connection is still alive by trying to send 0 bytes
+                conn.send(b'')
+                return conn
+            except (socket.error, OSError):
+                # Connection is dead, remove it
+                try:
+                    conn.close()
+                except:
+                    pass
+                del self.tcp_connections[target]
+
+        # Create new connection
+        try:
+            tcp_sock = socket.socket(family, socket.SOCK_STREAM)
+
+            # Apply socket options
+            if family == socket.AF_INET:
+                tcp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
+            elif family == socket.AF_INET6:
+                tcp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
+
+            tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
+            tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            tcp_sock.settimeout(0.5)  # Short timeout to prevent blocking
+
+            tcp_sock.connect((ip_addr, self.port))
+
+            # Cache the connection
+            self.tcp_connections[target] = tcp_sock
+            return tcp_sock
+
+        except (socket.error, OSError) as e:
+            logger.debug(f"Failed to connect to {target} ({ip_addr}): {e}")
+            return None
 
     def send_burst(self, duration_seconds: float) -> int:
         """
@@ -1552,8 +1669,12 @@ class NetworkGenerator:
                     time.sleep(min(wait_time, 0.001))  # Max 1ms sleep
                 continue
 
-            # Select random target
-            target = random.choice(self.target_addresses)
+            # Select random target (handle both dict and list formats for compatibility)
+            if isinstance(self.target_addresses, dict):
+                target = random.choice(list(self.target_addresses.keys()))
+            else:
+                # Legacy list format (for tests)
+                target = random.choice(self.target_addresses)
 
             try:
                 if self.protocol == "udp":
@@ -1577,47 +1698,67 @@ class NetworkGenerator:
         return packets_sent
 
     def _send_udp_packet(self, target: str) -> int:
-        """Send single UDP packet."""
+        """Send single UDP packet with IPv4/IPv6 support."""
         try:
+            # Handle both dict and list formats for compatibility
+            if isinstance(self.target_addresses, dict):
+                if target not in self.target_addresses:
+                    return 0
+                ip_addr, family = self.target_addresses[target]
+            else:
+                # Legacy list format (for tests) - target is the IP address
+                ip_addr = target
+
             # Refresh packet timestamp
             current_time = struct.pack('!d', time.time())
             packet = current_time + self.packet_data[8:]
 
-            self.socket.sendto(packet, (target, self.port))
+            self.socket.sendto(packet, (ip_addr, self.port))
             return 1
         except socket.error:
             # Expected for non-blocking UDP - just continue
             return 0
 
     def _send_tcp_packet(self, target: str) -> int:
-        """Send TCP packet (requires connection)."""
+        """Send TCP packet using persistent connection pool."""
         try:
-            # Create new connection for each packet (simplified implementation)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
-                # Apply consistent socket options
-                tcp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
-                tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
-                tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                tcp_sock.settimeout(0.5)  # Short timeout to prevent blocking
+            # Get or create persistent connection
+            tcp_sock = self._get_tcp_connection(target)
+            if not tcp_sock:
+                return 0
 
-                tcp_sock.connect((target, self.port))
-
-                # Send packet data with current timestamp
-                current_time = struct.pack('!d', time.time())
-                packet = current_time + self.packet_data[8:]
-                tcp_sock.send(packet)
-                return 1
+            # Send packet data with current timestamp
+            current_time = struct.pack('!d', time.time())
+            packet = current_time + self.packet_data[8:]
+            tcp_sock.send(packet)
+            return 1
         except (socket.error, OSError):
+            # Connection failed, remove from pool
+            if target in self.tcp_connections:
+                try:
+                    self.tcp_connections[target].close()
+                except:
+                    pass
+                del self.tcp_connections[target]
             return 0
 
     def stop(self):
         """Stop network generation and cleanup resources."""
+        # Close UDP socket
         if self.socket:
             try:
                 self.socket.close()
             except Exception:
                 pass
             self.socket = None
+
+        # Close all TCP connections
+        for target, conn in list(self.tcp_connections.items()):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self.tcp_connections.clear()
 
     def __enter__(self):
         """Context manager entry."""
