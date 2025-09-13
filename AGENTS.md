@@ -265,7 +265,7 @@ sleep 30
 docker logs loadshaper | tail -10
 
 # 3. Verify metrics collection
-docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" 2>/dev/null || echo "Using fallback storage"
+docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" 2>/dev/null || echo "Persistent storage not mounted - container will fail"
 
 # 4. Test different load scenarios
 LOAD_THRESHOLD=0.1 docker compose up -d  # Should pause quickly

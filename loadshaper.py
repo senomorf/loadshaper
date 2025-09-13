@@ -2642,7 +2642,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             elif not persistence_ok:
                 is_healthy = False
                 status_checks.append("persistence_not_available")
-                # Note: Don't mark unhealthy for storage issues, as core functionality still works
+                # Note: Persistence failure marks unhealthy as 7-day P95 calculations require persistent storage
             
             # Check for extreme resource usage that might indicate issues
             with self.controller_state_lock:

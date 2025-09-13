@@ -76,7 +76,7 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - "test -f /var/lib/loadshaper/metrics.db || test -f /tmp/loadshaper_metrics.db"
+                - "test -f /var/lib/loadshaper/metrics.db"
             {{- end }}
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
@@ -129,6 +129,9 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (include "loadshaper.fullname" .) }}
           {{- else }}
+          # WARNING: emptyDir storage will cause container to fail startup validation
+          # LoadShaper requires persistent storage for 7-day P95 CPU calculations
+          # Set persistence.enabled=true to enable proper Oracle compliance
           emptyDir: {}
           {{- end }}
         # tmpfs volume for temporary files (read-only root filesystem)

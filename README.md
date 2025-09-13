@@ -207,8 +207,7 @@ at each control period (default 5 seconds) and automatically cleaned up after
 7 days.
 
 **Storage location:**
-- Primary: `/var/lib/loadshaper/metrics.db` (if writable)
-- Fallback: `/tmp/loadshaper_metrics.db`
+- Required: `/var/lib/loadshaper/metrics.db` (persistent storage required)
 
 **Telemetry output format:**
 ```
@@ -737,7 +736,7 @@ A: E2 shapes only have 1GB RAM and memory isn't counted in Oracle's reclamation 
 A: Watch the telemetry output: `docker logs -f loadshaper`. You'll see current, average, and CPU 95th percentile values.
 
 **Q: What happens if I restart the container?**  
-A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` or `/tmp/`). The 7-day rolling window continues from where it left off.
+A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` on persistent storage). The 7-day rolling window continues from where it left off.
 
 **Q: Can I run this alongside other applications?**  
 A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist peacefully with any workload.
@@ -863,8 +862,14 @@ docker logs -f loadshaper | grep "nic("
 
 **Database storage issues:**
 ```shell
-# Check if metrics database is working
-docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Using fallback /tmp storage"
+# Check if persistent metrics storage is working
+docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Persistent storage not mounted - container will fail"
+
+# If database corrupted, remove and restart (7-day P95 history will reset)
+docker exec loadshaper rm -f /var/lib/loadshaper/metrics.db && docker restart loadshaper
+
+# Check disk space and verify write permissions
+docker exec loadshaper df -h /var/lib/loadshaper && docker exec loadshaper touch /var/lib/loadshaper/test && docker exec loadshaper rm /var/lib/loadshaper/test
 ```
 
 **Load average causing frequent pauses:**
@@ -1013,20 +1018,19 @@ sys.path.append('/app')
 import loadshaper
 
 # Check database exists
-db_paths = ['/var/lib/loadshaper/metrics.db', '/tmp/loadshaper_metrics.db']
-db_path = next((p for p in db_paths if os.path.exists(p)), None)
-if not db_path:
-    print('No metrics database found')
+db_path = '/var/lib/loadshaper/metrics.db'
+if not os.path.exists(db_path):
+    print('Persistent metrics database not found - volume not mounted correctly')
     exit(1)
 
 # Check recent metrics
-tracker = loadshaper.MetricsTracker(db_path)
-stats = tracker.get_7day_stats('cpu_p95')
-print(f'CPU 95th percentile: {stats[\"p95\"]:.1f}% (need >20%)')
+storage = loadshaper.MetricsStorage()
+cpu_p95 = storage.get_percentile('cpu')
+print(f'CPU 95th percentile: {cpu_p95:.1f}% (need >20%)' if cpu_p95 else 'CPU P95 not available')
 
 try:
-    net_stats = tracker.get_7day_stats('network_current')
-    print(f'Network current: {net_stats[\"current\"]:.1f}% (need >20%)')
+    print(f'Network samples available: {storage.get_sample_count()}')
+    print('Check /metrics endpoint for current utilization levels')
 except:
     print('Network metrics not available')
 
@@ -1034,8 +1038,8 @@ if loadshaper.is_e2_shape():
     print('E2 shape: CPU and network must be >20%')
 else:
     try:
-        mem_stats = tracker.get_7day_stats('memory_current')
-        print(f'Memory current: {mem_stats[\"current\"]:.1f}% (need >20% for A1)')
+        print('Memory tracking active for A1 shapes')
+        print('Check /metrics endpoint for current memory utilization')
     except:
         print('Memory metrics not available')
     print('A1 shape: CPU, network, AND memory must all be >20%')

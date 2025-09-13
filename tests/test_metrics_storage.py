@@ -4,6 +4,7 @@ import time
 import tempfile
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -279,3 +280,16 @@ class TestMetricsStorage:
         # Metric with NULL should return None
         mem_p95 = storage.get_percentile('mem')
         assert mem_p95 is None
+
+    def test_default_path_requires_persistent_directory(self):
+        """Test that MetricsStorage() with default path requires persistent directory."""
+        # Mock os.path.isdir to return False for the persistent directory
+        with patch('os.path.isdir') as mock_isdir:
+            mock_isdir.return_value = False
+
+            with pytest.raises(FileNotFoundError) as exc_info:
+                MetricsStorage()  # Use default path
+
+            # Should check for the persistent directory
+            mock_isdir.assert_called_with('/var/lib/loadshaper')
+            assert "A persistent volume must be mounted" in str(exc_info.value)
