@@ -69,7 +69,7 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 | `image.tag` | Container image tag | `""` (uses Chart.AppVersion) |
 | `config.CPU_TARGET_PCT` | Target CPU utilization percentage | `"30.0"` |
 | `config.MEM_TARGET_PCT` | Target memory utilization percentage | `"60.0"` |
-| `config.NET_TARGET_PCT` | Target network utilization percentage | `"10.0"` |
+| `config.NET_TARGET_PCT` | Target network utilization percentage | `"25.0"` |
 | `config.NET_PEERS` | Comma-separated list of peer IPs for network load | `""` |
 | `persistence.enabled` | Enable persistent storage for metrics | `true` |
 | `persistence.size` | Size of persistent volume | `1Gi` |
@@ -102,7 +102,7 @@ image:
 config:
   CPU_TARGET_PCT: "30.0"      # Target CPU utilization %
   MEM_TARGET_PCT: "60.0"      # Target memory utilization %
-  NET_TARGET_PCT: "10.0"      # Target network utilization %
+  NET_TARGET_PCT: "25.0"      # Target network utilization % (above Oracle 20% threshold)
   
   # Safety thresholds
   CPU_STOP_PCT: "85.0"        # Emergency stop CPU threshold

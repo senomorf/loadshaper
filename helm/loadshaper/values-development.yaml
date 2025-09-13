@@ -53,7 +53,7 @@ config:
   # Higher targets for visible activity in development
   CPU_TARGET_PCT: "40.0"
   MEM_TARGET_PCT: "70.0"
-  NET_TARGET_PCT: "20.0"
+  NET_TARGET_PCT: "25.0"
   
   # Relaxed safety thresholds
   CPU_STOP_PCT: "90.0"

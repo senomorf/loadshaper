@@ -11,7 +11,7 @@
 
 ### Core Components
 - **Metric Collection**: System-level monitoring (CPU, memory, network, load average)
-- **Storage Layer**: SQLite-based 7-day rolling metrics with 95th percentile calculations
+- **Storage Layer**: SQLite-based 7-day rolling metrics with 95th percentile CPU calculations
 - **Control Logic**: PID-style controllers for each resource type with hysteresis
 - **Load Workers**: Low-priority background processes for resource consumption
 - **Safety Systems**: Load average monitoring and automatic yielding to real workloads
@@ -28,20 +28,23 @@
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │   SQLite    │    │   Safety    │    │   Telemetry │
 │  Metrics    │    │  Monitors   │    │   Output    │
-│ (7-day p95) │    │ (Load Avg)  │    │ (Logs/UI)   │
+│ (CPU p95 +  │    │ (Load Avg)  │    │ (Logs/UI)   │
+│  NET/MEM    │    │             │    │             │
+│  Current)   │    │             │    │             │
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
 ### Design Principles
 - **Unobtrusive**: Always yields to legitimate workloads (nice 19 priority)
-- **Adaptive**: Responds to system load and Oracle's reclamation criteria
+- **Adaptive**: Responds to system load and Oracle's reclamation criteria (CPU 95th percentile < 20%, network/memory current utilization < 20%)
 - **Resilient**: Handles storage failures, network issues, and system restarts
 - **Observable**: Rich telemetry for monitoring and debugging
+- **Fallback-oriented**: Network generation activates only when needed to prevent Oracle reclamation
 
 ## Project Structure & Module Organization
 - `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
-- `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
-- `compose.yaml` — two services: `loadshaper` (client/loader) and `iperf3` (receiver) with configurable env vars; mounts config templates.
+- `Dockerfile` — Python 3 Alpine image; runs `loadshaper.py`.
+- `compose.yaml` — loadshaper service with configurable env vars; mounts config templates.
 - `README.md`, `LICENSE` — usage and licensing.
 - `CLAUDE.md` — additional guidance for Anthropic contributors; keep in sync with this file.
 - `config-templates/` — Oracle shape-specific configuration templates (e2-1-micro.env, e2-2-micro.env, a1-flex-1.env, a1-flex-4.env) with optimized settings for each shape.
@@ -65,7 +68,7 @@ The system automatically detects Oracle Cloud shapes via:
 ## Coding Style & Naming Conventions
 - Language: Python 3; 4‑space indentation; PEP 8 style.
 - Names: functions/variables `snake_case`; constants `UPPER_SNAKE_CASE` (matches existing env-backed config).
-- Keep dependencies minimal (standard library + `iperf3` binary). Avoid adding Python deps unless essential.
+- Keep dependencies minimal (standard library only). Avoid adding Python deps unless essential.
 - Prefer small, testable helpers; keep I/O at edges; maintain clear separation between sensing, control, and workers.
 
 ## Testing Guidelines
@@ -78,7 +81,16 @@ The system automatically detects Oracle Cloud shapes via:
 ### Integration Testing
 - Validate behavior by running the stack and observing `[loadshaper]` telemetry.
 - CPU/RAM only: `NET_MODE=off docker compose up -d`.
-- Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
+- Network shaping uses native Python sockets; set peers (comma-separated IPs) via `NET_PEERS` or use safe RFC 2544 defaults.
+
+### Network Fallback Testing
+**Test adaptive network activation:**
+- Use `NET_ACTIVATION=adaptive` (default) to test fallback behavior
+- Monitor network utilization < 19% to trigger network activation
+- Use `NET_ACTIVATION=always` to test continuous network generation
+- Use `NET_ACTIVATION=off` to disable network generation entirely
+- Verify hysteresis prevents oscillation (start at 19%, stop at 23%)
+- Test minimum on/off times prevent rapid cycling
 
 ### Memory Occupation Testing
 **For A1.Flex shapes (memory reclamation applies):**
@@ -88,7 +100,6 @@ The system automatically detects Oracle Cloud shapes via:
 - Test with different `MEM_STEP_MB` values (64MB default for gradual allocation)
 - Verify memory touching pauses when `LOAD_THRESHOLD` exceeded
 - Test page touching efficiency with different page sizes
-- **Memory Calculation Validation**: Enable `DEBUG_MEM_METRICS=true` to compare both metric calculations
 - **Oracle Monitoring Comparison**: If available, compare with Oracle's Instance Monitoring memory metrics
 
 ### Load Average Monitoring

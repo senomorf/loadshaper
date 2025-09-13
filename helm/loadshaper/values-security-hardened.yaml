@@ -83,9 +83,11 @@ readinessProbe:
 # Security-focused configuration
 config:
   # Minimal resource utilization for stealth operation
-  CPU_TARGET_PCT: "15.0"
+  # WARNING: Original values were below 20% Oracle threshold (CPU=15%, NET=5%)
+  # Fixed to ensure at least one metric stays above 20% to prevent VM reclamation
+  CPU_TARGET_PCT: "25.0"
   MEM_TARGET_PCT: "30.0"
-  NET_TARGET_PCT: "5.0"
+  NET_TARGET_PCT: "25.0"
   
   # Conservative safety thresholds
   CPU_STOP_PCT: "70.0"
