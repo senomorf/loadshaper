@@ -80,12 +80,16 @@ The system automatically detects Oracle Cloud shapes via:
 - CPU/RAM only: `NET_MODE=off docker compose up -d`.
 - Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
 
-### Memory Stressor Testing
+### Memory Occupation Testing
 **For A1.Flex shapes (memory reclamation applies):**
-- Verify memory allocation increases when `mem(no-cache)` is below `MEM_TARGET_PCT`
-- Test memory touching frequency (current: every 1 second)
-- Monitor RSS and VSZ to confirm memory is actually consumed
-- Test with different `MEM_STEP_MB` values (64MB default may be too small)
+- Verify memory allocation increases when `mem(excl-cache)` is below `MEM_TARGET_PCT`
+- Test memory touching frequency (`MEM_TOUCH_INTERVAL_SEC`, default: 1.0 second)
+- Monitor RSS and VSZ to confirm memory is actually consumed and resident
+- Test with different `MEM_STEP_MB` values (64MB default for gradual allocation)
+- Verify memory touching pauses when `LOAD_THRESHOLD` exceeded
+- Test page touching efficiency with different page sizes
+- **Memory Calculation Validation**: Enable `DEBUG_MEM_METRICS=true` to compare both metric calculations
+- **Oracle Monitoring Comparison**: If available, compare with Oracle's Instance Monitoring memory metrics
 
 ### Load Average Monitoring
 - Test with `LOAD_THRESHOLD=0.1` to verify workers pause under light load
@@ -120,9 +124,10 @@ The system automatically detects Oracle Cloud shapes via:
 - Load thresholds should be lower (more sensitive to contention)
 
 **A1.Flex (ARM, flexible):**
-- Test memory stressor effectiveness with higher targets (40-60%)
+- Test memory occupation effectiveness with higher targets (40-60%)
 - Verify per-vCPU network scaling works
 - Test with multiple vCPU configurations
+- Validate memory touch intervals work correctly (0.5-10.0 second range)
 
 ### Safety Checks
 - Verify `*_STOP_PCT` thresholds trigger pause/resume correctly

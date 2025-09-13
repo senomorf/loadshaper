@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configurable health server**: `HEALTH_ENABLED`, `HEALTH_PORT`, and `HEALTH_HOST` environment variables
 - **Docker integration examples**: Health check configuration for docker-compose.yml and Dockerfile
 - **Security-first binding**: Health server defaults to localhost-only (127.0.0.1) for security
+- **Industry-standard memory calculation**: Uses MemAvailable (Linux 3.14+) with fallback for older kernels
+- **Memory occupation improvements**: Configurable page touching frequency (`MEM_TOUCH_INTERVAL_SEC`)
+- **Dual memory metrics**: Optional debug mode shows both cache-excluded and cache-included calculations
+- **Memory calculation documentation**: Comprehensive explanation of why cache/buffers are excluded
 - Comprehensive documentation overhaul with badges, FAQ, and configuration tables
 - Architecture diagrams and component interaction documentation
 - CONTRIBUTING.md with detailed contributor guidelines
@@ -24,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Performance benchmarks and continuous testing strategies
 
 ### Changed
+- **Memory calculation method**: Upgraded to industry-standard approach aligned with AWS CloudWatch, Azure Monitor
+- **Memory telemetry format**: Changed from `mem(no-cache)` to `mem(excl-cache)` for clarity
+- **Memory occupation terminology**: Clarified "occupation" vs "stressing" throughout documentation
 - Restructured README.md with improved organization and Quick Start section
 - Enhanced AGENTS.md with external contributor guidelines and release process
 - Updated GitHub repository description and topics for better discoverability
@@ -61,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.0] - 2024-12-XX
 
 ### Added
-- **Memory stress testing**: Support for A1.Flex memory reclamation rules
+- **Memory occupation**: Support for A1.Flex memory reclamation rules
 - **Network traffic generation**: iperf3-based load generation as fallback
 - **Multi-platform support**: Both x86-64 (E2.1.Micro) and ARM64 (A1.Flex)
 - **Docker Compose**: Complete deployment solution with iperf3 server

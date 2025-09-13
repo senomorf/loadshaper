@@ -83,7 +83,7 @@ shows current, 5-minute average, and 7-day 95th percentile values for each metri
 
 ### 1. **Metric Collection**
 - **CPU utilization**: Read from `/proc/stat` (system-wide percentage)
-- **Memory utilization**: Read from `/proc/meminfo` (excluding cache/buffers for A1.Flex shapes)  
+- **Memory utilization**: Read from `/proc/meminfo` using industry-standard calculation (see [Memory Calculation](#memory-calculation))
 - **Network utilization**: Read from `/proc/net/dev` with automatic speed detection
 - **Load average**: Monitor from `/proc/loadavg` to detect CPU contention
 
@@ -95,7 +95,7 @@ shows current, 5-minute average, and 7-day 95th percentile values for each metri
 
 ### 3. **Intelligent Load Generation**
 - **CPU stress**: Low-priority workers (nice 19) with arithmetic operations
-- **Memory allocation**: Gradual allocation with regular touching for A1.Flex shapes  
+- **Memory occupation**: Gradual allocation with periodic page touching for A1.Flex shapes  
 - **Network traffic**: iperf3-based bursts to peer instances when needed
 - **Load balancing**: Automatic pausing when real workloads need resources
 
@@ -162,7 +162,7 @@ at each control period (default 5 seconds) and automatically cleaned up after
 
 **Telemetry output format:**
 ```
-[loadshaper] cpu now=45.2% avg=42.1% p95=48.3% | mem(no-cache) now=55.1% avg=52.8% p95=58.7% | nic(...) now=12.50% avg=11.25% p95=15.20% | load now=0.45 avg=0.42 p95=0.52 | ... | samples_7d=98547
+[loadshaper] cpu now=45.2% avg=42.1% p95=48.3% | mem(excl-cache) now=55.1% avg=52.8% p95=58.7% | nic(...) now=12.50% avg=11.25% p95=15.20% | load now=0.45 avg=0.42 p95=0.52 | ... | samples_7d=98547
 ```
 
 Where:
@@ -223,6 +223,51 @@ This means you can override any template value with environment variables while 
 
 For non-Oracle Cloud environments, `loadshaper` safely falls back to conservative E2.1.Micro-like defaults, making it safe to run anywhere.
 
+## Memory Calculation
+
+### Why We Exclude Cache/Buffers
+
+**Critical for Oracle compliance**: `loadshaper` calculates memory utilization by **excluding cache/buffers**, which aligns with industry standards and Oracle's likely implementation for VM reclamation criteria.
+
+**The Problem with Including Cache/Buffers:**
+- Linux aggressively uses free RAM for disk caching (often 50-80% of total memory)
+- This cache is instantly reclaimable when applications need memory
+- Including cache would make almost every Linux VM appear "active" even when idle
+- This would defeat Oracle's reclamation policy of finding truly unused VMs
+
+**Industry Standard Approach:**
+- **AWS CloudWatch**: `mem_used_percent` excludes cache/buffers
+- **Azure Monitor**: Uses "available memory" metrics (cache-aware)  
+- **Kubernetes**: Uses "working set" memory (excludes reclaimable cache)
+- **Google Cloud**: Uses similar cache-aware calculations
+
+### Calculation Methods
+
+**Preferred Method (Linux 3.14+):**
+```
+memory_utilization = 100 × (1 - MemAvailable/MemTotal)
+```
+
+**Fallback Method (older kernels):**
+```
+cache_buffers = Buffers + max(0, Cached + SReclaimable - Shmem)
+memory_utilization = 100 × (MemTotal - MemFree - cache_buffers) / MemTotal
+```
+
+### Debugging Memory Metrics
+
+Set `DEBUG_MEM_METRICS=true` to see both calculations in telemetry:
+```bash
+DEBUG_MEM_METRICS=true docker compose up -d
+```
+
+Output example:
+```
+mem(excl-cache) now=25.3% avg=24.1% p95=28.7% [incl-cache=78.2%]
+```
+
+This shows the huge difference: 25% (real app usage) vs 78% (including cache).
+
 ## Configuration Reference
 
 > **⚠️ CRITICAL:** For Oracle Free Tier VM protection, ensure **at least one metric target is above 20%**. Setting all targets below 20% will cause Oracle to reclaim your VM. Oracle checks if ALL metrics are below 20% - if so, the VM is reclaimed.
@@ -267,6 +312,7 @@ For non-Oracle Cloud environments, `loadshaper` safely falls back to conservativ
 |----------|---------|-------------|
 | `MEM_MIN_FREE_MB` | `512` | Minimum free memory to maintain (MB) |
 | `MEM_STEP_MB` | `64` | Memory allocation step size (MB) |
+| `MEM_TOUCH_INTERVAL_SEC` | `1.0` | Memory page touching frequency (0.5-10.0 seconds) |
 
 ### Network Configuration
 
@@ -499,7 +545,7 @@ docker logs -f loadshaper | grep "cpu now="
 **Check memory allocation:**
 ```shell
 # Memory usage should increase over time if MEM_TARGET_PCT > current usage
-docker logs -f loadshaper | grep "mem(no-cache)"
+docker logs -f loadshaper | grep "mem(excl-cache)"
 ```
 
 **Check network traffic:**
