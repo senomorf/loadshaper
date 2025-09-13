@@ -11,6 +11,7 @@
 > **🚧 This project is under active development.** Breaking changes are introduced frequently
 > without migration paths. This is intentional as we iterate toward the optimal solution for
 > preventing Oracle Cloud VM reclamation. Always review the CHANGELOG before updating.
+> Current version requires **Linux 3.14+ (March 2014)** - older kernel support has been removed.
 
 ### Oracle Cloud Always Free VM Keeper
 **Intelligent baseline load generator that prevents Oracle Cloud Always Free compute instances from being reclaimed due to underutilization.**

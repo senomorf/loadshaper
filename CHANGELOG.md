@@ -48,30 +48,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.2.0] - Previous Version
 
 ### Added
+- **Native Python network generator** (#71): Complete replacement of iperf3 with native socket-based implementation
+  - RFC 2544 default addresses for serverless operation
+  - Token bucket rate limiting with 5ms precision
+  - IPv4/IPv6 support with TTL safety controls
+  - Pre-allocated buffers for zero-copy packet generation
+- **Health monitoring endpoints** (#18): HTTP server with /health and /metrics endpoints
+  - Configurable via HEALTH_ENABLED, HEALTH_PORT, HEALTH_HOST
+  - Docker health check integration ready
+  - Security-first binding (defaults to localhost-only)
+- **Graceful shutdown** (partial #12): Signal handling for SIGTERM/SIGINT with clean resource cleanup
+- **Intelligent network fallback** (#26): Adaptive network generation based on Oracle reclamation rules
+  - Shape-aware logic (E2 vs A1 different criteria)
+  - Hysteresis and debounce to prevent oscillation
+  - NET_ACTIVATION modes: adaptive, always, off
+  - EMA-based rate adjustments for smoother behavior
+- **MTU 9000 optimization**: Jumbo frame support with 30-50% CPU reduction
+  - New *-jumbo.env configuration templates for all Oracle shapes
+  - Optimized packet size (8900 bytes) for Oracle Cloud MTU 9000
+  - UDP send buffer optimization (1MB)
 - **Oracle shape auto-detection**: Automatically detects Oracle Cloud shapes (E2.1.Micro, E2.2.Micro, A1.Flex-1, A1.Flex-4)
 - **Shape-specific configuration templates**: Pre-configured templates optimized for each Oracle shape
 - **Template system**: ENV > TEMPLATE > DEFAULT priority for configuration management
-- **HTTP health check endpoints**: `/health` and `/metrics` endpoints for Docker health checks and monitoring systems
-- **Configurable health server**: `HEALTH_ENABLED`, `HEALTH_PORT`, and `HEALTH_HOST` environment variables
-- **Docker integration examples**: Health check configuration for docker-compose.yml and Dockerfile
-- **Security-first binding**: Health server defaults to localhost-only (127.0.0.1) for security
-- **Industry-standard memory calculation**: Uses MemAvailable (Linux 3.14+) with fallback for older kernels
-- **Memory occupation improvements**: Configurable page touching frequency (`MEM_TOUCH_INTERVAL_SEC`)
-- **Dual memory metrics**: Optional debug mode shows both cache-excluded and cache-included calculations
-- **Memory calculation documentation**: Comprehensive explanation of why cache/buffers are excluded
-- Comprehensive documentation overhaul with badges, FAQ, and configuration tables
-- Architecture diagrams and component interaction documentation
-- CONTRIBUTING.md with detailed contributor guidelines
-- Enhanced troubleshooting section with concrete examples
-- Performance benchmarks and continuous testing strategies
+- **Comprehensive test coverage**: New test suites for all features
+  - test_network_timing.py, test_network_fallback.py
+  - test_signal_handling.py, test_health_endpoints.py
+  - test_oracle_validation.py, test_shape_detection_enhanced.py
+- **Enhanced documentation**: Comprehensive overhaul with badges, FAQ, and configuration tables
 
 ### Changed
-- **Memory calculation method**: Upgraded to industry-standard approach aligned with AWS CloudWatch, Azure Monitor
-- **Memory telemetry format**: Changed from `mem(no-cache)` to `mem(excl-cache)` for clarity
-- **Memory occupation terminology**: Clarified "occupation" vs "stressing" throughout documentation
-- Restructured README.md with improved organization and Quick Start section
-- Enhanced AGENTS.md with external contributor guidelines and release process
-- Updated GitHub repository description and topics for better discoverability
+- **Memory calculation**: Modernized to industry-standard using MemAvailable
+  - Aligned with AWS CloudWatch, Azure Monitor, Oracle standards
+  - Simplified telemetry display (changed from `mem(no-cache)` to `mem(excl-cache)`)
+  - Memory occupation terminology clarified ("occupation" vs "stressing")
+- **Network control**: Replaced continuous PID with adaptive start/stop mechanism
+  - EMA-based current utilization tracking instead of incorrect 95th percentile
+  - Resource efficiency improvements to minimize CPU and memory overhead
+- **Default packet size**: Increased to 8900 bytes for jumbo frame environments
+- **Configuration**: Enhanced templates with jumbo frame variants and better defaults
+- **Documentation**: Restructured README.md with improved organization and Quick Start section
+- **Error handling**: Graceful handling of connection failures with exponential backoff
+
+### Removed
+- **iperf3 dependency**: Completely eliminated from codebase and Docker images
+- **iperf3 service**: Removed from Docker Compose configuration
+- **Legacy memory calculation**: Removed support for kernels without MemAvailable
+- **DEBUG_MEM_METRICS**: Removed debug environment variable and dual metric display
+
+### Fixed
+- **Network fallback logic**: Corrected A1 shape logic (AND instead of OR for risk conditions)
+- **Oracle criteria accuracy**: Fixed 95th percentile vs current utilization confusion
+- **TCP buffer handling**: Fixed partial send issues in TCP mode
+- **Token bucket dead zones**: Fixed issue where very low rates could prevent traffic generation
+- **NET_PEERS validation**: Now accepts hostnames via DNS resolution fallback
+- **TCP connection timeout**: Added 0.5s send timeout to prevent blocking
+- **MTU validation**: Fixed large packet warnings and validation logic
+
+### Breaking Changes
+- **Linux 3.14+ required**: MemAvailable field dependency (older kernel support removed)
+- **read_meminfo() signature**: Returns (total_bytes, used_pct, used_bytes) instead of 5-tuple
+- **iperf3 removal**: External network server no longer supported
+- **E2 configuration**: NET_TARGET_PCT raised from 15% to 25% to stay above Oracle's 20% threshold
+
+### Technical Details
+- Token bucket with 5ms ticks and elapsed-time based accumulation
+- EMA smoothing for network utilization tracking with configurable alpha
+- Signal handling for container orchestration compatibility
+- Resource-aware fallback with minimum on/off periods to prevent oscillation
+- New fallback control variables: NET_ACTIVATION, NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT
+- Enhanced error handling prevents dead zones in rate limiting algorithm
 
 ### Security
 - **Health endpoints security hardening**: Sanitized error messages, configurable host binding, HTTP method restrictions
@@ -80,7 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **7-day metrics storage**: SQLite database for rolling 7-day analysis
-- **95th percentile calculations**: Mirrors Oracle's exact reclamation criteria
+- **95th percentile calculations**: Mirrors Oracle's exact CPU reclamation criteria
 - **Load average monitoring**: Automatic pausing when system under CPU contention
 - **Hysteresis gap**: Prevents oscillation with thresholds (0.6 pause / 0.4 resume)
 - **Metrics persistence**: Database survives container restarts
@@ -107,9 +152,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Memory occupation**: Support for A1.Flex memory reclamation rules
-- **Network traffic generation**: iperf3-based load generation as fallback
+- **Network traffic generation**: Initial implementation using iperf3 (replaced in v2.5.0)
 - **Multi-platform support**: Both x86-64 (E2.1.Micro) and ARM64 (A1.Flex)
-- **Docker Compose**: Complete deployment solution with iperf3 server
+- **Docker Compose**: Complete deployment solution (iperf3 server removed in v2.5.0)
 - **Environment configuration**: Extensive customization via environment variables
 
 ### Changed

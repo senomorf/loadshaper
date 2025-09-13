@@ -83,9 +83,11 @@ readinessProbe:
 # Security-focused configuration
 config:
   # Minimal resource utilization for stealth operation
-  CPU_P95_SETPOINT: "15.0"
+  # WARNING: Original CPU P95 setpoint was 15% - below Oracle's 20% reclamation threshold!
+  # Fixed P95-driven control to ensure CPU stays above 20% to prevent VM reclamation
+  CPU_P95_SETPOINT: "25.0"
   MEM_TARGET_PCT: "30.0"
-  NET_TARGET_PCT: "5.0"
+  NET_TARGET_PCT: "25.0"
   
   # Conservative safety thresholds
   CPU_STOP_PCT: "70.0"

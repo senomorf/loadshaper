@@ -13,9 +13,9 @@ resources:
 # E2.1.Micro specific configuration
 config:
   # Target percentages optimized for E2.1.Micro shape
-  CPU_P95_SETPOINT: "25.0"    # Conservative for burstable CPU
-  MEM_TARGET_PCT: "40.0"    # No memory reclamation rule for E2, but keep reasonable
-  NET_TARGET_PCT: "25.0"    # Target 25% of 50 Mbps = 12.5 Mbps external
+  CPU_P95_SETPOINT: "25.0"    # Conservative P95 target for burstable CPU
+  MEM_TARGET_PCT: "0.0"       # Disabled - E2 shapes not subject to 20% memory rule
+  NET_TARGET_PCT: "25.0"      # Target 25% of 50 Mbps = 12.5 Mbps external (above 20% reclamation threshold)
   
   # Safety stop thresholds
   CPU_STOP_PCT: "80.0"      # Conservative stop for burstable CPU

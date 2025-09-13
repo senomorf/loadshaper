@@ -107,9 +107,10 @@ startupProbe:
 # Production configuration
 config:
   # Conservative targets for production stability
+  # P95-driven CPU control maintains above 20% Oracle reclamation threshold
   CPU_P95_SETPOINT: "25.0"
   MEM_TARGET_PCT: "50.0"
-  NET_TARGET_PCT: "15.0"
+  NET_TARGET_PCT: "25.0"
   
   # Tighter safety thresholds
   CPU_STOP_PCT: "80.0"
