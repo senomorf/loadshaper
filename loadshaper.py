@@ -320,7 +320,7 @@ def _validate_config_value(key, value):
     
     # Validate positive numeric values with bounds checking
     elif key in ['CONTROL_PERIOD_SEC', 'AVG_WINDOW_SEC', 'MEM_MIN_FREE_MB', 
-                 'MEM_STEP_MB', 'NET_PORT', 'NET_BURST_SEC', 'NET_IDLE_SEC',
+                 'MEM_STEP_MB', 'MEM_TOUCH_INTERVAL_SEC', 'NET_PORT', 'NET_BURST_SEC', 'NET_IDLE_SEC',
                  'NET_LINK_MBIT', 'NET_MIN_RATE_MBIT', 'NET_MAX_RATE_MBIT',
                  'JITTER_PERIOD_SEC']:
         try:
@@ -334,6 +334,7 @@ def _validate_config_value(key, value):
                 'AVG_WINDOW_SEC': (10.0, 7200.0),         # 10 seconds to 2 hours
                 'MEM_MIN_FREE_MB': (50.0, 10000.0),       # 50MB to 10GB
                 'MEM_STEP_MB': (1.0, 1000.0),             # 1MB to 1GB per step
+                'MEM_TOUCH_INTERVAL_SEC': (0.5, 10.0),    # 0.5 to 10 seconds
                 'NET_PORT': (1024.0, 65535.0),            # Valid user port range
                 'NET_BURST_SEC': (1.0, 3600.0),           # 1 second to 1 hour
                 'NET_IDLE_SEC': (1.0, 3600.0),            # 1 second to 1 hour
@@ -696,6 +697,7 @@ JITTER_PCT = None
 JITTER_PERIOD = None
 MEM_MIN_FREE_MB = None
 MEM_STEP_MB = None
+MEM_TOUCH_INTERVAL_SEC = None
 NET_MODE = None
 NET_PEERS = None
 NET_PORT = None
@@ -723,7 +725,7 @@ def _initialize_config():
     global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
     global CONTROL_PERIOD, AVG_WINDOW_SEC, HYSTERESIS_PCT
     global LOAD_THRESHOLD, LOAD_RESUME_THRESHOLD, LOAD_CHECK_ENABLED
-    global JITTER_PCT, JITTER_PERIOD, MEM_MIN_FREE_MB, MEM_STEP_MB
+    global JITTER_PCT, JITTER_PERIOD, MEM_MIN_FREE_MB, MEM_STEP_MB, MEM_TOUCH_INTERVAL_SEC
     global NET_MODE, NET_PEERS, NET_PORT, NET_BURST_SEC, NET_IDLE_SEC, NET_PROTOCOL
     global NET_SENSE_MODE, NET_IFACE, NET_IFACE_INNER, NET_LINK_MBIT
     global NET_MIN_RATE, NET_MAX_RATE
@@ -756,6 +758,7 @@ def _initialize_config():
 
     MEM_MIN_FREE_MB   = getenv_int_with_template("MEM_MIN_FREE_MB", 512, CONFIG_TEMPLATE)
     MEM_STEP_MB       = getenv_int_with_template("MEM_STEP_MB", 64, CONFIG_TEMPLATE)
+    MEM_TOUCH_INTERVAL_SEC = getenv_float_with_template("MEM_TOUCH_INTERVAL_SEC", 1.0, CONFIG_TEMPLATE)
 
     NET_MODE          = getenv_with_template("NET_MODE", "client", CONFIG_TEMPLATE).strip().lower()
     NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "", CONFIG_TEMPLATE).split(",") if p.strip()]
@@ -828,23 +831,55 @@ def cpu_percent_over(dt, prev=None):
     return usage, cur
 
 def read_meminfo():
-    # Return host-level (since /proc is global) mem usage excluding cache/buffers
+    """
+    Read memory usage from /proc/meminfo, excluding cache/buffers.
+    
+    Uses MemAvailable when available (Linux 3.14+) for most accurate measurement,
+    falls back to manual calculation for older kernels. This approach aligns with
+    industry standards (AWS CloudWatch, Azure Monitor) and Oracle's likely
+    implementation for VM reclamation criteria.
+    
+    Returns:
+        tuple: (total_bytes, free_bytes, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
+               - total_bytes: Total system memory
+               - free_bytes: Actually free memory (MemFree)
+               - used_pct_excl_cache: Memory usage excluding cache/buffers (for Oracle compliance)
+               - used_bytes_excl_cache: Memory bytes excluding cache/buffers  
+               - used_pct_incl_cache: Memory usage including cache/buffers (for debugging)
+    """
     m = {}
     with open("/proc/meminfo") as f:
         for line in f:
             k, v = line.split(":", 1)
             parts = v.strip().split()
             m[k] = int(parts[0]) if parts else 0  # in kB
+    
     total = m.get("MemTotal", 0)
     free = m.get("MemFree", 0)
-    buffers = m.get("Buffers", 0)
-    cached = m.get("Cached", 0)
-    srecl = m.get("SReclaimable", 0)
-    shmem = m.get("Shmem", 0)
-    buff_cache = buffers + max(0, cached + srecl - shmem)
-    used_no_cache = max(0, total - free - buff_cache)
-    used_pct = (100.0 * used_no_cache / total) if total > 0 else 0.0
-    return total * 1024, free * 1024, used_pct, used_no_cache * 1024  # bytes
+    mem_available = m.get("MemAvailable", 0)
+    
+    # Calculate memory usage excluding cache/buffers
+    if mem_available > 0 and total > 0:
+        # Preferred method: Use MemAvailable (Linux 3.14+)
+        # This is the most accurate metric used by modern monitoring tools
+        used_pct_excl_cache = (100.0 * (1.0 - mem_available / total))
+        used_bytes_excl_cache = (total - mem_available) * 1024
+    else:
+        # Fallback method: Manual calculation for older kernels
+        buffers = m.get("Buffers", 0)
+        cached = m.get("Cached", 0)
+        srecl = m.get("SReclaimable", 0)
+        shmem = m.get("Shmem", 0)
+        buff_cache = buffers + max(0, cached + srecl - shmem)
+        used_no_cache = max(0, total - free - buff_cache)
+        used_pct_excl_cache = (100.0 * used_no_cache / total) if total > 0 else 0.0
+        used_bytes_excl_cache = used_no_cache * 1024
+    
+    # Also calculate including cache/buffers for comparison/debugging
+    used_incl_cache = max(0, total - free)
+    used_pct_incl_cache = (100.0 * used_incl_cache / total) if total > 0 else 0.0
+    
+    return (total * 1024, free * 1024, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
 
 def read_loadavg():
     # Read system load averages and return per-core load for 1-min average
@@ -1086,28 +1121,66 @@ mem_lock = threading.Lock()
 mem_block = bytearray(0)
 
 def set_mem_target_bytes(target_bytes):
+    """
+    Set target memory occupation in bytes.
+    
+    Gradually increases or decreases the allocated memory block to reach
+    the target size, with step limits to prevent rapid allocation/deallocation.
+    Calls garbage collection after shrinking to help return memory to OS.
+    
+    Args:
+        target_bytes (int): Desired memory allocation size in bytes
+    """
+    import gc
     global mem_block
+    
     with mem_lock:
         cur = len(mem_block)
         step = MEM_STEP_MB * 1024 * 1024
         if target_bytes < 0:
             target_bytes = 0
         if target_bytes > cur:
+            # Grow memory allocation
             inc = min(step, target_bytes - cur)
             mem_block.extend(b"\x00" * inc)
         elif target_bytes < cur:
+            # Shrink memory allocation
             dec = min(step, cur - target_bytes)
             del mem_block[cur - dec:cur]
+            # Help return memory to OS (especially effective with musl libc)
+            gc.collect()
 
 def mem_nurse_thread(stop_evt: threading.Event):
-    PAGE = 4096
+    """
+    Memory occupation maintenance thread.
+    
+    Periodically touches allocated memory pages to keep them resident in RAM,
+    ensuring they count toward memory utilization metrics. Uses system page
+    size for efficient touching and respects load thresholds.
+    """
+    global paused
+    
+    # Use system page size for portable and efficient memory touching
+    try:
+        PAGE = os.getpagesize()
+    except AttributeError:
+        # Fallback for systems where getpagesize() is not available (e.g., macOS)
+        PAGE = 4096
+    
     while not stop_evt.is_set():
+        # Pause memory touching when load threshold exceeded (like other workers)
+        if LOAD_CHECK_ENABLED and paused.value:
+            time.sleep(MEM_TOUCH_INTERVAL_SEC)
+            continue
+            
         with mem_lock:
             size = len(mem_block)
             if size > 0:
+                # Touch one byte per page to keep pages resident
                 for pos in range(0, size, PAGE):
                     mem_block[pos] = (mem_block[pos] + 1) & 0xFF
-        time.sleep(1.0)
+        
+        time.sleep(MEM_TOUCH_INTERVAL_SEC)
 
 # ---------------------------
 # NIC sensing helpers
@@ -1494,7 +1567,7 @@ def main():
     validate_oracle_configuration()
     
     logger.info(f"[loadshaper v2.2] starting with"
-          f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |"
+          f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(excl-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |"
           f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status} |"
           f" {shape_status}, {template_status}")
 
@@ -1592,8 +1665,8 @@ def main():
             cpu_pct, prev_cpu = cpu_percent_over(CONTROL_PERIOD, prev_cpu)
             cpu_avg = ema.cpu.update(cpu_pct)
 
-            # MEM% (EXCLUDING cache/buffers)
-            total_b, free_b, mem_used_no_cache_pct, used_no_cache_b = read_meminfo()
+            # MEM% (EXCLUDING cache/buffers for Oracle compliance)
+            total_b, free_b, mem_used_no_cache_pct, used_no_cache_b, mem_used_incl_cache_pct = read_meminfo()
             mem_avg = ema.mem.update(mem_used_no_cache_pct)
 
             # NIC utilization
@@ -1720,8 +1793,14 @@ def main():
                 load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f} {load_p95_str}" if LOAD_CHECK_ENABLED else "load=disabled"
                 sample_count = metrics_storage.get_sample_count()
                 
+                # Memory metric display (show both for debugging if needed)
+                mem_display = f"mem(excl-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str}"
+                # Optionally show both metrics for validation (add DEBUG_MEM_METRICS=true to enable)
+                if os.getenv("DEBUG_MEM_METRICS", "false").lower() == "true":
+                    mem_display += f" [incl-cache={mem_used_incl_cache_pct:5.1f}%]"
+                
                 logger.info(f"cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% {cpu_p95_str} | "
-                           f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str} | "
+                           f"{mem_display} | "
                            f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
                            f"now={nic_util:5.2f}% avg={net_avg:5.2f}% {net_p95_str} | "
                            f"{load_status} | "

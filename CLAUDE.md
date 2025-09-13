@@ -19,10 +19,18 @@
 - **Automatic pausing**: Workers pause when system load indicates CPU contention from legitimate processes
 - **Per-core calculation**: Thresholds applied per CPU core for accurate scaling
 
+## Memory Calculation Principles
+- **Excludes cache/buffers**: Uses industry-standard calculation that excludes Linux cache/buffers for accurate utilization measurement
+- **MemAvailable preferred**: Uses Linux 3.14+ MemAvailable when available, falls back to manual calculation for older kernels
+- **Oracle compliance**: Aligns with cloud provider standards (AWS CloudWatch, Azure Monitor) and Oracle's likely implementation
+- **Memory occupation not stressing**: Goal is to maintain target utilization percentage, not stress test memory subsystem
+- **Debug metrics**: Set `DEBUG_MEM_METRICS=true` to compare both calculation methods in telemetry
+
 ## Key Configuration Variables
 - **Core targets**: `CPU_TARGET_PCT`, `MEM_TARGET_PCT`, `NET_TARGET_PCT`
 - **Safety limits**: `CPU_STOP_PCT`, `MEM_STOP_PCT`, `NET_STOP_PCT`
 - **Load monitoring**: `LOAD_THRESHOLD`, `LOAD_RESUME_THRESHOLD`, `LOAD_CHECK_ENABLED`
+- **Memory occupation**: `MEM_TOUCH_INTERVAL_SEC`, `MEM_STEP_MB`, `MEM_MIN_FREE_MB`
 - **Network detection**: `NET_SENSE_MODE`, `NET_LINK_MBIT`, `NET_PROTOCOL`, `NET_PEERS`
 - **Control behavior**: `CONTROL_PERIOD_SEC`, `AVG_WINDOW_SEC`, `HYSTERESIS_PCT`
 
