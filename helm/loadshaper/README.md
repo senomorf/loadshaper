@@ -201,7 +201,7 @@ networkPolicy:
 Default policies:
 - **Ingress**: Only allows Prometheus scraping when ServiceMonitor is enabled
 - **Egress**: DNS resolution + communication with same-app pods only
-- **Removed**: Previous overly permissive iperf-server rules (security fix)
+- **Removed**: Previous overly permissive network server rules (security fix)
 
 ### Security Context
 
@@ -297,7 +297,7 @@ serviceAccount:
 
 #### 3. Network Connectivity Issues
 
-**Symptoms**: Network load generation not working, iperf connection failures
+**Symptoms**: Network load generation not working, native generator connection failures
 
 **Solutions**:
 ```bash

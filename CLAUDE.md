@@ -32,7 +32,9 @@
 - **Memory occupation**: `MEM_TOUCH_INTERVAL_SEC`, `MEM_STEP_MB`, `MEM_MIN_FREE_MB`
 - **Network detection**: `NET_SENSE_MODE`, `NET_LINK_MBIT`, `NET_PROTOCOL`, `NET_PEERS`
 - **Network fallback**: `NET_ACTIVATION`, `NET_FALLBACK_START_PCT`, `NET_FALLBACK_STOP_PCT`, `NET_FALLBACK_DEBOUNCE_SEC`, `NET_FALLBACK_MIN_ON_SEC`, `NET_FALLBACK_MIN_OFF_SEC`, `NET_FALLBACK_RAMP_SEC`
-- **Control behavior**: `CONTROL_PERIOD_SEC`, `AVG_WINDOW_SEC`, `HYSTERESIS_PCT`
+- **Network configuration**: `NET_MODE`, `NET_PORT`, `NET_BURST_SEC`, `NET_IDLE_SEC`, `NET_TTL`, `NET_PACKET_SIZE`, `NET_MIN_RATE_MBIT`, `NET_MAX_RATE_MBIT`
+- **Control behavior**: `CONTROL_PERIOD_SEC`, `AVG_WINDOW_SEC`, `HYSTERESIS_PCT`, `JITTER_PCT`, `JITTER_PERIOD_SEC`
+- **Health monitoring**: `HEALTH_ENABLED`, `HEALTH_PORT`, `HEALTH_HOST`
 
 ## Development Standards
 - **Testing**: Run `python -m pytest -q` (all tests must pass)

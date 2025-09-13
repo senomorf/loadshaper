@@ -55,10 +55,6 @@ security:
 service:
   enabled: true
   type: ClusterIP
-  # iperf port configuration (note: loadshaper typically runs as client-only)
-  iperf:
-    enabled: false  # Disable by default - enable only if running iperf server
-    port: 15201
   # metrics port configuration (for health/metrics endpoint)
   metrics:
     enabled: true   # Enable metrics service when health endpoint is enabled
@@ -184,7 +180,7 @@ networkPolicy:
   ingress: []
   # Custom egress rules (if not specified, default rules are used)
   egress: []
-  # Extra egress rules for specific network peers (e.g., iperf servers)
+  # Extra egress rules for specific network peers (e.g., configured NET_PEERS)
   extraEgress: []
 
 # Pod Disruption Budget for maintaining availability during cluster maintenance

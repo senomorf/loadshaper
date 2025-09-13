@@ -143,7 +143,5 @@ config:
 service:
   enabled: true
   type: ClusterIP
-  iperf:
-    enabled: false  # Disable iperf service in production
   metrics:
     enabled: true   # Enable metrics for monitoring
