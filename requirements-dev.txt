@@ -1,0 +1,8 @@
+# Development dependencies for loadshaper
+# Install with: pip install -r requirements-dev.txt
+
+# Testing framework
+pytest>=7.0.0
+
+# Note: loadshaper core has no runtime dependencies - uses Python stdlib only
+# This file is for development/testing tools only

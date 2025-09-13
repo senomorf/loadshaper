@@ -6,6 +6,9 @@
 ![Docker](https://img.shields.io/badge/Docker-supported-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20ARM64%20%7C%20x86--64-lightgrey.svg)
 
+> ⚠️ **WORK IN PROGRESS PROJECT** ⚠️  
+> This project is under active development and **intentionally breaks backward compatibility**. No migration path is provided as the project is in a WIP state. Expect breaking changes between versions. Current version requires **Linux 3.14+ (March 2014)** - older kernel support has been removed.
+
 ### Oracle Cloud Always Free VM Keeper
 **Intelligent baseline load generator that prevents Oracle Cloud Always Free compute instances from being reclaimed due to underutilization.**
 
@@ -24,7 +27,7 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 ✅ **Keeps at least one metric above 20%** to prevent reclamation  
 ✅ **Runs at lowest OS priority** (nice 19) with minimal system impact  
 ✅ **Automatically pauses** when real workloads need resources  
-✅ **Tracks 95th percentile metrics** over 7-day rolling windows  
+✅ **Tracks CPU 95th percentile and network/memory current utilization** as per Oracle's criteria  
 ✅ **Works on both x86-64 and ARM64** Oracle Free Tier shapes
 
 ## Quick Start
@@ -73,9 +76,9 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 **Important:** Network monitoring typically measures internet-bound traffic (external bandwidth), not internal VM-to-VM traffic. For E2 shapes, focus on the 50 Mbps external limit.
 
 `loadshaper` drives CPU usage and can emit network traffic. It now tracks CPU,
-memory, and network utilization over a 7-day rolling window and calculates 95th
-percentile values to mirror Oracle's reclamation criteria. The telemetry output
-shows current, 5-minute average, and 7-day 95th percentile values for each metric.
+memory, and network utilization. It tracks CPU 95th percentile over 7 days (as per 
+Oracle's criteria) while monitoring current network and memory utilization. The telemetry 
+output shows current values, 5-minute averages, and CPU 95th percentile.
 
 ## Architecture
 
@@ -89,14 +92,15 @@ shows current, 5-minute average, and 7-day 95th percentile values for each metri
 
 ### 2. **7-Day Metrics Storage**
 - **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis
-- **95th percentile calculation**: Mirrors Oracle's reclamation criteria exactly
+- **CPU 95th percentile calculation**: Mirrors Oracle's CPU reclamation criteria exactly
+- **Network/Memory current utilization**: Tracks current values as per Oracle's criteria (not 95th percentile)
 - **Automatic cleanup**: Removes data older than 7 days
 - **Storage locations**: `/var/lib/loadshaper/metrics.db` (preferred) or `/tmp/loadshaper_metrics.db` (fallback)
 
 ### 3. **Intelligent Load Generation**
 - **CPU stress**: Low-priority workers (nice 19) with arithmetic operations
 - **Memory occupation**: Gradual allocation with periodic page touching for A1.Flex shapes  
-- **Network traffic**: iperf3-based bursts to peer instances when needed
+- **Network traffic**: adaptive fallback using native Python socket-based traffic only when Oracle reclamation risk exists (all applicable metrics < 20%)
 - **Load balancing**: Automatic pausing when real workloads need resources
 
 ### Operation Flow
@@ -130,11 +134,12 @@ CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is design
 
 ## Network shaping as fallback
 
-Network traffic should only be generated when CPU or memory activity risks
-falling below Oracle's thresholds. With 7-day metrics tracking now in place,
-future versions can make intelligent decisions about when to temporarily raise
-network usage based on 95th percentile trends, ensuring at least one metric
-stays above Oracle's reclamation thresholds.
+Network traffic should only be generated when actual Oracle reclamation risk
+exists: when both CPU and network metrics are below thresholds (E2 shapes), or
+when all three metrics (CPU, memory, network) are below thresholds (A1 shapes).
+With 7-day metrics tracking, the system makes intelligent decisions about when
+to temporarily raise network usage based on 95th percentile trends, ensuring
+at least one metric stays above Oracle's 20% reclamation threshold.
 
 ## Load average monitoring
 
@@ -162,7 +167,7 @@ at each control period (default 5 seconds) and automatically cleaned up after
 
 **Telemetry output format:**
 ```
-[loadshaper] cpu now=45.2% avg=42.1% p95=48.3% | mem(excl-cache) now=55.1% avg=52.8% p95=58.7% | nic(...) now=12.50% avg=11.25% p95=15.20% | load now=0.45 avg=0.42 p95=0.52 | ... | samples_7d=98547
+[loadshaper] cpu now=45.2% avg=42.1% p95=48.3% | mem(excl-cache) now=55.1% avg=52.8% | nic(...) now=12.50% avg=11.25% | load now=0.45 avg=0.42 p95=0.52 | ... | samples_7d=98547
 ```
 
 Where:
@@ -241,36 +246,20 @@ For non-Oracle Cloud environments, `loadshaper` safely falls back to conservativ
 - **Kubernetes**: Uses "working set" memory (excludes reclaimable cache)
 - **Google Cloud**: Uses similar cache-aware calculations
 
-### Calculation Methods
+### Calculation Method
 
-**Preferred Method (Linux 3.14+):**
+**MemAvailable-based calculation (requires Linux 3.14+):**
 ```
 memory_utilization = 100 × (1 - MemAvailable/MemTotal)
 ```
 
-**Fallback Method (older kernels):**
-```
-cache_buffers = Buffers + max(0, Cached + SReclaimable - Shmem)
-memory_utilization = 100 × (MemTotal - MemFree - cache_buffers) / MemTotal
-```
-
-### Debugging Memory Metrics
-
-Set `DEBUG_MEM_METRICS=true` to see both calculations in telemetry:
-```bash
-DEBUG_MEM_METRICS=true docker compose up -d
-```
-
-Output example:
-```
-mem(excl-cache) now=25.3% avg=24.1% p95=28.7% [incl-cache=78.2%]
-```
-
-This shows the huge difference: 25% (real app usage) vs 78% (including cache).
+This uses Linux's built-in MemAvailable field which accurately represents memory available for starting new applications without swapping. This approach aligns with industry standards used by AWS CloudWatch, Azure Monitor, and other cloud providers.
 
 ## Configuration Reference
 
 > **⚠️ CRITICAL:** For Oracle Free Tier VM protection, ensure **at least one metric target is above 20%**. Setting all targets below 20% will cause Oracle to reclaim your VM. Oracle checks if ALL metrics are below 20% - if so, the VM is reclaimed.
+>
+> **Reference:** [Oracle Always Free Resources - Idle Compute Instances](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm#compute__idleinstances)
 
 ### Resource Targets
 
@@ -278,7 +267,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 |----------|---------|-------------|------------|------------|------------|------------|------------|------------|
 | `CPU_TARGET_PCT` | **25**, 30, 35, 35, 35, 40 | Target CPU utilization (%) | 25% | 30% | 35% | 35% | 35% | 40% |
 | `MEM_TARGET_PCT` | **0**, 0, 30, 30, 30, 30 | Target memory utilization (%) | 0% (disabled) | 0% (disabled) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) |
-| `NET_TARGET_PCT` | **15**, 15, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
+| `NET_TARGET_PCT` | **25**, 25, 25, 25, 25, 30 | Target network utilization (%) | 25% (50 Mbps) | 25% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
 
 ### Safety Thresholds
 
@@ -321,9 +310,35 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
 | `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
-| `NET_PORT` | `15201` | iperf3 port for communication |
+| `NET_PORT` | `15201` | Network generation port for communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
+| `NET_TTL` | `1` | IP Time-to-Live for safety (1 = first hop only) |
+| `NET_PACKET_SIZE` | `8900` | Packet size in bytes (UDP payload, optimized for MTU 9000) |
+
+**Default Network Behavior:**
+- When `NET_PEERS` is empty, the system uses RFC 2544 benchmark addresses (198.18.0.1, 198.19.255.254) for safe testing
+- TTL=1 ensures packets only reach the first hop router and don't impact external networks
+- TCP mode requires explicit `NET_PEERS` to avoid connection timeouts to RFC 2544 addresses
+
+**MTU 9000 (Jumbo Frames) Optimization:**
+- Default `NET_PACKET_SIZE=8900` is optimized for Oracle Cloud VMs with MTU 9000
+- Jumbo frames provide 30-50% CPU reduction compared standard 1200-byte packets
+- Automatically works with both UDP (max 8972 bytes) and TCP (MSS 8960 bytes) protocols
+- For standard MTU environments, set `NET_PACKET_SIZE=1200` manually
+
+#### Configuration Templates
+
+Standard and jumbo frame templates are available in `config-templates/`:
+
+| Template | Use Case | Packet Size | CPU Efficiency |
+|----------|----------|-------------|----------------|
+| `e2-1-micro.env` | E2.1.micro standard | 1200 bytes | Standard |
+| `e2-1-micro-jumbo.env` | E2.1.micro high-performance | 8900 bytes | +30-50% |
+| `a1-flex-1.env` | A1.Flex-1 standard | 1200 bytes | Standard |
+| `a1-flex-1-jumbo.env` | A1.Flex-1 high-performance | 8900 bytes | +30-50% |
+
+Jumbo templates are recommended for Oracle Cloud environments with MTU 9000 support.
 
 ### Network Interface Detection
 
@@ -332,15 +347,28 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_SENSE_MODE` | `container` | Detection mode: `container`, `host` |
 | `NET_IFACE_INNER` | `eth0` | Container interface name |
 | `NET_LINK_MBIT` | `1000` | Fallback link speed (Mbps) |
-| `NET_MIN_RATE_MBIT` | `1` | Minimum traffic generation rate |
+| `NET_MIN_RATE_MBIT` | `0` | Minimum traffic generation rate (0 = can idle) |
 | `NET_MAX_RATE_MBIT` | `800` | Maximum traffic generation rate |
+
+### Network Fallback Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NET_ACTIVATION` | `adaptive` | Network mode: `adaptive` (fallback), `always`, `off` |
+| `NET_FALLBACK_START_PCT` | `19` | Start network generation below this % |
+| `NET_FALLBACK_STOP_PCT` | `23` | Stop network generation above this % |
+| `NET_FALLBACK_RISK_THRESHOLD_PCT` | `22` | Oracle reclamation risk threshold for CPU/memory |
+| `NET_DEBOUNCE_SEC` | `30` | Seconds to wait before changing state |
+| `NET_MIN_ON_SEC` | `20` | Minimum seconds to stay active |
+| `NET_MIN_OFF_SEC` | `60` | Minimum seconds to stay inactive |
+| `NET_RATE_STEP_MBIT` | `10` | Rate change step size (Mbps) |
 
 ### Shape-Specific Recommendations
 
 **VM.Standard.E2.1.Micro (x86-64):**
 ```bash
 # Conservative settings for shared 1/8 OCPU
-CPU_TARGET_PCT=25 MEM_TARGET_PCT=0 NET_TARGET_PCT=15
+CPU_TARGET_PCT=25 MEM_TARGET_PCT=0 NET_TARGET_PCT=25
 NET_LINK_MBIT=50 LOAD_THRESHOLD=0.6
 ```
 
@@ -411,10 +439,9 @@ Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid r
   },
   "percentiles_7d": {
     "cpu_p95": 48.3,
-    "memory_p95": 58.7,
-    "network_p95": 15.2,
     "load_p95": 0.52,
-    "sample_count_7d": 98547
+    "sample_count_7d": 98547,
+    "note": "Only CPU and load use 95th percentile per Oracle criteria"
   }
 }
 ```
@@ -503,7 +530,7 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
 **Q: Network traffic isn't being generated**  
-A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify iperf3 servers are running on peer instances and firewall rules allow traffic on `NET_PORT`.
+A: Ensure you have `NET_MODE=client`. If `NET_PEERS` is empty, the system will use RFC 2544 benchmark addresses (198.18.0.1, 198.19.255.254) with TTL=1 for safety. For custom peers, verify firewall rules allow traffic on `NET_PORT`.
 
 **Q: Memory usage isn't increasing on A1.Flex**  
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
@@ -567,10 +594,10 @@ docker logs -f loadshaper | grep "nic("
 - Verify container has access to enough memory
 
 **Network traffic not generating:**
-- Confirm `NET_MODE=client` and `NET_PEERS` are set correctly
-- Verify peers are running iperf3 servers on the specified port
-- Check firewall rules between instances
-- Try `NET_PROTOCOL=tcp` if UDP traffic is filtered
+- Confirm `NET_MODE=client` is set
+- If using custom `NET_PEERS`, check firewall rules between instances
+- For empty `NET_PEERS`, system uses safe RFC 2544 addresses with TTL=1
+- Try `NET_PROTOCOL=tcp` if UDP traffic is filtered (requires explicit `NET_PEERS`)
 
 **Database storage issues:**
 ```shell

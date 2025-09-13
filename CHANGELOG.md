@@ -7,6 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **📖 Related Documentation:** [README.md](README.md) | [CONTRIBUTING.md](CONTRIBUTING.md) | [AGENTS.md](AGENTS.md)
 
+## [2.6.0] - 2025-01-15
+
+### BREAKING CHANGES
+- **Memory calculation modernization**: Removed backward compatibility for older kernels
+- **Linux 3.14+ required**: Older kernel support (pre-March 2014) has been removed
+- **Removed DEBUG_MEM_METRICS**: Debug mode for dual memory metrics is no longer available
+- **Changed read_meminfo() signature**: Now returns (total_bytes, used_pct, used_bytes) instead of 5-tuple
+- **Smart network fallback**: Network fallback now considers CPU p95 status to prevent unnecessary activation
+- **CRITICAL FIX: A1 fallback logic**: Fixed incorrect OR logic that caused unnecessary network traffic - now correctly uses AND logic (activates only when ALL metrics at risk)
+- **E2 configuration fix**: NET_TARGET_PCT raised from 15% to 25% to stay above Oracle's 20% threshold
+- **WIP project disclaimer**: Added prominent warning that project intentionally breaks backward compatibility
+
+### Removed
+- Fallback memory calculation for kernels without MemAvailable field
+- DEBUG_MEM_METRICS environment variable and dual metric display
+- References to older kernel support in documentation
+
+### Changed
+- **Simplified memory calculation**: Only uses MemAvailable field (industry standard)
+- **Cleaner telemetry**: Memory display no longer shows debug metrics
+- **Updated documentation**: Removed all references to fallback methods and debug options
+
+## [2.5.2] - 2025-01-15
+
+### Added
+- **Adaptive network fallback mechanism**: Network generation now activates only when needed to prevent Oracle VM reclamation
+- **NET_ACTIVATION mode control**: Configure network behavior as `adaptive` (default), `always`, or `off`
+- **Hysteresis and debounce**: Prevents oscillation with configurable start/stop thresholds and minimum on/off times
+- **Gradual rate ramping**: EMA-based rate adjustments replace aggressive PID control for smoother network behavior
+- **Cooperative VM traffic awareness**: Network fallback accounts for traffic from other VMs on the same host
+
+### Changed
+- **Corrected Oracle idle criteria documentation**: CPU uses 95th percentile, network/memory use current utilization only
+- **Network telemetry format**: Now shows EMA-based current utilization instead of incorrect 95th percentile
+- **Resource efficiency**: Network generation minimized to reduce CPU and memory overhead
+- **Control algorithm**: Replaced continuous PID control with adaptive start/stop mechanism
+
+### Fixed
+- **Oracle criteria accuracy**: Removed incorrect 95th percentile assumptions for network and memory metrics
+- **PID controller integration**: Fixed network rate control when using default RFC 2544 peers
+- **NET_PEERS validation**: Now accepts hostnames via DNS resolution fallback
+- **TCP connection timeout**: Added 0.5s send timeout after connection to prevent blocking
+- **Large packet warnings**: Fixed MTU validation and warning logic
+- **Configuration defaults**: Added proper defaults for NET_TTL, NET_PACKET_SIZE, and rate limits
+
+### Technical Details
+- New fallback control variables: `NET_ACTIVATION`, `NET_FALLBACK_START_PCT`, `NET_FALLBACK_STOP_PCT`, `NET_DEBOUNCE_SEC`, `NET_MIN_ON_SEC`, `NET_MIN_OFF_SEC`, `NET_RATE_STEP_MBIT`
+- Oracle compliance: Only CPU requires 95th percentile < 20%; network and memory use current utilization < 20%
+- EMA smoothing with configurable alpha for responsive yet stable current utilization tracking
+- Minimum activation periods prevent rapid on/off cycling that would waste resources
+
+## [2.5.1] - 2025-01-15
+
+### Added
+- **MTU 9000 (Jumbo Frames) optimization**: Default `NET_PACKET_SIZE=8900` optimized for Oracle Cloud MTU 9000 environments
+- **Jumbo frame configuration templates**: New `*-jumbo.env` templates for all Oracle shapes with MTU 9000 optimization
+- **UDP send buffer optimization**: 1MB send buffer for improved UDP performance
+- **Enhanced documentation**: MTU 9000 optimization guide and configuration examples
+
+### Fixed
+- **TCP buffer advancement bug**: Fixed partial send handling in TCP mode that could cause incomplete data transmission
+- **Token bucket dead zone**: Fixed issue where very low rates or large packets could prevent any traffic generation
+- **Buffer management**: Improved socket buffer settings for both UDP and TCP protocols
+
+### Changed
+- **Default packet size**: Increased from 1200 to 8900 bytes for 30-50% CPU reduction with jumbo frames
+- **Performance optimization**: Better rate control with larger packets and improved socket buffering
+- **Template coverage**: Extended configuration templates to support both standard and jumbo frame environments
+
+### Technical Details
+- MTU 9000 allows UDP payload up to 8972 bytes and TCP MSS up to 8960 bytes
+- Token bucket now ensures minimum capacity of one packet regardless of rate/size combination  
+- Enhanced error handling prevents dead zones in rate limiting algorithm
+- Backward compatibility maintained via `NET_PACKET_SIZE` configuration override
+
+## [2.5.0] - 2025-01-15
+
+### Added
+- **Native Python network generator**: Replaced iperf3 with native Python socket-based traffic generation
+- **RFC 2544 default addresses**: Safe default target addresses (198.18.0.1, 198.19.255.254) when NET_PEERS is empty
+- **TTL safety configuration**: `NET_TTL` variable (default 1) ensures packets only reach first hop
+- **Configurable packet size**: `NET_PACKET_SIZE` variable for customizable UDP payload size
+- **Token bucket rate limiting**: Precise 5ms tick intervals with elapsed-time based accumulation
+- **Drift-free timing**: Monotonic clock-based timing prevents cumulative drift
+- **IPv4/IPv6 support**: Automatic address family detection with proper TTL/hop-limit configuration
+
+### Changed
+- **Eliminated external dependencies**: Removed iperf3 dependency from Docker image and code
+- **Improved rate control**: Native implementation provides better precision than subprocess calls
+- **Enhanced safety**: TTL=1 default prevents accidental network impact beyond first hop
+- **Protocol behavior**: TCP mode requires explicit NET_PEERS to avoid timeouts on RFC 2544 addresses
+- **Error handling**: Graceful handling of connection failures with exponential backoff
+
+### Removed
+- **iperf3 dependency**: Completely removed from Dockerfile, compose.yaml, and codebase
+- **iperf3 service**: Removed from Docker Compose configuration
+
+### Technical Details
+- Token bucket with 5ms ticks and 2x tick-size burst cap
+- Pre-allocated memoryview buffers for zero-copy packet generation
+- Automatic IPv4/IPv6 detection with proper TTL/hop-limit settings
+- Connection pooling with per-burst socket creation for reliability
+- Integration with existing PID controller system maintains all control logic
+
 ## [Unreleased]
 
 ### Added
@@ -17,9 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configurable health server**: `HEALTH_ENABLED`, `HEALTH_PORT`, and `HEALTH_HOST` environment variables
 - **Docker integration examples**: Health check configuration for docker-compose.yml and Dockerfile
 - **Security-first binding**: Health server defaults to localhost-only (127.0.0.1) for security
-- **Industry-standard memory calculation**: Uses MemAvailable (Linux 3.14+) with fallback for older kernels
+- **Industry-standard memory calculation**: Uses MemAvailable (Linux 3.14+) 
 - **Memory occupation improvements**: Configurable page touching frequency (`MEM_TOUCH_INTERVAL_SEC`)
-- **Dual memory metrics**: Optional debug mode shows both cache-excluded and cache-included calculations
 - **Memory calculation documentation**: Comprehensive explanation of why cache/buffers are excluded
 - Comprehensive documentation overhaul with badges, FAQ, and configuration tables
 - Architecture diagrams and component interaction documentation
@@ -42,7 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **7-day metrics storage**: SQLite database for rolling 7-day analysis
-- **95th percentile calculations**: Mirrors Oracle's exact reclamation criteria
+- **95th percentile calculations**: Mirrors Oracle's exact CPU reclamation criteria
 - **Load average monitoring**: Automatic pausing when system under CPU contention
 - **Hysteresis gap**: Prevents oscillation with thresholds (0.6 pause / 0.4 resume)
 - **Metrics persistence**: Database survives container restarts
@@ -69,9 +172,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Memory occupation**: Support for A1.Flex memory reclamation rules
-- **Network traffic generation**: iperf3-based load generation as fallback
+- **Network traffic generation**: Initial implementation using iperf3 (replaced in v2.5.0)
 - **Multi-platform support**: Both x86-64 (E2.1.Micro) and ARM64 (A1.Flex)
-- **Docker Compose**: Complete deployment solution with iperf3 server
+- **Docker Compose**: Complete deployment solution (iperf3 server removed in v2.5.0)
 - **Environment configuration**: Extensive customization via environment variables
 
 ### Changed
