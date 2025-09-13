@@ -1,7 +1,7 @@
 # Claude Agent Guidelines
 
 ## Core Principles
-- **CRITICAL**: Oracle Free Tier VMs are reclaimed when ALL metrics are below 20% for 7 days (95th percentile). Keep AT LEAST ONE metric above 20% to prevent reclamation.
+- **CRITICAL**: Oracle Free Tier VMs are reclaimed when ALL metrics are below 20% for 7 days. Oracle measures CPU using 95th percentile, memory/network using simple thresholds. Keep AT LEAST ONE metric above 20% to prevent reclamation.
 - Follow `README.md` for Oracle Free Tier thresholds: E2 shapes cap at 50 Mbps (≈10 Mbps threshold); A1.Flex offers 1 Gbps per vCPU (≈0.2 Gbps threshold) and is the only shape subject to the 20% memory rule.
 - CPU stress must run at `nice` 19, use transient bursts, and yield immediately to real workloads.
 - Generate network traffic only as a fallback when CPU or memory activity risks dropping below thresholds.
@@ -9,9 +9,10 @@
 
 ## 7-Day Metrics & Oracle Compliance
 - **Storage**: SQLite database at `/var/lib/loadshaper/metrics.db` (primary) or `/tmp/loadshaper_metrics.db` (fallback)
-- **95th percentile tracking**: Mirrors Oracle's exact reclamation criteria over 7-day rolling windows
+- **95th percentile tracking**: CPU only (mirrors Oracle's measurement method for CPU; memory/network use simple averages)
 - **Sample frequency**: Every 5 seconds (≈120,960 samples per week, 10-20MB database size)
 - **Automatic cleanup**: Removes data older than 7 days, handles storage failures gracefully
+- **Oracle official rules**: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm#compute__idleinstances
 
 ## Load Average Monitoring
 - **Default thresholds**: `LOAD_THRESHOLD=0.6` (pause), `LOAD_RESUME_THRESHOLD=0.4` (resume)
@@ -27,7 +28,8 @@
 - **Debug metrics**: Set `DEBUG_MEM_METRICS=true` to compare both calculation methods in telemetry
 
 ## Key Configuration Variables
-- **Core targets**: `CPU_TARGET_PCT`, `MEM_TARGET_PCT`, `NET_TARGET_PCT`
+- **P95 CPU control**: `CPU_P95_TARGET_MIN`, `CPU_P95_TARGET_MAX`, `CPU_P95_SETPOINT`, `CPU_P95_EXCEEDANCE_TARGET`
+- **Memory/Network targets**: `MEM_TARGET_PCT`, `NET_TARGET_PCT`
 - **Safety limits**: `CPU_STOP_PCT`, `MEM_STOP_PCT`, `NET_STOP_PCT`
 - **Load monitoring**: `LOAD_THRESHOLD`, `LOAD_RESUME_THRESHOLD`, `LOAD_CHECK_ENABLED`
 - **Memory occupation**: `MEM_TOUCH_INTERVAL_SEC`, `MEM_STEP_MB`, `MEM_MIN_FREE_MB`
@@ -49,3 +51,6 @@
 5. **Always verify consistency** between all documentation files before committing
 
 **Files to keep in sync**: `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CHANGELOG.md`, `CLAUDE.md`
+
+## Project Development Status
+**This is a Work In Progress project.** Breaking changes are intentionally introduced without migration paths as we iterate toward the optimal Oracle Cloud VM protection solution. This approach allows rapid innovation and prevents technical debt accumulation during active development phases.

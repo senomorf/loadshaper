@@ -3,7 +3,7 @@
 **📖 Related Documentation:**
 - [README.md](README.md) - Project overview, usage, and configuration
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contributor setup and guidelines
-- [CHANGELOG.md](CHANGELOG.md) - Version history and migration guides
+- [CHANGELOG.md](CHANGELOG.md) - Version history and breaking changes
 
 ## Architecture Overview
 
@@ -11,7 +11,7 @@
 
 ### Core Components
 - **Metric Collection**: System-level monitoring (CPU, memory, network, load average)
-- **Storage Layer**: SQLite-based 7-day rolling metrics with 95th percentile calculations
+- **Storage Layer**: SQLite-based 7-day rolling metrics with CPU 95th percentile calculations
 - **Control Logic**: PID-style controllers for each resource type with hysteresis
 - **Load Workers**: Low-priority background processes for resource consumption
 - **Safety Systems**: Load average monitoring and automatic yielding to real workloads
@@ -28,7 +28,7 @@
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │   SQLite    │    │   Safety    │    │   Telemetry │
 │  Metrics    │    │  Monitors   │    │   Output    │
-│ (7-day p95) │    │ (Load Avg)  │    │ (Logs/UI)   │
+│ (CPU 7d p95)│    │ (Load Avg)  │    │ (Logs/UI)   │
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
@@ -57,7 +57,7 @@ The system automatically detects Oracle Cloud shapes via:
 - Build & run in Docker: `docker compose up -d --build`
 - Tail logs: `docker logs -f loadshaper`
 - Local run (Linux only, needs /proc): `python -u loadshaper.py`
-- Override settings at launch, e.g.: `CPU_TARGET_PCT=35 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
+- Override settings at launch, e.g.: `CPU_P95_SETPOINT=30 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
 - Run tests: `python -m pytest -q`
 
 **🔗 See also:** [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development setup and testing requirements.
@@ -155,7 +155,7 @@ ping -c 5 8.8.8.8     # Should show normal latency
 # Verify CPU load reaches targets
 docker logs loadshaper | grep -E "cpu now=[0-9.]+" | tail -10
 
-# Check 95th percentile calculations  
+# Check CPU 95th percentile calculations  
 docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db \
   "SELECT resource_type, COUNT(*), 
    ROUND(AVG(value), 2) as avg_value,

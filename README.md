@@ -6,6 +6,12 @@
 ![Docker](https://img.shields.io/badge/Docker-supported-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20ARM64%20%7C%20x86--64-lightgrey.svg)
 
+## ⚠️ Work In Progress - Breaking Changes Expected
+
+> **🚧 This project is under active development.** Breaking changes are introduced frequently
+> without migration paths. This is intentional as we iterate toward the optimal solution for
+> preventing Oracle Cloud VM reclamation. Always review the CHANGELOG before updating.
+
 ### Oracle Cloud Always Free VM Keeper
 **Intelligent baseline load generator that prevents Oracle Cloud Always Free compute instances from being reclaimed due to underutilization.**
 
@@ -13,9 +19,11 @@
 
 Oracle Cloud Always Free compute instances are automatically reclaimed if they remain underutilized for 7 consecutive days. An instance is considered idle when **ALL** of the following conditions are met over a 7-day window:
 
-- 95th-percentile CPU utilization is below 20%
-- Network utilization is below 20% of the shape's internet bandwidth cap  
-- Memory utilization is below 20% (A1.Flex shapes only)
+- **CPU utilization for the 95th percentile** is below 20%
+- **Network utilization** is below 20% (simple threshold, not P95)
+- **Memory utilization** is below 20% (A1.Flex shapes only, simple threshold, not P95)
+
+**Source**: [Oracle Cloud Always Free Resources - Idle Compute Instances](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm#compute__idleinstances)
 
 ## Solution
 
@@ -24,7 +32,7 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 ✅ **Keeps at least one metric above 20%** to prevent reclamation  
 ✅ **Runs at lowest OS priority** (nice 19) with minimal system impact  
 ✅ **Automatically pauses** when real workloads need resources  
-✅ **Tracks 95th percentile metrics** over 7-day rolling windows  
+✅ **Tracks CPU 95th percentile** over 7-day rolling windows (matches Oracle's measurement)  
 ✅ **Works on both x86-64 and ARM64** Oracle Free Tier shapes
 
 ## Quick Start
@@ -52,7 +60,7 @@ That's it! `loadshaper` will automatically detect your Oracle Cloud shape and st
 **📖 More Information:**
 - [Configuration Reference](#configuration-reference) - Detailed environment variable options
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Development setup and contribution guidelines
-- [CHANGELOG.md](CHANGELOG.md) - Version history and migration guides
+- [CHANGELOG.md](CHANGELOG.md) - Version history and breaking changes
 
 ## Oracle Free Tier thresholds
 
@@ -72,10 +80,7 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 
 **Important:** Network monitoring typically measures internet-bound traffic (external bandwidth), not internal VM-to-VM traffic. For E2 shapes, focus on the 50 Mbps external limit.
 
-`loadshaper` drives CPU usage and can emit network traffic. It now tracks CPU,
-memory, and network utilization over a 7-day rolling window and calculates 95th
-percentile values to mirror Oracle's reclamation criteria. The telemetry output
-shows current, 5-minute average, and 7-day 95th percentile values for each metric.
+`loadshaper` drives CPU usage and can emit network traffic. It tracks CPU utilization over a 7-day rolling window and calculates the 95th percentile to match Oracle's exact reclamation criteria. For memory and network, it uses simple threshold monitoring (no P95) as per Oracle's actual measurement method. The telemetry output shows current values, averages, and CPU P95.
 
 ## Architecture
 
@@ -89,7 +94,7 @@ shows current, 5-minute average, and 7-day 95th percentile values for each metri
 
 ### 2. **7-Day Metrics Storage**
 - **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis
-- **95th percentile calculation**: Mirrors Oracle's reclamation criteria exactly
+- **95th percentile calculation**: CPU only (mirrors Oracle's measurement method)
 - **Automatic cleanup**: Removes data older than 7 days
 - **Storage locations**: `/var/lib/loadshaper/metrics.db` (preferred) or `/tmp/loadshaper_metrics.db` (fallback)
 
@@ -103,7 +108,7 @@ shows current, 5-minute average, and 7-day 95th percentile values for each metri
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Collect       │───▶│   Analyze       │───▶│   Adjust        │
-│   Metrics       │    │   95th %ile     │    │   Load Level    │
+│   Metrics       │    │   CPU P95       │    │   Load Level    │
 │   Every 5s      │    │   vs Thresholds │    │   Accordingly   │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │                       │
@@ -130,11 +135,7 @@ CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is design
 
 ## Network shaping as fallback
 
-Network traffic should only be generated when CPU or memory activity risks
-falling below Oracle's thresholds. With 7-day metrics tracking now in place,
-future versions can make intelligent decisions about when to temporarily raise
-network usage based on 95th percentile trends, ensuring at least one metric
-stays above Oracle's reclamation thresholds.
+Network traffic should only be generated when CPU activity risks falling below Oracle's 20% threshold. Since Oracle uses simple threshold monitoring (not P95) for network utilization, loadshaper can use basic averaging to maintain network levels when needed as a fallback to CPU-based protection.
 
 ## Load average monitoring
 
@@ -162,13 +163,13 @@ at each control period (default 5 seconds) and automatically cleaned up after
 
 **Telemetry output format:**
 ```
-[loadshaper] cpu now=45.2% avg=42.1% p95=48.3% | mem(excl-cache) now=55.1% avg=52.8% p95=58.7% | nic(...) now=12.50% avg=11.25% p95=15.20% | load now=0.45 avg=0.42 p95=0.52 | ... | samples_7d=98547
+[loadshaper] cpu now=45.2% avg=42.1% p95=48.3% | mem(excl-cache) now=55.1% avg=52.8% | nic(...) now=12.50% avg=11.25% | load now=0.45 avg=0.42 | ... | samples_7d=98547
 ```
 
 Where:
 - `now`: Current sample value
-- `avg`: 5-minute exponential moving average
-- `p95`: 95th percentile over the past 7 days
+- `avg`: 5-minute exponential moving average (memory/network only; CPU uses P95 control)
+- `p95`: 95th percentile over the past 7 days (CPU only, matches Oracle's measurement)
 - `samples_7d`: Number of samples stored in the 7-day window
 
 **Storage characteristics:**
@@ -186,7 +187,7 @@ Environment variables can override shape detection and contention limits:
 NET_SENSE_MODE=container NET_LINK_MBIT=10000 NET_STOP_PCT=20 python -u loadshaper.py
 
 # Raise CPU target while lowering the safety stop
-CPU_TARGET_PCT=50 CPU_STOP_PCT=70 MEM_TARGET_PCT=25 MEM_STOP_PCT=80 python -u loadshaper.py
+CPU_P95_SETPOINT=50.0 CPU_STOP_PCT=70 MEM_TARGET_PCT=25 MEM_STOP_PCT=80 python -u loadshaper.py
 
 # Configure load average monitoring thresholds (more aggressive example)
 LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 LOAD_CHECK_ENABLED=true python -u loadshaper.py
@@ -276,7 +277,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 
 | Variable | Auto-Configured Values | Description | E2.1.Micro | E2.2.Micro | A1.Flex-1 | A1.Flex-2 | A1.Flex-3 | A1.Flex-4 |
 |----------|---------|-------------|------------|------------|------------|------------|------------|------------|
-| `CPU_TARGET_PCT` | **25**, 30, 35, 35, 35, 40 | Target CPU utilization (%) | 25% | 30% | 35% | 35% | 35% | 40% |
+| `CPU_P95_SETPOINT` | **23.5**, 28.5, 28.5, 28.5, 28.5, 30.0 | Target CPU P95 (7-day window) | 23.5% | 28.5% | 28.5% | 28.5% | 28.5% | 30.0% |
 | `MEM_TARGET_PCT` | **0**, 0, 30, 30, 30, 30 | Target memory utilization (%) | 0% (disabled) | 0% (disabled) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) |
 | `NET_TARGET_PCT` | **15**, 15, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
 
@@ -293,10 +294,24 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTROL_PERIOD_SEC` | `5` | Seconds between control decisions |
-| `AVG_WINDOW_SEC` | `300` | Exponential moving average window (5 min) |
+| `AVG_WINDOW_SEC` | `300` | Exponential moving average window for memory/network (5 min) |
 | `HYSTERESIS_PCT` | `5` | Percentage hysteresis to prevent oscillation |
 | `JITTER_PCT` | `15` | Random jitter in load generation (%) |
 | `JITTER_PERIOD_SEC` | `5` | Seconds between jitter adjustments |
+
+### P95 Controller Configuration
+
+**⚠️ CRITICAL**: These variables control Oracle's 95th percentile CPU measurement that determines reclamation. CPU P95 must stay above 20% for Oracle Free Tier protection.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CPU_P95_TARGET_MIN` | `22.0` | Minimum target for 7-day CPU P95 (must stay >20%) |
+| `CPU_P95_TARGET_MAX` | `28.0` | Maximum target for 7-day CPU P95 (efficiency ceiling) |
+| `CPU_P95_SETPOINT` | `25.0` | Optimal P95 target (center of safe range 22-28%) |
+| `CPU_P95_EXCEEDANCE_TARGET` | `6.5` | Target percentage of high-intensity slots (%) |
+| `CPU_P95_SLOT_DURATION_SEC` | `60.0` | Duration of each control slot (seconds) |
+| `CPU_P95_HIGH_INTENSITY` | `35.0` | CPU utilization during high-intensity slots (%) |
+| `CPU_P95_BASELINE_INTENSITY` | `20.0` | CPU utilization during normal slots (minimum for Oracle compliance) |
 
 ### Load Average Monitoring
 
@@ -340,14 +355,14 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 **VM.Standard.E2.1.Micro (x86-64):**
 ```bash
 # Conservative settings for shared 1/8 OCPU
-CPU_TARGET_PCT=25 MEM_TARGET_PCT=0 NET_TARGET_PCT=15
+CPU_P95_SETPOINT=23.5 MEM_TARGET_PCT=0 NET_TARGET_PCT=15
 NET_LINK_MBIT=50 LOAD_THRESHOLD=0.6
 ```
 
 **A1.Flex (ARM64):**
 ```bash  
 # Higher targets for dedicated resources
-CPU_TARGET_PCT=35 MEM_TARGET_PCT=25 NET_TARGET_PCT=25
+CPU_P95_SETPOINT=28.5 MEM_TARGET_PCT=25 NET_TARGET_PCT=25
 NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 ```
 
@@ -411,9 +426,6 @@ Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid r
   },
   "percentiles_7d": {
     "cpu_p95": 48.3,
-    "memory_p95": 58.7,
-    "network_p95": 15.2,
-    "load_p95": 0.52,
     "sample_count_7d": 98547
   }
 }
@@ -475,10 +487,10 @@ A: Yes, it automatically detects and adapts to both VM.Standard.E2.1.Micro (x86-
 ### Oracle Cloud Specific
 
 **Q: How does this prevent my Always Free instance from being reclaimed?**  
-A: Oracle reclaims instances when ALL metrics are below 20% for 7 days. `loadshaper` ensures at least one metric stays above 20% by tracking 95th percentiles just like Oracle does.
+A: Oracle reclaims instances when ALL metrics are below 20% for 7 days. `loadshaper` ensures at least one metric stays above 20% by tracking CPU 95th percentile (matching Oracle's measurement) and simple averages for memory/network.
 
 **Q: What if Oracle changes their reclamation policy?**  
-A: The thresholds are easily configurable via environment variables. Simply adjust `CPU_TARGET_PCT`, `MEM_TARGET_PCT`, or `NET_TARGET_PCT` as needed.
+A: The thresholds are easily configurable via environment variables. Simply adjust `CPU_P95_SETPOINT`, `MEM_TARGET_PCT`, or `NET_TARGET_PCT` as needed.
 
 **Q: Will Oracle consider this usage "legitimate"?**  
 A: The tool generates actual resource utilization that would be visible to Oracle's monitoring. However, you should review Oracle's terms of service to ensure compliance with your use case.
@@ -488,8 +500,8 @@ A: The tool generates actual resource utilization that would be visible to Oracl
 **Q: Why does memory targeting default to 0% on E2.1.Micro?**  
 A: E2 shapes only have 1GB RAM and memory isn't counted in Oracle's reclamation criteria for these instances. Memory targeting is only enabled by default on A1.Flex shapes.
 
-**Q: How can I tell if it's working?**  
-A: Watch the telemetry output: `docker logs -f loadshaper`. You'll see current, average, and 95th percentile values for all metrics.
+**Q: How can I tell if it's working?**
+A: Watch the telemetry output: `docker logs -f loadshaper`. You'll see current, average, and CPU 95th percentile values.
 
 **Q: What happens if I restart the container?**  
 A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` or `/tmp/`). The 7-day rolling window continues from where it left off.
@@ -515,6 +527,50 @@ Interested in improving `loadshaper`? Check out our [Contributing Guide](CONTRIB
 - Testing requirements
 - Code style guidelines
 - How to submit improvements
+
+## Testing
+
+Loadshaper includes comprehensive test coverage to ensure reliability:
+
+### Running Tests
+```bash
+# Run all tests
+python -m pytest -q
+
+# Run specific test modules
+python -m pytest tests/test_cpu_p95_controller.py -v
+python -m pytest tests/test_health_endpoints.py -v
+
+# Run with coverage
+python -m pytest --cov=loadshaper
+```
+
+### Test Strategy
+
+**CPUP95Controller Test Suite** (`tests/test_cpu_p95_controller.py`):
+- **46 comprehensive tests** covering all controller functionality
+- **Initialization**: Ring buffer sizing, cache behavior, state setup
+- **State Machine**: BUILDING/MAINTAINING/REDUCING transitions with adaptive hysteresis
+- **Intensity Calculations**: Target intensity algorithms for different states and P95 distances
+- **Exceedance Targets**: Adaptive exceedance budget control based on state and P95 deviation
+- **Slot Engine**: Time-based slot rollover, exceedance budget control, safety gating
+- **Status Reporting**: Telemetry data structure and accuracy
+- **Edge Cases**: Extreme configurations, error conditions, boundary conditions
+
+**Health Endpoints** (`tests/test_health_endpoints.py`):
+- HTTP endpoint functionality and response validation
+- Telemetry data accuracy and formatting
+
+**Shape Detection** (`tests/test_shape_detection.py`):
+- Oracle Cloud instance shape detection and configuration
+
+### Key Testing Features
+
+- **Mocked Storage**: Tests use `MockMetricsStorage` to simulate database interactions
+- **Time Control**: Tests use `patch('time.time')` for deterministic slot timing
+- **Cache Management**: Tests properly handle P95 caching to ensure fresh data
+- **State Isolation**: Each test starts with clean controller state
+- **Algorithm Verification**: Tests validate the exact mathematical behavior of P95-driven control
 
 ## Future work
 
@@ -559,7 +615,7 @@ docker logs -f loadshaper | grep "nic("
 **CPU not reaching target percentage:**
 - Check if `LOAD_THRESHOLD` is too low (workers pause when system load is high)
 - Verify `CPU_STOP_PCT` isn't triggering premature shutdown
-- Increase `CPU_TARGET_PCT` if needed
+- Increase `CPU_P95_SETPOINT` if needed
 
 **Memory not increasing:**
 - Ensure sufficient free memory exists (respects `MEM_MIN_FREE_MB`)

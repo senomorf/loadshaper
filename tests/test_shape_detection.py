@@ -188,7 +188,7 @@ class TestConfigTemplateLoading(unittest.TestCase):
     def test_load_config_template_success(self):
         """Test successful template loading."""
         template_content = '''# Test template
-CPU_TARGET_PCT=35
+CPU_P95_SETPOINT=35
 MEM_TARGET_PCT=30
 # Comment line
 NET_TARGET_PCT=25
@@ -204,7 +204,7 @@ INVALID_LINE_NO_EQUALS
                 config = loadshaper.load_config_template('test.env')
                 
             expected = {
-                'CPU_TARGET_PCT': '35',
+                'CPU_P95_SETPOINT': '35',
                 'MEM_TARGET_PCT': '30', 
                 'NET_TARGET_PCT': '25'
             }
@@ -236,31 +236,31 @@ class TestConfigurationPriority(unittest.TestCase):
 
     def test_getenv_with_template_env_var_priority(self):
         """Test that environment variables have highest priority."""
-        template = {'CPU_TARGET_PCT': '30'}
-        with patch.dict(os.environ, {'CPU_TARGET_PCT': '50'}):
-            result = loadshaper.getenv_with_template('CPU_TARGET_PCT', '25', template)
+        template = {'CPU_P95_SETPOINT': '30'}
+        with patch.dict(os.environ, {'CPU_P95_SETPOINT': '50'}):
+            result = loadshaper.getenv_with_template('CPU_P95_SETPOINT', '25', template)
             self.assertEqual(result, '50')  # ENV wins
 
     def test_getenv_with_template_template_priority(self):
         """Test that template values have second priority."""
-        template = {'CPU_TARGET_PCT': '30'}
+        template = {'CPU_P95_SETPOINT': '30'}
         # Ensure env var is not set
         with patch.dict(os.environ, {}, clear=True):
-            result = loadshaper.getenv_with_template('CPU_TARGET_PCT', '25', template)
+            result = loadshaper.getenv_with_template('CPU_P95_SETPOINT', '25', template)
             self.assertEqual(result, '30')  # Template wins
 
     def test_getenv_with_template_default_fallback(self):
         """Test that default values are used when env and template don't have the value."""
         template = {}
         with patch.dict(os.environ, {}, clear=True):
-            result = loadshaper.getenv_with_template('CPU_TARGET_PCT', '25', template)
+            result = loadshaper.getenv_with_template('CPU_P95_SETPOINT', '25', template)
             self.assertEqual(result, '25')  # Default wins
 
     def test_getenv_int_with_template_type_conversion(self):
         """Test conversion to int through getenv_int_with_template."""
-        template = {'CPU_TARGET_PCT': '30'}
+        template = {'CPU_P95_SETPOINT': '30'}
         with patch.dict(os.environ, {}, clear=True):
-            result = loadshaper.getenv_int_with_template('CPU_TARGET_PCT', 25, template)
+            result = loadshaper.getenv_int_with_template('CPU_P95_SETPOINT', 25, template)
             self.assertEqual(result, 30)
             self.assertIsInstance(result, int)
 
@@ -289,7 +289,7 @@ class TestIntegrationScenarios(unittest.TestCase):
                          return_value=('VM.Standard.E2.1.Micro', 'e2-1-micro.env')):
             
             # Create a mock template file
-            template_content = '''CPU_TARGET_PCT=25
+            template_content = '''CPU_P95_SETPOINT=25
 MEM_TARGET_PCT=0
 NET_TARGET_PCT=15'''
             
@@ -306,12 +306,12 @@ NET_TARGET_PCT=15'''
                     
                     # Test template loading
                     config = loadshaper.load_config_template(template_file)
-                    self.assertEqual(config['CPU_TARGET_PCT'], '25')
+                    self.assertEqual(config['CPU_P95_SETPOINT'], '25')
                     self.assertEqual(config['MEM_TARGET_PCT'], '0')
                     
                     # Test configuration priority
-                    with patch.dict(os.environ, {'CPU_TARGET_PCT': '40'}):
-                        result = loadshaper.getenv_int_with_template('CPU_TARGET_PCT', 30, config)
+                    with patch.dict(os.environ, {'CPU_P95_SETPOINT': '40'}):
+                        result = loadshaper.getenv_int_with_template('CPU_P95_SETPOINT', 30, config)
                         self.assertEqual(result, 40)  # ENV override
                         
                 os.unlink(tf.name)
@@ -323,7 +323,7 @@ NET_TARGET_PCT=15'''
              patch.object(loadshaper, '_get_system_specs', return_value=(1, 6.0)):
             
             # Create a mock A1.Flex template
-            template_content = '''CPU_TARGET_PCT=35
+            template_content = '''CPU_P95_SETPOINT=35
 MEM_TARGET_PCT=30
 NET_TARGET_PCT=25'''
             
@@ -429,7 +429,7 @@ class TestNewFeatures(unittest.TestCase):
     def test_e2_memory_targeting_disabled(self):
         """Test that E2 shapes have memory targeting disabled in templates."""
         # E2.1.Micro template should have MEM_TARGET_PCT=0
-        template_content = '''CPU_TARGET_PCT=25
+        template_content = '''CPU_P95_SETPOINT=25
 MEM_TARGET_PCT=0
 NET_TARGET_PCT=15'''
         
@@ -445,7 +445,7 @@ NET_TARGET_PCT=15'''
 
     def test_a1_flex_memory_targeting_enabled(self):
         """Test that A1.Flex shapes have memory targeting at 30%.""" 
-        template_content = '''CPU_TARGET_PCT=35
+        template_content = '''CPU_P95_SETPOINT=35
 MEM_TARGET_PCT=30
 NET_TARGET_PCT=25'''
         
@@ -462,7 +462,7 @@ NET_TARGET_PCT=25'''
     def test_configuration_validation_integration(self):
         """Test complete configuration validation with template priority."""
         template = {
-            'CPU_TARGET_PCT': '35',
+            'CPU_P95_SETPOINT': '35',
             'MEM_TARGET_PCT': '30', 
             'NET_TARGET_PCT': '25',
             'NET_MODE': 'client',
@@ -470,8 +470,8 @@ NET_TARGET_PCT=25'''
         }
         
         # Test environment variable override
-        with patch.dict(os.environ, {'CPU_TARGET_PCT': '40', 'NET_MODE': 'server'}):
-            cpu_result = loadshaper.getenv_int_with_template('CPU_TARGET_PCT', 20, template)
+        with patch.dict(os.environ, {'CPU_P95_SETPOINT': '40', 'NET_MODE': 'server'}):
+            cpu_result = loadshaper.getenv_int_with_template('CPU_P95_SETPOINT', 20, template)
             net_mode = loadshaper.getenv_with_template('NET_MODE', 'client', template)
             
             self.assertEqual(cpu_result, 40)  # ENV override
@@ -492,14 +492,14 @@ class TestConfigValidation(unittest.TestCase):
     def test_validate_config_value_percentage_valid(self):
         """Test valid percentage values pass validation."""
         # These should not raise exceptions
-        loadshaper._validate_config_value("CPU_TARGET_PCT", "50")
+        loadshaper._validate_config_value("CPU_P95_SETPOINT", "50")
         loadshaper._validate_config_value("MEM_TARGET_PCT", "0")
         loadshaper._validate_config_value("NET_TARGET_PCT", "100")
 
     def test_validate_config_value_percentage_invalid(self):
         """Test invalid percentage values raise ValueError."""
         with self.assertRaises(ValueError):
-            loadshaper._validate_config_value("CPU_TARGET_PCT", "150")
+            loadshaper._validate_config_value("CPU_P95_SETPOINT", "150")
         with self.assertRaises(ValueError):
             loadshaper._validate_config_value("MEM_TARGET_PCT", "-10")
         with self.assertRaises(ValueError):

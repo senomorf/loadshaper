@@ -80,7 +80,7 @@ fi
 
 # Validate required Oracle Cloud environment variables are present
 # Note: For more robust validation, consider using 'yq' tool instead of grep
-REQUIRED_ENV_VARS=("CPU_TARGET_PCT" "MEM_TARGET_PCT" "NET_TARGET_PCT" "LOAD_THRESHOLD" "NET_LINK_MBIT" "HEALTH_ENABLED" "HEALTH_PORT")
+REQUIRED_ENV_VARS=("CPU_P95_SETPOINT" "MEM_TARGET_PCT" "NET_TARGET_PCT" "LOAD_THRESHOLD" "NET_LINK_MBIT" "HEALTH_ENABLED" "HEALTH_PORT")
 
 for env_var in "${REQUIRED_ENV_VARS[@]}"; do
     if helm template test-release "$CHART_DIR" | grep -q "$env_var"; then

@@ -83,7 +83,7 @@ readinessProbe:
 # Security-focused configuration
 config:
   # Minimal resource utilization for stealth operation
-  CPU_TARGET_PCT: "15.0"
+  CPU_P95_SETPOINT: "15.0"
   MEM_TARGET_PCT: "30.0"
   NET_TARGET_PCT: "5.0"
   

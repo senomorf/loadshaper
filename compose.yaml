@@ -23,8 +23,15 @@ services:
       start_period: 60s
       retries: 3
     environment:
-      # === Targets (auto-detected from Oracle shape or fallback defaults) ===
-      CPU_TARGET_PCT: "${CPU_TARGET_PCT}"             # target average CPU (auto-configured per shape)
+      # === P95 CPU Control (Oracle-compliant, auto-configured per shape) ===
+      CPU_P95_TARGET_MIN: "${CPU_P95_TARGET_MIN}"     # P95 target minimum %
+      CPU_P95_TARGET_MAX: "${CPU_P95_TARGET_MAX}"     # P95 target maximum %
+      CPU_P95_SETPOINT: "${CPU_P95_SETPOINT}"         # P95 target setpoint %
+      CPU_P95_EXCEEDANCE_TARGET: "${CPU_P95_EXCEEDANCE_TARGET}" # exceedance budget %
+      CPU_P95_BASELINE_INTENSITY: "${CPU_P95_BASELINE_INTENSITY}" # baseline intensity %
+      CPU_P95_HIGH_INTENSITY: "${CPU_P95_HIGH_INTENSITY}"     # high intensity %
+
+      # === Memory/Network Targets (auto-configured per shape) ===
       MEM_TARGET_PCT: "${MEM_TARGET_PCT}"             # target RAM used (auto-configured per shape, disabled for E2)
       NET_TARGET_PCT: "${NET_TARGET_PCT}"             # target NIC utilization % (auto-configured per shape bandwidth)
 

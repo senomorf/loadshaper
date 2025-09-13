@@ -13,7 +13,7 @@ resources:
 # E2.1.Micro specific configuration
 config:
   # Target percentages optimized for E2.1.Micro shape
-  CPU_TARGET_PCT: "25.0"    # Conservative for burstable CPU
+  CPU_P95_SETPOINT: "25.0"    # Conservative for burstable CPU
   MEM_TARGET_PCT: "40.0"    # No memory reclamation rule for E2, but keep reasonable
   NET_TARGET_PCT: "25.0"    # Target 25% of 50 Mbps = 12.5 Mbps external
   

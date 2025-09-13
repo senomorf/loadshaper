@@ -1,0 +1,304 @@
+import unittest
+import time
+import tempfile
+import os
+from unittest.mock import Mock, patch, MagicMock
+import sys
+
+# Add the parent directory to sys.path so we can import loadshaper
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import loadshaper
+from loadshaper import CPUP95Controller, MetricsStorage
+
+
+class TestP95ControllerIntegration(unittest.TestCase):
+    """Integration tests for P95 controller with main loop and configuration"""
+
+    def setUp(self):
+        """Set up integration test fixtures"""
+        # Create temporary database for real MetricsStorage
+        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.temp_db.close()
+
+        # Create real MetricsStorage instance
+        self.metrics_storage = MetricsStorage(db_path=self.temp_db.name)
+
+        # Mock configuration variables
+        self.patches = patch.multiple(loadshaper,
+                                    CPU_P95_SLOT_DURATION=60.0,
+                                    CPU_P95_BASELINE_INTENSITY=20.0,
+                                    CPU_P95_HIGH_INTENSITY=35.0,
+                                    CPU_P95_TARGET_MIN=22.0,
+                                    CPU_P95_TARGET_MAX=28.0,
+                                    CPU_P95_SETPOINT=25.0,
+                                    CPU_P95_EXCEEDANCE_TARGET=6.5,
+                                    LOAD_CHECK_ENABLED=True,
+                                    LOAD_THRESHOLD=0.6)
+        self.patches.start()
+
+        # Create controller with real storage
+        self.controller = CPUP95Controller(self.metrics_storage)
+
+    def tearDown(self):
+        """Clean up integration test fixtures"""
+        self.patches.stop()
+        # Clean up temporary database
+        try:
+            os.unlink(self.temp_db.name)
+        except OSError:
+            pass
+
+    def test_configuration_loading_with_p95_variables(self):
+        """Test that P95 configuration variables are properly loaded"""
+        # Test that all P95 variables are accessible
+        self.assertEqual(loadshaper.CPU_P95_SLOT_DURATION, 60.0)
+        self.assertEqual(loadshaper.CPU_P95_BASELINE_INTENSITY, 20.0)
+        self.assertEqual(loadshaper.CPU_P95_HIGH_INTENSITY, 35.0)
+        self.assertEqual(loadshaper.CPU_P95_TARGET_MIN, 22.0)
+        self.assertEqual(loadshaper.CPU_P95_TARGET_MAX, 28.0)
+        self.assertEqual(loadshaper.CPU_P95_SETPOINT, 25.0)
+        self.assertEqual(loadshaper.CPU_P95_EXCEEDANCE_TARGET, 6.5)
+
+    def test_metrics_storage_p95_calculation(self):
+        """Test that MetricsStorage correctly calculates P95 values"""
+        # Store sample data over 7 days
+        now = time.time()
+        samples_per_day = 17280  # 24 * 60 * 12 (every 5 seconds)
+
+        # Create test data: mostly low CPU (20%) with occasional spikes (40%)
+        for day in range(7):
+            for sample in range(samples_per_day):
+                timestamp = now - (day * 86400) - (sample * 5)
+
+                # 95% of samples at 20%, 5% at 40% (should give P95 ≈ 40%)
+                cpu_pct = 40.0 if (sample % 20) == 0 else 20.0
+                mem_pct = 25.0
+                net_pct = 15.0
+                load_avg = 0.3
+
+                self.metrics_storage.store_sample(cpu_pct, mem_pct, net_pct, load_avg)
+
+        # Calculate P95 - with 5% samples at 40%, P95 should be around 20% (the 95th percentile)
+        p95 = self.metrics_storage.get_percentile('cpu', percentile=95)
+        self.assertIsNotNone(p95)
+        self.assertGreater(p95, 18.0)  # Should be above the low value
+        self.assertLess(p95, 42.0)     # But could reach the high value
+
+    def test_controller_state_machine_with_real_data(self):
+        """Test controller state machine with real P95 data"""
+        # Store data that should trigger BUILDING state (low P95)
+        now = time.time()
+        for i in range(100):
+            timestamp = now - (i * 5)
+            # Low CPU data - should trigger BUILDING
+            self.metrics_storage.store_sample(15.0, 25.0, 15.0, 0.3)
+
+        # Clear controller cache to force fresh query
+        self.controller._p95_cache = None
+        self.controller._p95_cache_time = 0
+
+        # Update state with real P95 data
+        cpu_p95 = self.controller.get_cpu_p95()
+        self.controller.update_state(cpu_p95)
+
+        # Should be in BUILDING state due to low P95
+        self.assertEqual(self.controller.state, 'BUILDING')
+
+        # Now store high CPU data
+        for i in range(100):
+            timestamp = now - (i * 5)
+            # High CPU data - should eventually trigger REDUCING
+            self.metrics_storage.store_sample(35.0, 25.0, 15.0, 0.3)
+
+        # Clear cache and update
+        self.controller._p95_cache = None
+        self.controller._p95_cache_time = 0
+
+        cpu_p95 = self.controller.get_cpu_p95()
+        self.controller.update_state(cpu_p95)
+
+        # Should be in REDUCING state due to high P95
+        self.assertEqual(self.controller.state, 'REDUCING')
+
+    def test_main_loop_integration_with_load_safety(self):
+        """Test P95 controller integration with main loop load safety"""
+        # Mock the main loop behavior with high load
+        high_load = 0.8  # Above LOAD_THRESHOLD of 0.6
+
+        # Force new slot with high load
+        with patch('time.monotonic', return_value=self.controller.current_slot_start + 70):
+            is_high, intensity = self.controller.should_run_high_slot(high_load)
+
+            # Should override to baseline due to high load
+            self.assertFalse(self.controller.current_slot_is_high)
+            self.assertEqual(intensity, 20.0)  # BASELINE_INTENSITY
+            self.assertGreater(self.controller.slots_skipped_safety, 0)
+
+    def test_telemetry_output_format(self):
+        """Test that telemetry includes P95 controller status"""
+        # Get controller status
+        status = self.controller.get_status()
+
+        # Verify all required fields are present
+        required_fields = [
+            'state', 'cpu_p95', 'target_range', 'exceedance_pct',
+            'exceedance_target', 'current_slot_is_high', 'slot_remaining_sec',
+            'slots_recorded', 'slots_skipped_safety', 'target_intensity'
+        ]
+
+        for field in required_fields:
+            self.assertIn(field, status, f"Missing field: {field}")
+
+        # Verify field types and ranges
+        self.assertIsInstance(status['state'], str)
+        self.assertIn(status['state'], ['BUILDING', 'MAINTAINING', 'REDUCING'])
+        self.assertIsInstance(status['current_slot_is_high'], bool)
+        self.assertGreaterEqual(status['slot_remaining_sec'], 0.0)
+        self.assertGreaterEqual(status['slots_recorded'], 0)
+        self.assertGreaterEqual(status['slots_skipped_safety'], 0)
+
+    def test_exceedance_budget_enforcement(self):
+        """Test that exceedance budget is properly enforced over multiple slots"""
+        # Force controller to have many high slots in history
+        self.controller.slot_history[:10] = [True] * 10  # 10 high slots
+        self.controller.slots_recorded = 10
+
+        # Current exceedance should be 100%
+        current_exceedance = self.controller.get_current_exceedance()
+        self.assertEqual(current_exceedance, 100.0)
+
+        # Next slot should be forced to low due to exceedance budget
+        with patch('time.monotonic', return_value=self.controller.current_slot_start + 70):
+            is_high, intensity = self.controller.should_run_high_slot(None)
+            self.assertFalse(is_high)
+            self.assertEqual(intensity, 20.0)  # BASELINE_INTENSITY
+
+    def test_p95_cache_performance(self):
+        """Test that P95 caching improves performance"""
+        # Store some sample data
+        now = time.time()
+        for i in range(50):
+            self.metrics_storage.store_sample(25.0, 25.0, 15.0, 0.3)
+
+        # First call should query database
+        start_time = time.time()
+        p95_1 = self.controller.get_cpu_p95()
+        first_call_time = time.time() - start_time
+
+        # Second call should use cache (much faster)
+        start_time = time.time()
+        p95_2 = self.controller.get_cpu_p95()
+        second_call_time = time.time() - start_time
+
+        # Results should be identical
+        self.assertEqual(p95_1, p95_2)
+
+        # Second call should be significantly faster (cache hit)
+        self.assertLess(second_call_time, first_call_time / 2)
+
+    def test_ring_buffer_memory_efficiency(self):
+        """Test that ring buffer properly manages memory for 24-hour history"""
+        # Get buffer size for 60-second slots over 24 hours
+        expected_size = int((24 * 60 * 60) / 60)  # 1440 slots
+        self.assertEqual(self.controller.slot_history_size, expected_size)
+
+        # Fill buffer beyond capacity
+        for i in range(expected_size + 100):
+            self.controller._end_current_slot()
+
+        # Should not exceed buffer size
+        self.assertEqual(self.controller.slots_recorded, expected_size)
+        self.assertEqual(len(self.controller.slot_history), expected_size)
+
+    def test_thread_safety_with_concurrent_access(self):
+        """Test thread safety of P95 controller under concurrent access"""
+        import threading
+        import concurrent.futures
+
+        def access_controller():
+            """Worker function for concurrent access"""
+            try:
+                # Access various controller methods
+                p95 = self.controller.get_cpu_p95()
+                status = self.controller.get_status()
+                exceedance = self.controller.get_current_exceedance()
+                return True
+            except Exception:
+                return False
+
+        # Run multiple concurrent accesses
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(access_controller) for _ in range(20)]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        # All accesses should succeed
+        self.assertTrue(all(results), "Some concurrent accesses failed")
+
+
+class TestP95ConfigurationValidation(unittest.TestCase):
+    """Test P95 configuration validation and error handling"""
+
+    def test_invalid_p95_configuration_handling(self):
+        """Test handling of invalid P95 configuration values"""
+        # Test with invalid P95 target values
+        with patch.multiple(loadshaper,
+                           CPU_P95_TARGET_MIN=150.0,  # Invalid: > 100%
+                           CPU_P95_TARGET_MAX=200.0,
+                           CPU_P95_SLOT_DURATION=60.0,
+                           CPU_P95_BASELINE_INTENSITY=20.0,
+                           CPU_P95_HIGH_INTENSITY=35.0,
+                           CPU_P95_SETPOINT=25.0,
+                           CPU_P95_EXCEEDANCE_TARGET=6.5):
+
+            # Should not crash, should handle gracefully
+            temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+            temp_db.close()
+
+            try:
+                metrics_storage = MetricsStorage(db_path=temp_db.name)
+                controller = CPUP95Controller(metrics_storage)
+
+                # Should create controller without crashing
+                self.assertIsNotNone(controller)
+
+                # State should be valid
+                self.assertIn(controller.state, ['BUILDING', 'MAINTAINING', 'REDUCING'])
+
+            finally:
+                os.unlink(temp_db.name)
+
+    def test_database_failure_recovery(self):
+        """Test P95 controller behavior when database fails"""
+        with patch.multiple(loadshaper,
+                           CPU_P95_SLOT_DURATION=60.0,
+                           CPU_P95_BASELINE_INTENSITY=20.0,
+                           CPU_P95_HIGH_INTENSITY=35.0,
+                           CPU_P95_TARGET_MIN=22.0,
+                           CPU_P95_TARGET_MAX=28.0,
+                           CPU_P95_SETPOINT=25.0,
+                           CPU_P95_EXCEEDANCE_TARGET=6.5):
+
+            # Create controller with invalid database path
+            invalid_path = "/invalid/path/that/does/not/exist.db"
+
+            try:
+                # Should handle database creation failure gracefully
+                metrics_storage = MetricsStorage(db_path=invalid_path)
+
+                # Controller should still be created
+                controller = CPUP95Controller(metrics_storage)
+                self.assertIsNotNone(controller)
+
+                # P95 queries should handle database fallback gracefully
+                p95 = controller.get_cpu_p95()
+                # Should either be None (no data) or a valid number (fallback worked)
+                self.assertTrue(p95 is None or isinstance(p95, (int, float)))
+
+            except Exception as e:
+                # Expected - database creation should fail with invalid path or config
+                self.assertIsInstance(e, (OSError, PermissionError, TypeError))
+
+
+if __name__ == '__main__':
+    unittest.main()

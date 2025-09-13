@@ -107,7 +107,7 @@ startupProbe:
 # Production configuration
 config:
   # Conservative targets for production stability
-  CPU_TARGET_PCT: "25.0"
+  CPU_P95_SETPOINT: "25.0"
   MEM_TARGET_PCT: "50.0"
   NET_TARGET_PCT: "15.0"
   

@@ -32,6 +32,7 @@ class MockHealthHandler(HealthHandler):
     def __init__(self, path, controller_state=None, metrics_storage=None):
         self.path = path
         self.controller_state = controller_state or {}
+        self.controller_state_lock = threading.Lock()  # Add lock for thread safety
         self.metrics_storage = metrics_storage
         self.response_code = None
         self.response_headers = {}
@@ -88,7 +89,7 @@ class TestHealthEndpoints:
             'duty': 0.5,
             'net_rate': 100.0,
             'paused': 0.0,
-            'cpu_target': loadshaper.CPU_TARGET_PCT,
+            'cpu_target': loadshaper.CPU_P95_SETPOINT,
             'mem_target': loadshaper.MEM_TARGET_PCT,
             'net_target': loadshaper.NET_TARGET_PCT
         }
@@ -108,7 +109,7 @@ class TestHealthEndpoints:
             'duty': 0.0,
             'net_rate': 1.0,
             'paused': 1.0,  # System is paused due to safety stop
-            'cpu_target': loadshaper.CPU_TARGET_PCT,
+            'cpu_target': loadshaper.CPU_P95_SETPOINT,
             'mem_target': loadshaper.MEM_TARGET_PCT,
             'net_target': loadshaper.NET_TARGET_PCT
         }
@@ -214,7 +215,7 @@ class TestHealthEndpoints:
         
         # Check targets
         targets = response_data['targets']
-        assert targets['cpu_target'] == loadshaper.CPU_TARGET_PCT
+        assert targets['cpu_p95_setpoint'] == loadshaper.CPU_P95_SETPOINT
         assert targets['memory_target'] == loadshaper.MEM_TARGET_PCT
         assert targets['network_target'] == loadshaper.NET_TARGET_PCT
         
@@ -379,7 +380,7 @@ class TestHealthServerThread:
             # This should return immediately without starting server
             thread = threading.Thread(
                 target=health_server_thread,
-                args=(stop_evt, controller_state, metrics_storage),
+                args=(stop_evt, controller_state, threading.Lock(), metrics_storage),
                 daemon=True
             )
             thread.start()
@@ -399,7 +400,7 @@ class TestHealthServerThread:
                     # Should handle the error gracefully
                     thread = threading.Thread(
                         target=health_server_thread,
-                        args=(stop_evt, controller_state, metrics_storage),
+                        args=(stop_evt, controller_state, threading.Lock(), metrics_storage),
                         daemon=True
                     )
                     thread.start()
@@ -420,7 +421,7 @@ class TestHealthServerThread:
             with unittest.mock.patch('loadshaper.HEALTH_ENABLED', True):
                 thread = threading.Thread(
                     target=health_server_thread,
-                    args=(stop_evt, controller_state, metrics_storage),
+                    args=(stop_evt, controller_state, threading.Lock(), metrics_storage),
                     daemon=True
                 )
                 thread.start()
