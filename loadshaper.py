@@ -1383,7 +1383,7 @@ def read_meminfo() -> Tuple[int, float, int]:
     # Oracle's reclamation algorithm likely follows industry standard (AWS CloudWatch, Azure Monitor)
     # which excludes cache/buffers from utilization calculations. This approach ensures our
     # memory measurements align with Oracle's internal monitoring for the 20% rule.
-    if mem_available > 0 and total > 0:
+    if mem_available >= 0 and total > 0:
         # PREFERRED METHOD: MemAvailable (Linux 3.14+) - most accurate
         # This field represents memory actually available to applications without swapping,
         # accounting for reclaimable cache/buffers. Matches Oracle's likely implementation.
