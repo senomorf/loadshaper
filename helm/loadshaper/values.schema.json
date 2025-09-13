@@ -148,19 +148,6 @@
           "type": "string",
           "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
         },
-        "iperf": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "port": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65535
-            }
-          }
-        },
         "metrics": {
           "type": "object",
           "properties": {

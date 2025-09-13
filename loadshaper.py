@@ -1519,20 +1519,10 @@ class NetworkGenerator:
         self.socket.setblocking(False)
 
     def _start_tcp(self):
-        """Initialize TCP socket for traffic generation."""
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        # Set TTL for safety
-        self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
-
-        # Optimize send buffer
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
-
-        # TCP optimizations
-        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-
-        # Short send timeout to prevent blocking
-        self.socket.settimeout(0.5)
+        """Initialize TCP socket settings for traffic generation."""
+        # TCP uses per-connection sockets created in _send_tcp_packet
+        # Set socket to None to indicate TCP mode
+        self.socket = None
 
     def send_burst(self, duration_seconds: float) -> int:
         """
@@ -1544,7 +1534,11 @@ class NetworkGenerator:
         Returns:
             int: Number of packets sent
         """
-        if not self.socket or not self.target_addresses:
+        if not self.target_addresses:
+            return 0
+
+        # UDP requires socket, TCP creates connections per packet
+        if self.protocol == "udp" and not self.socket:
             return 0
 
         packets_sent = 0
@@ -1598,15 +1592,17 @@ class NetworkGenerator:
     def _send_tcp_packet(self, target: str) -> int:
         """Send TCP packet (requires connection)."""
         try:
-            # For TCP, we need to connect first
-            # This is a simplified implementation - in practice you'd
-            # want connection pooling for efficiency
+            # Create new connection for each packet (simplified implementation)
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
+                # Apply consistent socket options
                 tcp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
-                tcp_sock.settimeout(0.5)
+                tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
+                tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                tcp_sock.settimeout(0.5)  # Short timeout to prevent blocking
+
                 tcp_sock.connect((target, self.port))
 
-                # Send packet data
+                # Send packet data with current timestamp
                 current_time = struct.pack('!d', time.time())
                 packet = current_time + self.packet_data[8:]
                 tcp_sock.send(packet)
@@ -1623,6 +1619,15 @@ class NetworkGenerator:
                 pass
             self.socket = None
 
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with guaranteed cleanup."""
+        self.stop()
+        return False
+
 
 # ---------------------------
 # Network client with native generator
@@ -1631,7 +1636,7 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
     """
     Native network traffic generation thread.
 
-    Replaces iperf3 with native Python implementation using token bucket
+    Native Python network traffic generator using token bucket
     rate limiting and socket-based packet generation.
     """
     if NET_MODE != "client":

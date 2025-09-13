@@ -234,21 +234,25 @@ class TestNetworkGenerator(unittest.TestCase):
 
         gen.stop()
 
-    @unittest.mock.patch('socket.socket')
-    def test_tcp_socket_initialization(self, mock_socket):
-        """Test TCP socket initialization and configuration."""
-        mock_sock = unittest.mock.MagicMock()
-        mock_socket.return_value = mock_sock
-
+    def test_tcp_socket_initialization(self):
+        """Test TCP socket initialization (uses per-connection sockets)."""
         gen = loadshaper.NetworkGenerator(rate_mbps=1.0, protocol="tcp")
         gen.start(["127.0.0.1"])
 
-        # Verify socket creation and configuration
-        mock_socket.assert_called_with(unittest.mock.ANY, unittest.mock.ANY)
-        mock_sock.setsockopt.assert_any_call(unittest.mock.ANY, unittest.mock.ANY, 1)  # TTL
-        mock_sock.settimeout.assert_called_with(0.5)
+        # TCP mode sets socket to None since it uses per-connection sockets
+        self.assertIsNone(gen.socket)
+        self.assertEqual(gen.protocol, "tcp")
 
         gen.stop()
+
+    def test_context_manager(self):
+        """Test NetworkGenerator as context manager."""
+        with loadshaper.NetworkGenerator(rate_mbps=1.0, protocol="udp") as gen:
+            gen.start(["127.0.0.1"])
+            self.assertIsNotNone(gen.socket)
+
+        # Socket should be cleaned up after context exit
+        self.assertIsNone(gen.socket)
 
     def test_protocol_validation(self):
         """Test invalid protocol handling."""
