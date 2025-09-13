@@ -227,11 +227,11 @@ For non-Oracle Cloud environments, `loadshaper` safely falls back to conservativ
 
 ### Resource Targets
 
-| Variable | Auto-Configured Values | Description | E2.1.Micro | E2.2.Micro | A1.Flex-1 | A1.Flex-4 |
-|----------|---------|-------------|------------|------------|------------|------------|
-| `CPU_TARGET_PCT` | **25**, 30, 35, 40 | Target CPU utilization (%) | 25% | 30% | 35% | 40% |
-| `MEM_TARGET_PCT` | **0**, 50, 25, 25 | Target memory utilization (%) | 0% (disabled) | 50% | 25% (above 20% rule) | 25% (above 20% rule) |
-| `NET_TARGET_PCT` | **15**, 15, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 30% (4 Gbps) |
+| Variable | Auto-Configured Values | Description | E2.1.Micro | E2.2.Micro | A1.Flex-1 | A1.Flex-2 | A1.Flex-3 | A1.Flex-4 |
+|----------|---------|-------------|------------|------------|------------|------------|------------|------------|
+| `CPU_TARGET_PCT` | **25**, 30, 35, 35, 35, 40 | Target CPU utilization (%) | 25% | 30% | 35% | 35% | 35% | 40% |
+| `MEM_TARGET_PCT` | **0**, 0, 30, 30, 30, 30 | Target memory utilization (%) | 0% (disabled) | 0% (disabled) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) |
+| `NET_TARGET_PCT` | **15**, 15, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
 
 ### Safety Thresholds
 
@@ -311,6 +311,7 @@ NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 | `HEALTH_PORT` | `8080` | Port for health check endpoints |
 | `HEALTH_HOST` | `127.0.0.1` | Host interface to bind (localhost only by default) |
 | `LOADSHAPER_TEMPLATE_DIR` | `config-templates/` | Directory containing Oracle shape configuration templates |
+| `ORACLE_METADATA_PROBE` | `0` | Enable Oracle-specific metadata service probe (0=disabled, 1=enabled) |
 
 ## Health Check Endpoints
 

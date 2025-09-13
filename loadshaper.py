@@ -541,8 +541,7 @@ def getenv_float_with_template(name, default, config_template):
         value = getenv_with_template(name, default, config_template)
         return float(value)
     except (ValueError, TypeError) as e:
-        print(f"[config] Warning: Failed to parse {name}='{value}' as float, "
-              f"using default {default}: {e}")
+        logger.warning(f"Failed to parse {name}='{value}' as float, using default {default}: {e}")
         return float(default)
 
 def getenv_int_with_template(name, default, config_template):
@@ -571,8 +570,7 @@ def getenv_int_with_template(name, default, config_template):
         value = getenv_with_template(name, default, config_template)
         return int(float(value))  # Allow parsing '30.0' -> 30
     except (ValueError, TypeError) as e:
-        print(f"[config] Warning: Failed to parse {name}='{value}' as int, "
-              f"using default {default}: {e}")
+        logger.warning(f"Failed to parse {name}='{value}' as int, using default {default}: {e}")
         return int(default)
 
 # ---------------------------
@@ -831,10 +829,10 @@ class MetricsStorage:
                 conn.commit()
                 conn.close()
             except Exception as e:
-                print(f"[metrics] Failed to initialize database: {e}")
+                logger.error(f"Failed to initialize database: {e}")
                 # If explicit path was given and failed, try fallback to /tmp
                 if self.db_path != "/tmp/loadshaper_metrics.db":
-                    print("[metrics] Attempting fallback to /tmp")
+                    logger.warning("Attempting fallback to /tmp")
                     self.db_path = "/tmp/loadshaper_metrics.db"
                     try:
                         conn = sqlite3.connect(self.db_path)
@@ -850,9 +848,9 @@ class MetricsStorage:
                         conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
                         conn.commit()
                         conn.close()
-                        print(f"[metrics] Successfully initialized fallback database at {self.db_path}")
+                        logger.info(f"Successfully initialized fallback database at {self.db_path}")
                     except Exception as e2:
-                        print(f"[metrics] Fallback to /tmp also failed: {e2}")
+                        logger.error(f"Fallback to /tmp also failed: {e2}")
                         self.db_path = None
                 else:
                     self.db_path = None
@@ -873,7 +871,7 @@ class MetricsStorage:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[metrics] Failed to store sample: {e}")
+                logger.error(f"Failed to store sample: {e}")
                 return False
     
     def get_percentile(self, metric_name, percentile=95.0, days_back=7):
@@ -916,7 +914,7 @@ class MetricsStorage:
                     return lower + (upper - lower) * (index - int(index))
                     
             except Exception as e:
-                print(f"[metrics] Failed to get percentile: {e}")
+                logger.error(f"Failed to get percentile: {e}")
                 return None
     
     def cleanup_old(self, days_to_keep=7):
@@ -934,7 +932,7 @@ class MetricsStorage:
                 conn.close()
                 return deleted
             except Exception as e:
-                print(f"[metrics] Failed to cleanup old data: {e}")
+                logger.error(f"Failed to cleanup old data: {e}")
                 return 0
     
     def get_sample_count(self, days_back=7):
@@ -951,7 +949,7 @@ class MetricsStorage:
                 conn.close()
                 return count
             except Exception as e:
-                print(f"[metrics] Failed to get sample count: {e}")
+                logger.error(f"Failed to get sample count: {e}")
                 return 0
 
 # ---------------------------
@@ -1331,19 +1329,19 @@ def health_server_thread(stop_evt: threading.Event, controller_state: dict, metr
         server = HTTPServer((HEALTH_HOST, HEALTH_PORT), handler_factory)
         server.timeout = 1.0  # Short timeout for responsive shutdown
         
-        print(f"[health] HTTP server starting on {HEALTH_HOST}:{HEALTH_PORT}")
+        logger.info(f"HTTP server starting on {HEALTH_HOST}:{HEALTH_PORT}")
         
         while not stop_evt.is_set():
             server.handle_request()
             
     except OSError as e:
-        print(f"[health] Failed to start HTTP server on port {HEALTH_PORT}: {e}")
+        logger.error(f"Failed to start HTTP server on port {HEALTH_PORT}: {e}")
     except Exception as e:
-        print(f"[health] HTTP server error: {e}")
+        logger.error(f"HTTP server error: {e}")
     finally:
         if 'server' in locals():
             server.server_close()
-        print("[health] HTTP server stopped")
+        logger.info("HTTP server stopped")
 
 # ---------------------------
 # Main control loop
@@ -1390,11 +1388,10 @@ def validate_oracle_configuration():
     
     # Print all warnings
     for warning in warnings:
-        print(warning)
+        logger.warning(warning)
     
     if warnings and any("CRITICAL" in w for w in warnings):
-        print("⚠️  Configuration may result in VM reclamation! Review targets before proceeding.")
-        print()
+        logger.warning("⚠️  Configuration may result in VM reclamation! Review targets before proceeding.")
 
 def main():
     # Initialize configuration on first use
@@ -1408,9 +1405,9 @@ def main():
     # Validate configuration for Oracle environments
     validate_oracle_configuration()
     
-    print("[loadshaper v2.2] starting with",
-          f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |",
-          f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status} |",
+    logger.info(f"[loadshaper v2.2] starting with"
+          f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(no-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |"
+          f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status} |"
           f" {shape_status}, {template_status}")
 
     try:
@@ -1551,7 +1548,7 @@ def main():
             if cleanup_counter >= 1000:
                 deleted = metrics_storage.cleanup_old()
                 if deleted > 0:
-                    print(f"[metrics] Cleaned up {deleted} old samples")
+                    logger.info(f"Cleaned up {deleted} old samples")
                 cleanup_counter = 0
 
             # Update jitter
@@ -1577,7 +1574,7 @@ def main():
                         reason.append(f"net_avg={net_avg:.1f}%")
                     if load_contention:
                         reason.append(f"load_avg={load_avg:.2f}")
-                    print(f"[loadshaper] SAFETY STOP: {' '.join(reason)}")
+                    logger.warning(f"SAFETY STOP: {' '.join(reason)}")
                 paused.value = 1.0
                 duty.value = 0.0
                 set_mem_target_bytes(0)
@@ -1589,7 +1586,7 @@ def main():
                 resume_load = (not LOAD_CHECK_ENABLED) or (load_avg is None) or (load_avg < LOAD_RESUME_THRESHOLD)
                 if resume_cpu and resume_mem and resume_net and resume_load:
                     if paused.value != 0.0:
-                        print("[loadshaper] RESUME")
+                        logger.info("RESUME")
                     paused.value = 0.0
 
             # If running, steer CPU, MEM, NET toward jittered targets
@@ -1635,15 +1632,15 @@ def main():
                 load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f} {load_p95_str}" if LOAD_CHECK_ENABLED else "load=disabled"
                 sample_count = metrics_storage.get_sample_count()
                 
-                print(f"[loadshaper] cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% {cpu_p95_str} | "
-                      f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str} | "
-                      f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
-                      f"now={nic_util:5.2f}% avg={net_avg:5.2f}% {net_p95_str} | "
-                      f"{load_status} | "
-                      f"duty={duty.value:4.2f} paused={int(paused.value)} "
-                      f"targets cpu≈{cpu_target_now:.1f}% mem≈{mem_target_now:.1f}% net≈{net_target_now:.1f}% "
-                      f"net_rate≈{net_rate_mbit.value:.1f} Mbit | "
-                      f"samples_7d={sample_count}")
+                logger.info(f"cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% {cpu_p95_str} | "
+                           f"mem(no-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str} | "
+                           f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
+                           f"now={nic_util:5.2f}% avg={net_avg:5.2f}% {net_p95_str} | "
+                           f"{load_status} | "
+                           f"duty={duty.value:4.2f} paused={int(paused.value)} "
+                           f"targets cpu≈{cpu_target_now:.1f}% mem≈{mem_target_now:.1f}% net≈{net_target_now:.1f}% "
+                           f"net_rate≈{net_rate_mbit.value:.1f} Mbit | "
+                           f"samples_7d={sample_count}")
 
     except KeyboardInterrupt:
         pass
@@ -1652,7 +1649,7 @@ def main():
         duty.value = 0.0
         paused.value = 1.0
         set_mem_target_bytes(0)
-        print("[loadshaper] exiting...")
+        logger.info("exiting...")
 
 if __name__ == "__main__":
     main()
