@@ -391,7 +391,7 @@ class TestNetworkGenerator(unittest.TestCase):
 
         # Set up generator with proper socket and target addresses
         self.generator.socket = unittest.mock.MagicMock()
-        self.generator.target_addresses = ["127.0.0.1"]
+        self.generator.target_addresses = {"127.0.0.1": ("127.0.0.1", socket.AF_INET)}
 
         # Mock time to return increasing values for the duration of the burst
         time_sequence = [start_time + i * 0.1 for i in range(15)]  # 1.5s worth of 0.1s increments

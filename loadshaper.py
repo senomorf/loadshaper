@@ -2,7 +2,6 @@ import os
 import time
 import random
 import threading
-import subprocess
 import sqlite3
 import json
 import logging
@@ -1447,7 +1446,7 @@ class NetworkGenerator:
     RFC2544_ADDRESSES = ["198.18.0.1", "198.19.255.254"]
 
     def __init__(self, rate_mbps: float, protocol: str = "udp", ttl: int = 1,
-                 packet_size: int = 8900, port: int = 15201):
+                 packet_size: int = 8900, port: int = 15201, timeout: float = 0.5):
         """
         Initialize network generator.
 
@@ -1457,16 +1456,21 @@ class NetworkGenerator:
             ttl: IP Time-to-Live (1 = first hop only for safety)
             packet_size: Packet payload size in bytes
             port: Target port number
+            timeout: Connection timeout in seconds for TCP connections
         """
         self.bucket = TokenBucket(rate_mbps)
         self.protocol = protocol.lower()
         self.ttl = max(1, ttl)
         self.packet_size = max(64, min(65507, packet_size))  # UDP max is 65507
         self.port = max(1024, min(65535, port))
+        self.timeout = max(0.1, timeout)  # Minimum 0.1s timeout
         self.socket = None
         self.packet_data = None
         self.tcp_connections = {}  # Cache for persistent TCP connections
         self.resolved_targets = {}  # Cache for DNS resolutions
+        self.tcp_retry_delays = {}  # Exponential backoff for failed connections
+        self.tcp_retry_base_delay = 1.0  # Base delay in seconds
+        self.tcp_retry_max_delay = 30.0  # Maximum delay in seconds
         self._prepare_packet_data()
 
         # Pre-allocate socket buffers for efficiency
@@ -1617,6 +1621,14 @@ class NetworkGenerator:
                     pass
                 del self.tcp_connections[target]
 
+        # Check exponential backoff for failed connections
+        current_time = time.time()
+        if target in self.tcp_retry_delays:
+            retry_time, delay = self.tcp_retry_delays[target]
+            if current_time < retry_time:
+                # Still in backoff period
+                return None
+
         # Create new connection
         try:
             tcp_sock = socket.socket(family, socket.SOCK_STREAM)
@@ -1629,16 +1641,28 @@ class NetworkGenerator:
 
             tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
             tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            tcp_sock.settimeout(0.5)  # Short timeout to prevent blocking
+            tcp_sock.settimeout(self.timeout)  # Configurable timeout
 
             tcp_sock.connect((ip_addr, self.port))
 
-            # Cache the connection
+            # Cache the connection and clear any retry delay
             self.tcp_connections[target] = tcp_sock
+            if target in self.tcp_retry_delays:
+                del self.tcp_retry_delays[target]
             return tcp_sock
 
         except (socket.error, OSError) as e:
-            logger.debug(f"Failed to connect to {target} ({ip_addr}): {e}")
+            # Apply exponential backoff for failed connections
+            current_delay = self.tcp_retry_base_delay
+            if target in self.tcp_retry_delays:
+                _, previous_delay = self.tcp_retry_delays[target]
+                current_delay = min(previous_delay * 2, self.tcp_retry_max_delay)
+
+            retry_time = time.time() + current_delay
+            self.tcp_retry_delays[target] = (retry_time, current_delay)
+
+            logger.debug(f"Failed to connect to {target} ({ip_addr}): {e}. "
+                        f"Retrying after {current_delay:.1f}s")
             return None
 
     def send_burst(self, duration_seconds: float) -> int:
@@ -1669,12 +1693,8 @@ class NetworkGenerator:
                     time.sleep(min(wait_time, 0.001))  # Max 1ms sleep
                 continue
 
-            # Select random target (handle both dict and list formats for compatibility)
-            if isinstance(self.target_addresses, dict):
-                target = random.choice(list(self.target_addresses.keys()))
-            else:
-                # Legacy list format (for tests)
-                target = random.choice(self.target_addresses)
+            # Select random target
+            target = random.choice(list(self.target_addresses.keys()))
 
             try:
                 if self.protocol == "udp":
@@ -1700,14 +1720,9 @@ class NetworkGenerator:
     def _send_udp_packet(self, target: str) -> int:
         """Send single UDP packet with IPv4/IPv6 support."""
         try:
-            # Handle both dict and list formats for compatibility
-            if isinstance(self.target_addresses, dict):
-                if target not in self.target_addresses:
-                    return 0
-                ip_addr, family = self.target_addresses[target]
-            else:
-                # Legacy list format (for tests) - target is the IP address
-                ip_addr = target
+            if target not in self.target_addresses:
+                return 0
+            ip_addr, family = self.target_addresses[target]
 
             # Refresh packet timestamp
             current_time = struct.pack('!d', time.time())
@@ -1759,6 +1774,7 @@ class NetworkGenerator:
             except Exception:
                 pass
         self.tcp_connections.clear()
+        self.tcp_retry_delays.clear()  # Clear retry delays
 
     def __enter__(self):
         """Context manager entry."""

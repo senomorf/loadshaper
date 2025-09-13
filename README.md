@@ -6,8 +6,7 @@
 ![Docker](https://img.shields.io/badge/Docker-supported-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20ARM64%20%7C%20x86--64-lightgrey.svg)
 
-> ⚠️ **WORK IN PROGRESS PROJECT** ⚠️  
-> This project is under active development and **intentionally breaks backward compatibility**. No migration path is provided as the project is in a WIP state. Expect breaking changes between versions. Current version requires **Linux 3.14+ (March 2014)** - older kernel support has been removed.
+**Modern native network generator implementation** - Uses Python sockets instead of external dependencies for maximum efficiency and control. Requires **Linux 3.14+ (March 2014)** with kernel MemAvailable support.
 
 ### Oracle Cloud Always Free VM Keeper
 **Intelligent baseline load generator that prevents Oracle Cloud Always Free compute instances from being reclaimed due to underutilization.**
@@ -55,7 +54,7 @@ That's it! `loadshaper` will automatically detect your Oracle Cloud shape and st
 **📖 More Information:**
 - [Configuration Reference](#configuration-reference) - Detailed environment variable options
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Development setup and contribution guidelines
-- [CHANGELOG.md](CHANGELOG.md) - Version history and migration guides
+- [CHANGELOG.md](CHANGELOG.md) - Version history and release notes
 
 ## Oracle Free Tier thresholds
 
@@ -363,9 +362,9 @@ Jumbo templates are recommended for Oracle Cloud environments with MTU 9000 supp
 | `NET_MIN_OFF_SEC` | `60` | Minimum seconds to stay inactive |
 | `NET_RATE_STEP_MBIT` | `10` | Rate change step size (Mbps) |
 
-### Network Performance Optimizations
+### Network Performance Features
 
-The native network generator provides several performance improvements over external tools:
+The native network generator provides advanced performance features:
 
 **TCP Connection Pooling:**
 - Persistent connections per target reduce connection overhead
@@ -639,4 +638,173 @@ docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Using fa
 ```shell
 # If workers pause too often, adjust thresholds
 LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 docker compose up -d
+```
+
+### Network Generator Troubleshooting
+
+**Connection timeout errors:**
+```shell
+# Increase TCP connection timeout if networks are slow
+TCP_CONNECTION_TIMEOUT=2.0 docker compose up -d --build
+```
+
+**IPv6 connectivity issues:**
+```shell
+# Disable IPv6 if not supported by network
+NET_IPV6_ENABLED=false docker compose up -d --build
+```
+
+**DNS resolution failures:**
+```shell
+# Check DNS resolution for benchmark addresses
+docker exec loadshaper nslookup 198.18.0.1
+# Or use alternative benchmark address
+NET_PEERS=203.0.113.1:15201 docker compose up -d --build
+```
+
+**TCP connection pool issues:**
+```shell
+# Enable debug logging to see connection details
+LOG_LEVEL=DEBUG docker compose up -d --build
+# Look for "TCP connection pool" messages
+docker logs loadshaper | grep "TCP connection"
+```
+
+**High network CPU usage:**
+```shell
+# Switch to UDP if TCP overhead is too high
+NET_PROTOCOL=udp docker compose up -d --build
+```
+
+**Network interface detection problems:**
+```shell
+# Check available network interfaces
+docker exec loadshaper cat /proc/net/dev
+# Manual interface specification if auto-detection fails
+NET_INTERFACE=eth0 docker compose up -d --build
+```
+
+### Performance Optimization
+
+**For resource-constrained VMs (1 vCPU/1GB):**
+```shell
+# Optimize for minimal overhead
+CPU_TARGET_PCT=22
+MEM_TARGET_PCT=0
+NET_TARGET_PCT=22
+LOAD_THRESHOLD=0.4
+TCP_CONNECTION_TIMEOUT=1.0
+docker compose up -d --build
+```
+
+**For better responsiveness:**
+```shell
+# More responsive to system load
+CONTROL_PERIOD_SEC=1
+AVG_WINDOW_SEC=5
+HYSTERESIS_PCT=2
+docker compose up -d --build
+```
+
+### Debug Information Collection
+
+**Comprehensive system state:**
+```shell
+# Collect all relevant information for troubleshooting
+echo "=== System Info ==="
+docker exec loadshaper uname -a
+docker exec loadshaper cat /proc/meminfo | head -5
+docker exec loadshaper cat /proc/loadavg
+
+echo "=== Loadshaper Config ==="
+docker exec loadshaper env | grep -E "(CPU_|MEM_|NET_|LOAD_)" | sort
+
+echo "=== Recent Logs ==="
+docker logs --tail 50 loadshaper
+
+echo "=== Network Connectivity ==="
+docker exec loadshaper ping -c 3 198.18.0.1 2>/dev/null || echo "Benchmark address unreachable"
+
+echo "=== Resource Usage ==="
+docker stats --no-stream loadshaper
+```
+
+**Testing network generation manually:**
+```shell
+# Test native network generator directly
+docker exec -it loadshaper python3 -c "
+import sys
+sys.path.append('/app')
+import loadshaper
+
+# Test UDP generation
+gen = loadshaper.NetworkGenerator(rate_mbps=10, protocol='udp')
+print('Starting UDP test...')
+gen.start()
+import time; time.sleep(5)
+gen.stop()
+print('UDP test complete')
+
+# Test TCP generation
+gen = loadshaper.NetworkGenerator(rate_mbps=10, protocol='tcp')
+print('Starting TCP test...')
+gen.start()
+time.sleep(5)
+gen.stop()
+print('TCP test complete')
+"
+```
+
+### Health Check Validation
+
+**Verify health endpoints:**
+```shell
+# Test health endpoint if enabled
+curl -f http://localhost:8080/health || echo "Health check failed"
+
+# Test metrics endpoint
+curl http://localhost:8080/metrics 2>/dev/null | head -10
+
+# Check health server logs
+docker logs loadshaper | grep -i health
+```
+
+### Oracle Reclamation Prevention Verification
+
+**Check 7-day compliance:**
+```shell
+# Verify metrics meet Oracle thresholds
+docker exec loadshaper python3 -c "
+import sys, sqlite3, os
+sys.path.append('/app')
+import loadshaper
+
+# Check database exists
+db_paths = ['/var/lib/loadshaper/metrics.db', '/tmp/loadshaper_metrics.db']
+db_path = next((p for p in db_paths if os.path.exists(p)), None)
+if not db_path:
+    print('No metrics database found')
+    exit(1)
+
+# Check recent metrics
+tracker = loadshaper.MetricsTracker(db_path)
+stats = tracker.get_7day_stats('cpu_p95')
+print(f'CPU 95th percentile: {stats[\"p95\"]:.1f}% (need >20%)')
+
+try:
+    net_stats = tracker.get_7day_stats('network_current')
+    print(f'Network current: {net_stats[\"current\"]:.1f}% (need >20%)')
+except:
+    print('Network metrics not available')
+
+if loadshaper.is_e2_shape():
+    print('E2 shape: CPU and network must be >20%')
+else:
+    try:
+        mem_stats = tracker.get_7day_stats('memory_current')
+        print(f'Memory current: {mem_stats[\"current\"]:.1f}% (need >20% for A1)')
+    except:
+        print('Memory metrics not available')
+    print('A1 shape: CPU, network, AND memory must all be >20%')
+"
 ```

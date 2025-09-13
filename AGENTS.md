@@ -3,7 +3,7 @@
 **📖 Related Documentation:**
 - [README.md](README.md) - Project overview, usage, and configuration
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contributor setup and guidelines
-- [CHANGELOG.md](CHANGELOG.md) - Version history and migration guides
+- [CHANGELOG.md](CHANGELOG.md) - Version history and release notes
 
 ## Architecture Overview
 
