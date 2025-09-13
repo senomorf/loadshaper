@@ -2,6 +2,17 @@
 
 Thank you for your interest in contributing to `loadshaper`! This project helps Oracle Cloud Always Free users prevent VM reclamation through intelligent resource management.
 
+## ⚠️ Project Status: Work In Progress
+
+**This project intentionally breaks backward compatibility without providing migration paths.** This is a design choice that enables rapid iteration and prevents technical debt accumulation. Contributors should expect:
+
+- **Breaking changes** in every release
+- **No migration guides** or backward compatibility layers
+- **Rapid evolution** of APIs, configuration, and architecture
+- **Fresh implementations** that replace previous approaches entirely
+
+This approach allows us to quickly iterate toward optimal Oracle Cloud VM protection.
+
 **📖 Quick Links:**
 - [README.md](README.md) - Project overview and usage instructions
 - [AGENTS.md](AGENTS.md) - Development guidelines and testing strategies

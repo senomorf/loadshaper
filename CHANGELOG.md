@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.0.0] - Breaking Change Release
 
 ### ⚠️ BREAKING CHANGES
-- **Removed CPU_TARGET_PCT completely** - use `CPU_P95_*` variables instead
-- **No migration path provided** - manually update configurations
-- **Complete replacement of CPU control system** - pure P95-driven control only
+- **New P95-driven CPU control system** - replaces previous implementation completely
+- **No backward compatibility** - this is intentional for the WIP project
+- **Pure P95 control** - uses Oracle's exact 95th percentile measurement criteria
 
 ### Added
 - **P95-driven CPU control**: Pure Oracle-compliant 95th percentile control system

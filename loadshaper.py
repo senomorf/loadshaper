@@ -675,7 +675,6 @@ def _validate_final_config():
     ]:
         if not (0 <= var_value <= 100):
             logger.warning(f"Invalid {var_name}={var_value} (must be 0-100%), using default")
-            # CPU_TARGET_PCT no longer used - P95 system handles CPU control
             if "MEM_TARGET" in var_name:
                 MEM_TARGET_PCT = 60.0
             elif "NET_TARGET" in var_name:
@@ -1149,13 +1148,8 @@ class CPUP95Controller:
             else:
                 return self.REDUCE_MODERATE_EXCEEDANCE_TARGET  # Moderate reduction
         else:  # MAINTAINING
-            # Adaptive within target range
-            if cpu_p95 is not None:
-                mid_target = (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2
-                if cpu_p95 < mid_target:
-                    return base_target + self.MAINTAIN_EXCEEDANCE_ADJUSTMENT  # Slightly higher
-                elif cpu_p95 > mid_target:
-                    return base_target - self.MAINTAIN_EXCEEDANCE_ADJUSTMENT  # Slightly lower
+            # Keep exceedance stable - only adjust intensity for control in MAINTAINING state
+            # This prevents dual-variable control which can cause instability
             return base_target
 
     def should_run_high_slot(self, current_load_avg):

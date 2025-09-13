@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+**⚠️ WIP Project:** Implementation details are subject to change without notice. Breaking changes are introduced intentionally to prevent technical debt during active development.
+
 **📖 Related Documentation:**
 - [README.md](README.md) - Project overview, usage, and configuration
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contributor setup and guidelines

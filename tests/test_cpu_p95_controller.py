@@ -467,22 +467,22 @@ class TestExceedanceTargets(unittest.TestCase):
         self.assertEqual(exceedance, expected)
 
     def test_maintaining_exceedance_below_midpoint(self):
-        """Test MAINTAINING exceedance below midpoint"""
+        """Test MAINTAINING exceedance - should be stable regardless of P95 position"""
         self.controller.state = 'MAINTAINING'
         midpoint = (22.0 + 28.0) / 2  # 25.0
         self.set_p95_and_clear_cache(24.0)  # Below midpoint
 
         exceedance = self.controller.get_exceedance_target()
-        expected = 6.5 + 0.5  # base + 0.5 for slightly higher
+        expected = 6.5  # Base target - no adjustment in MAINTAINING state
         self.assertEqual(exceedance, expected)
 
     def test_maintaining_exceedance_above_midpoint(self):
-        """Test MAINTAINING exceedance above midpoint"""
+        """Test MAINTAINING exceedance - should be stable regardless of P95 position"""
         self.controller.state = 'MAINTAINING'
         self.set_p95_and_clear_cache(26.0)  # Above midpoint
 
         exceedance = self.controller.get_exceedance_target()
-        expected = 6.5 - 0.5  # base - 0.5 for slightly lower
+        expected = 6.5  # Base target - no adjustment in MAINTAINING state
         self.assertEqual(exceedance, expected)
 
     def test_maintaining_exceedance_at_midpoint(self):

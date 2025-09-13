@@ -20,15 +20,23 @@
 - **Automatic pausing**: Workers pause when system load indicates CPU contention from legitimate processes
 - **Per-core calculation**: Thresholds applied per CPU core for accurate scaling
 
+## P95 CPU Control Implementation
+- **State machine**: BUILDING/MAINTAINING/REDUCING states based on 7-day P95 trends
+- **Exceedance budget**: Maintains ~6.5% of time slots at high intensity to achieve target P95
+- **Slot-based control**: 60-second slots with high (35%) or baseline (20%) CPU intensity
+- **Adaptive hysteresis**: Prevents oscillation with state-dependent deadbands
+- **Safety scaling**: Proportional intensity reduction based on system load
+- **Oracle compliance**: Targets 22-28% P95 range (safe buffer above 20% reclamation threshold)
+
 ## Memory Calculation Principles
 - **Excludes cache/buffers**: Uses industry-standard calculation that excludes Linux cache/buffers for accurate utilization measurement
 - **MemAvailable preferred**: Uses Linux 3.14+ MemAvailable when available, falls back to manual calculation for older kernels
 - **Oracle compliance**: Aligns with cloud provider standards (AWS CloudWatch, Azure Monitor) and Oracle's likely implementation
 - **Memory occupation not stressing**: Goal is to maintain target utilization percentage, not stress test memory subsystem
-- **Debug metrics**: Set `DEBUG_MEM_METRICS=true` to compare both calculation methods in telemetry
 
 ## Key Configuration Variables
 - **P95 CPU control**: `CPU_P95_TARGET_MIN`, `CPU_P95_TARGET_MAX`, `CPU_P95_SETPOINT`, `CPU_P95_EXCEEDANCE_TARGET`
+- **P95 slot control**: `CPU_P95_SLOT_DURATION_SEC`, `CPU_P95_HIGH_INTENSITY`, `CPU_P95_BASELINE_INTENSITY`
 - **Memory/Network targets**: `MEM_TARGET_PCT`, `NET_TARGET_PCT`
 - **Safety limits**: `CPU_STOP_PCT`, `MEM_STOP_PCT`, `NET_STOP_PCT`
 - **Load monitoring**: `LOAD_THRESHOLD`, `LOAD_RESUME_THRESHOLD`, `LOAD_CHECK_ENABLED`
@@ -38,7 +46,7 @@
 
 ## Development Standards
 - **Testing**: Run `python -m pytest -q` (all tests must pass)
-- **Code style**: Python 3.8+, PEP 8, 4-space indentation, minimal dependencies (stdlib + `iperf3`)
+- **Code style**: Python 3.8+, PEP 8, 4-space indentation, minimal dependencies (stdlib only - native network generation)
 - **Documentation sync**: Keep `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CHANGELOG.md`, and this file synchronized
 - **Architecture**: Single-process design with clear component separation (sensors → controller → workers)
 
