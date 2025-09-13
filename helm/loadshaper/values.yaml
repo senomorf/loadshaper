@@ -141,6 +141,14 @@ readinessProbe:
   timeoutSeconds: 5
   failureThreshold: 3
 
+# Startup probe (useful for slow starting containers)
+startupProbe:
+  enabled: false
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 6  # Allow up to 3 minutes for startup (6 * 30s)
+
 # Resource limits and requests
 resources:
   # We usually recommend not to specify default resources and to leave this as a conscious
@@ -179,6 +187,13 @@ networkPolicy:
   # Extra egress rules for specific network peers (e.g., iperf servers)
   extraEgress: []
 
+# Pod Disruption Budget for maintaining availability during cluster maintenance
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1    # Minimum number of pods that must be available
+  # maxUnavailable: 1  # Maximum number of pods that can be unavailable
+  # Use either minAvailable OR maxUnavailable, not both
+
 # ServiceMonitor for Prometheus monitoring
 serviceMonitor:
   enabled: false
@@ -201,6 +216,35 @@ tolerations: []
 
 # Affinity rules
 affinity: {}
+  # Example anti-affinity to spread pods across nodes:
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #   - weight: 100
+  #     podAffinityTerm:
+  #       labelSelector:
+  #         matchExpressions:
+  #         - key: app.kubernetes.io/name
+  #           operator: In
+  #           values:
+  #           - loadshaper
+  #       topologyKey: kubernetes.io/hostname
+
+# Topology spread constraints for even distribution across zones/nodes
+topologySpreadConstraints: []
+  # Example to spread across zones:
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: DoNotSchedule
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: loadshaper
+  # Example to spread across nodes:
+  # - maxSkew: 1
+  #   topologyKey: kubernetes.io/hostname
+  #   whenUnsatisfiable: ScheduleAnyway
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: loadshaper
 
 # Priority class name for pod scheduling
 priorityClassName: ""

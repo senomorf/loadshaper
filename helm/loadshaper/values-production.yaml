@@ -1,0 +1,148 @@
+# Production values for loadshaper
+# This example provides enhanced security, monitoring, and HA configuration
+
+# Enhanced security configuration
+security:
+  procHostMountEnabled: false  # Keep disabled for security
+
+securityContext:
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  capabilities:
+    drop: [ALL]
+  allowPrivilegeEscalation: false
+
+serviceAccount:
+  create: true
+  automount: false  # Security hardening
+
+# Network security
+networkPolicy:
+  enabled: true
+  allowDNS: true
+  allowPeersFromSameApp: true
+  # Add specific egress rules for your environment
+  extraEgress: []
+
+# High availability configuration
+replicaCount: 3
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2  # Ensure at least 2 pods remain during disruptions
+
+# Anti-affinity to spread across nodes
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - loadshaper
+        topologyKey: kubernetes.io/hostname
+
+# Spread across zones if available
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
+  labelSelector:
+    matchLabels:
+      app.kubernetes.io/name: loadshaper
+
+# Production resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+# Persistent storage with ReadWriteMany for multiple replicas
+persistence:
+  enabled: true
+  size: 5Gi
+  accessModes:
+    - ReadWriteMany
+  # storageClass: "nfs-client"  # Specify appropriate RWX storage class
+
+# Enhanced monitoring
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  interval: 30s
+  scrapeTimeout: 10s
+  labels:
+    prometheus: kube-prometheus
+
+# Health checks optimized for production
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+startupProbe:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 10  # Allow up to 5 minutes for startup
+
+# Production configuration
+config:
+  # Conservative targets for production stability
+  CPU_TARGET_PCT: "25.0"
+  MEM_TARGET_PCT: "50.0"
+  NET_TARGET_PCT: "15.0"
+  
+  # Tighter safety thresholds
+  CPU_STOP_PCT: "80.0"
+  MEM_STOP_PCT: "85.0"
+  NET_STOP_PCT: "50.0"
+  
+  # More responsive control
+  CONTROL_PERIOD_SEC: "3.0"
+  AVG_WINDOW_SEC: "180.0"
+  
+  # Load monitoring enabled
+  LOAD_CHECK_ENABLED: "true"
+  LOAD_THRESHOLD: "0.7"
+  LOAD_RESUME_THRESHOLD: "0.5"
+  
+  # Health endpoint enabled for monitoring
+  HEALTH_ENABLED: "true"
+  HEALTH_HOST: "0.0.0.0"
+  HEALTH_PORT: "8080"
+  
+  # Network configuration
+  NET_MODE: "client"
+  NET_SENSE_MODE: "container"  # Secure container mode
+  NET_PROTOCOL: "udp"
+  
+  # Add your production network peers
+  NET_PEERS: ""  # Configure with actual peer IPs
+
+# Service configuration for metrics only
+service:
+  enabled: true
+  type: ClusterIP
+  iperf:
+    enabled: false  # Disable iperf service in production
+  metrics:
+    enabled: true   # Enable metrics for monitoring

@@ -1,3 +1,4 @@
+{{- include "loadshaper.validateConfig" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -87,6 +88,24 @@ spec:
             timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           {{- end }}
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            {{- if eq .Values.config.HEALTH_ENABLED "true" }}
+            httpGet:
+              path: /health
+              port: metrics
+            {{- else }}
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "pgrep -f 'python.*loadshaper.py' > /dev/null"
+            {{- end }}
+            initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -147,6 +166,10 @@ spec:
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- if .Values.priorityClassName }}

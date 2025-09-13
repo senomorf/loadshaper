@@ -175,36 +175,191 @@ The chart includes comprehensive health checks:
 
 ## Security
 
+### Security Overview
+
+This Helm chart implements comprehensive security hardening following Kubernetes security best practices:
+
+**🔒 Key Security Features:**
+- Read-only root filesystem with tmpfs for temporary files
+- Non-root execution with dropped capabilities
+- Service account token automount disabled by default
+- NetworkPolicy enabled by default for traffic isolation
+- hostPath mounts are opt-in only (disabled by default)
+
 ### NetworkPolicy
 
-Enable network policies for enhanced security:
+Network policies are **enabled by default** for enhanced security:
 
 ```yaml
 networkPolicy:
-  enabled: true
+  enabled: true              # Enabled by default
+  allowDNS: true             # Allow DNS resolution
+  allowPeersFromSameApp: true # Allow communication with same app pods
+  extraEgress: []            # Additional egress rules for network peers
 ```
 
-Default policies allow:
-- Inter-pod communication for iperf traffic
-- DNS resolution
-- Restricted external internet access for Oracle threshold compliance (iperf-servers and load-testing namespaces)
-- Prometheus scraping (if ServiceMonitor enabled)
+Default policies:
+- **Ingress**: Only allows Prometheus scraping when ServiceMonitor is enabled
+- **Egress**: DNS resolution + communication with same-app pods only
+- **Removed**: Previous overly permissive iperf-server rules (security fix)
 
 ### Security Context
 
-Runs with non-root user and appropriate security context:
-- `runAsNonRoot: true`
-- `runAsUser: 1000`
-- `fsGroup: 2000`
+Comprehensive security hardening:
+
+```yaml
+securityContext:
+  capabilities:
+    drop: [ALL]                    # Drop all capabilities
+  readOnlyRootFilesystem: true     # Read-only root filesystem (security improvement)
+  allowPrivilegeEscalation: false  # Prevent privilege escalation
+  runAsNonRoot: true              # Non-root execution
+  runAsUser: 1000                 # Specific user ID
+  runAsGroup: 1000                # Specific group ID
+  seccompProfile:
+    type: RuntimeDefault          # Default seccomp profile
+
+podSecurityContext:
+  fsGroup: 2000
+  fsGroupChangePolicy: OnRootMismatch  # Efficient volume permissions
+
+serviceAccount:
+  automount: false              # Disable token automount (security hardening)
+```
+
+### ⚠️ hostPath Mount Security
+
+**Critical Security Notice**: hostPath mounts reduce container isolation and may be blocked by Pod Security Standards.
+
+```yaml
+security:
+  procHostMountEnabled: false    # Disabled by default for security
+```
+
+**Only enable hostPath mounts if you need host-level system monitoring:**
+
+```yaml
+security:
+  procHostMountEnabled: true     # ⚠️ Reduces security - only enable if needed
+config:
+  NET_SENSE_MODE: "host"         # Automatically mounts /sys when needed
+```
+
+**Impact of enabling hostPath mounts:**
+- Breaks container isolation
+- May violate Pod Security Standards "restricted" policy
+- Exposes host process information to container
+- May be blocked by admission controllers
+
+### Security Compatibility
+
+**Pod Security Standards:**
+- **Restricted**: Compatible when `security.procHostMountEnabled: false` (default)
+- **Baseline**: Always compatible
+- **Privileged**: Always compatible
+
+**Admission Controllers:** Compatible with most security policies when using default settings.
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Pod not starting**: Check resource constraints and node capacity
-2. **Metrics not persisting**: Verify persistent volume and storage class
-3. **Network load not working**: Ensure NET_PEERS is configured correctly
-4. **High system load**: Verify LOAD_THRESHOLD settings
+#### 1. Pod Startup Failures
+
+**Symptoms**: Pod stuck in `Pending`, `CrashLoopBackOff`, or `CreateContainerConfigError`
+
+**Solutions**:
+```bash
+# Check pod events for specific error messages
+kubectl describe pod -l app.kubernetes.io/name=loadshaper
+
+# Common fixes:
+# - Insufficient resources: Check node capacity and resource requests
+# - Image pull issues: Verify image repository and pull secrets
+# - Security policy violations: Check Pod Security Standards compatibility
+# - hostPath mount blocked: Disable security.procHostMountEnabled (default: false)
+```
+
+#### 2. Security Policy Violations
+
+**Symptoms**: Pod creation blocked with "violates PodSecurity" errors
+
+**Solutions**:
+```yaml
+# Ensure security settings are compatible (default configuration)
+security:
+  procHostMountEnabled: false    # Must be false for "restricted" PSS
+securityContext:
+  readOnlyRootFilesystem: true   # Required for security compliance
+serviceAccount:
+  automount: false              # Recommended security hardening
+```
+
+#### 3. Network Connectivity Issues
+
+**Symptoms**: Network load generation not working, iperf connection failures
+
+**Solutions**:
+```bash
+# Check NetworkPolicy configuration
+kubectl get networkpolicy -l app.kubernetes.io/name=loadshaper -o yaml
+
+# Verify network peers configuration
+kubectl get configmap -l app.kubernetes.io/name=loadshaper -o yaml | grep NET_PEERS
+
+# Test connectivity (disable NetworkPolicy temporarily if needed)
+networkPolicy:
+  enabled: false    # Temporarily for testing only
+```
+
+#### 4. Storage and Persistence Issues
+
+**Symptoms**: Metrics not persisting, database errors in logs
+
+**Solutions**:
+```bash
+# Check PVC status
+kubectl get pvc -l app.kubernetes.io/name=loadshaper
+
+# Verify storage class exists
+kubectl get storageclass
+
+# Check volume mount permissions
+kubectl exec -it <pod-name> -- ls -la /var/lib/loadshaper
+```
+
+#### 5. Multi-Replica Configuration Issues
+
+**Symptoms**: Deployment fails with multiple replicas
+
+**Solutions**:
+```yaml
+# Option 1: Use ReadWriteMany storage
+persistence:
+  accessModes:
+    - ReadWriteMany
+
+# Option 2: Use separate PVCs per replica (requires manual setup)
+# Option 3: Use single replica (recommended for most use cases)
+replicaCount: 1
+```
+
+#### 6. Oracle Cloud Specific Issues
+
+**Symptoms**: Instances still being reclaimed despite loadshaper running
+
+**Solutions**:
+```bash
+# Verify metrics are showing proper utilization
+kubectl logs -l app.kubernetes.io/name=loadshaper | grep "95th percentile"
+
+# Check shape-specific configuration
+# E2.1.Micro: Use values-e2-micro.yaml
+# A1.Flex: Use values-a1-flex.yaml and verify memory target < 80%
+
+# Ensure 7-day metrics retention
+kubectl exec -it <pod-name> -- ls -la /var/lib/loadshaper/metrics.db
+```
 
 ### Debugging Commands
 

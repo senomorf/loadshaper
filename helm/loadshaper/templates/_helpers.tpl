@@ -60,3 +60,48 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Validate configuration compatibility
+*/}}
+{{- define "loadshaper.validateConfig" -}}
+{{/* Validate replica count with ReadWriteOnce persistence */}}
+{{- if and (gt (.Values.replicaCount | int) 1) .Values.persistence.enabled }}
+  {{- if has "ReadWriteOnce" .Values.persistence.accessModes }}
+    {{- fail "Cannot use replicaCount > 1 with ReadWriteOnce persistence. Use ReadWriteMany or disable persistence for multiple replicas." }}
+  {{- end }}
+{{- end }}
+
+{{/* Validate ServiceMonitor requires health endpoint */}}
+{{- if and .Values.serviceMonitor.enabled (ne .Values.config.HEALTH_ENABLED "true") }}
+  {{- fail "ServiceMonitor requires HEALTH_ENABLED=true. Set config.HEALTH_ENABLED to 'true' when serviceMonitor.enabled is true." }}
+{{- end }}
+
+{{/* Validate metrics service requires health endpoint */}}
+{{- if and .Values.service.enabled .Values.service.metrics.enabled (ne .Values.config.HEALTH_ENABLED "true") }}
+  {{- fail "Metrics service requires HEALTH_ENABLED=true. Set config.HEALTH_ENABLED to 'true' when service.metrics.enabled is true." }}
+{{- end }}
+
+{{/* Validate PodDisruptionBudget requires multiple replicas or specific configuration */}}
+{{- if and .Values.podDisruptionBudget.enabled (eq (.Values.replicaCount | int) 1) }}
+  {{- if not (or .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable) }}
+    {{- fail "PodDisruptionBudget with single replica requires explicit minAvailable or maxUnavailable configuration." }}
+  {{- end }}
+{{- end }}
+
+{{/* Validate both minAvailable and maxUnavailable are not set */}}
+{{- if and .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable }}
+  {{- fail "PodDisruptionBudget cannot have both minAvailable and maxUnavailable set. Use one or the other." }}
+{{- end }}
+
+{{/* Validate NET_PROTOCOL enum */}}
+{{- if not (has .Values.config.NET_PROTOCOL (list "udp" "tcp")) }}
+  {{- fail (printf "Invalid NET_PROTOCOL '%s'. Must be 'udp' or 'tcp'." .Values.config.NET_PROTOCOL) }}
+{{- end }}
+
+{{/* Validate NET_SENSE_MODE enum */}}
+{{- if not (has .Values.config.NET_SENSE_MODE (list "container" "host")) }}
+  {{- fail (printf "Invalid NET_SENSE_MODE '%s'. Must be 'container' or 'host'." .Values.config.NET_SENSE_MODE) }}
+{{- end }}
+
+{{- end }}
