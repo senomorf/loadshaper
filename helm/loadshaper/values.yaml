@@ -72,7 +72,7 @@ config:
   # Core target percentages
   CPU_TARGET_PCT: "30.0"
   MEM_TARGET_PCT: "60.0"
-  NET_TARGET_PCT: "10.0"
+  NET_TARGET_PCT: "25.0"
   
   # Safety stop thresholds
   CPU_STOP_PCT: "85.0"

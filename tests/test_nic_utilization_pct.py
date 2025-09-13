@@ -7,11 +7,11 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from loadshaper import nic_utilization_pct
 
 
-def test_nic_utilization_invalid_inputs_return_zero():
-    assert nic_utilization_pct(None, (1, 1), 1, 100) == 0.0
-    assert nic_utilization_pct((1, 1), None, 1, 100) == 0.0
-    assert nic_utilization_pct((1, 1), (2, 2), -1, 100) == 0.0
-    assert nic_utilization_pct((1, 1), (2, 2), 1, 0) == 0.0
+def test_nic_utilization_invalid_inputs_return_none():
+    assert nic_utilization_pct(None, (1, 1), 1, 100) is None
+    assert nic_utilization_pct((1, 1), None, 1, 100) is None
+    assert nic_utilization_pct((1, 1), (2, 2), -1, 100) is None
+    assert nic_utilization_pct((1, 1), (2, 2), 1, 0) is None
 
 
 def test_nic_utilization_normal_case():

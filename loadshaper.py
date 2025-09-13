@@ -6,6 +6,9 @@ import subprocess
 import sqlite3
 import json
 import logging
+import signal
+import platform
+from typing import Tuple, Optional, Dict, Any
 from multiprocessing import Process, Value
 from math import isfinite
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -295,6 +298,39 @@ def _classify_oracle_shape(cpu_count, total_mem_gb):
                 f"Oracle-Unknown-E2-{cpu_count}CPU-{total_mem_gb:.1f}GB",
                 "e2-1-micro.env"
             )
+
+def is_e2_shape() -> bool:
+    """
+    Detect if running on Oracle E2 shape or E2-like environment.
+
+    E2 shapes (x86-64) have different reclamation rules than A1 shapes (ARM64).
+    Oracle's Always Free tier includes specific reclamation criteria:
+    - CPU utilization for the 95th percentile is less than 20%
+    - Network utilization is less than 20%
+    - Memory utilization is less than 20% (applies to A1 shapes only)
+
+    Shape-specific rules:
+    - For E2: Only CPU and network thresholds apply
+    - For A1: All three thresholds (CPU, network, and memory) must be met
+
+    For non-Oracle environments, uses architecture heuristics:
+    - x86_64/amd64: Treated as E2-like (only CPU and network matter)
+    - ARM64/aarch64: Treated as A1-like (CPU, network, and memory matter)
+
+    Oracle documentation: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
+
+    Returns:
+        bool: True if E2 shape or x86_64 architecture, False if A1 or ARM architecture
+    """
+    shape_name, _, is_oracle = detect_oracle_shape()
+
+    if is_oracle:
+        # Oracle environment - check shape name
+        return shape_name and 'E2' in shape_name
+    else:
+        # Non-Oracle environment - use architecture heuristics
+        arch = platform.machine().lower()
+        return arch in ('x86_64', 'amd64')  # E2-like: x86/amd64 vs A1-like: arm/aarch64
 
 def _validate_config_value(key, value):
     """
@@ -658,6 +694,50 @@ def _validate_final_config():
         logger.warning(f"Invalid NET_PORT={NET_PORT} (must be 1024-65535), using default 15201")
         NET_PORT = 15201
 
+    # Network fallback validation is performed after variable initialization
+
+def _validate_network_fallback_config():
+    """
+    Validate network fallback configuration values.
+
+    Called after network fallback variables are initialized to validate
+    their values and reset to defaults if invalid.
+    """
+    # Use globals() to check and access global variables
+    global_vars = globals()
+
+    # Validate network fallback percentage values
+    for var_name, default_value in [
+        ("NET_FALLBACK_START_PCT", 19.0),
+        ("NET_FALLBACK_STOP_PCT", 23.0),
+        ("NET_FALLBACK_RISK_THRESHOLD_PCT", 22.0)
+    ]:
+        if var_name in global_vars:
+            var_value = global_vars[var_name]
+            if not (0 <= var_value <= 100):
+                logger.warning(f"Invalid {var_name}={var_value} (must be 0-100%), using default")
+                global_vars[var_name] = default_value
+
+    # Validate fallback debounce and timing values (must be positive)
+    for var_name, default_value in [
+        ("NET_FALLBACK_DEBOUNCE_SEC", 30),
+        ("NET_FALLBACK_MIN_ON_SEC", 60),
+        ("NET_FALLBACK_MIN_OFF_SEC", 30),
+        ("NET_FALLBACK_RAMP_SEC", 10)
+    ]:
+        if var_name in global_vars:
+            var_value = global_vars[var_name]
+            if var_value < 0:
+                logger.warning(f"Invalid {var_name}={var_value} (must be >= 0), using default")
+                global_vars[var_name] = default_value
+
+    # Validate NET_ACTIVATION mode
+    if "NET_ACTIVATION" in global_vars:
+        valid_modes = ['adaptive', 'always', 'off']
+        if global_vars["NET_ACTIVATION"] not in valid_modes:
+            logger.warning(f"Invalid NET_ACTIVATION='{global_vars['NET_ACTIVATION']}' (must be one of {valid_modes}), using 'adaptive'")
+            global_vars["NET_ACTIVATION"] = 'adaptive'
+
 
 # ---------------------------
 # Env / config
@@ -776,9 +856,20 @@ def _initialize_config():
     # Controller rate bounds (Mbps)
     NET_MIN_RATE      = getenv_float_with_template("NET_MIN_RATE_MBIT", 1.0, CONFIG_TEMPLATE)
     NET_MAX_RATE      = getenv_float_with_template("NET_MAX_RATE_MBIT", 800.0, CONFIG_TEMPLATE)
-    
+
+    # Network fallback configuration
+    NET_ACTIVATION          = getenv_with_template("NET_ACTIVATION", "adaptive", CONFIG_TEMPLATE).strip().lower()
+    NET_FALLBACK_START_PCT  = getenv_float_with_template("NET_FALLBACK_START_PCT", 19.0, CONFIG_TEMPLATE)
+    NET_FALLBACK_STOP_PCT   = getenv_float_with_template("NET_FALLBACK_STOP_PCT", 23.0, CONFIG_TEMPLATE)
+    NET_FALLBACK_RISK_THRESHOLD_PCT = getenv_float_with_template("NET_FALLBACK_RISK_THRESHOLD_PCT", 22.0, CONFIG_TEMPLATE)
+    NET_FALLBACK_DEBOUNCE_SEC = getenv_int_with_template("NET_FALLBACK_DEBOUNCE_SEC", 30, CONFIG_TEMPLATE)
+    NET_FALLBACK_MIN_ON_SEC = getenv_int_with_template("NET_FALLBACK_MIN_ON_SEC", 60, CONFIG_TEMPLATE)
+    NET_FALLBACK_MIN_OFF_SEC = getenv_int_with_template("NET_FALLBACK_MIN_OFF_SEC", 30, CONFIG_TEMPLATE)
+    NET_FALLBACK_RAMP_SEC   = getenv_int_with_template("NET_FALLBACK_RAMP_SEC", 10, CONFIG_TEMPLATE)
+
     # Validate final configuration values (including environment overrides)
     _validate_final_config()
+    _validate_network_fallback_config()
     
     _config_initialized = True
 
@@ -830,56 +921,58 @@ def cpu_percent_over(dt, prev=None):
     usage = max(0.0, 100.0 * (totald - idled) / totald)
     return usage, cur
 
-def read_meminfo():
+def read_meminfo() -> Tuple[int, float, int]:
     """
-    Read memory usage from /proc/meminfo, excluding cache/buffers.
-    
-    Uses MemAvailable when available (Linux 3.14+) for most accurate measurement,
-    falls back to manual calculation for older kernels. This approach aligns with
-    industry standards (AWS CloudWatch, Azure Monitor) and Oracle's likely
-    implementation for VM reclamation criteria.
-    
+    Read memory usage from /proc/meminfo using industry standards.
+
+    Requires Linux 3.14+ (MemAvailable field). Uses industry-standard calculation
+    that excludes cache/buffers for accurate utilization measurement, aligning with
+    AWS CloudWatch, Azure Monitor, and Oracle's VM reclamation criteria.
+
     Returns:
-        tuple: (total_bytes, free_bytes, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
-               - total_bytes: Total system memory
-               - free_bytes: Actually free memory (MemFree)
-               - used_pct_excl_cache: Memory usage excluding cache/buffers (for Oracle compliance)
-               - used_bytes_excl_cache: Memory bytes excluding cache/buffers  
-               - used_pct_incl_cache: Memory usage including cache/buffers (for debugging)
+        tuple: (total_bytes, used_pct, used_bytes)
+               - total_bytes: Total system memory in bytes
+               - used_pct: Memory usage percentage excluding cache/buffers
+               - used_bytes: Memory usage in bytes excluding cache/buffers
+
+    Raises:
+        RuntimeError: If /proc/meminfo is not readable, MemAvailable is missing,
+                      or MemTotal is zero/missing (requires Linux 3.14+)
     """
-    m = {}
-    with open("/proc/meminfo") as f:
-        for line in f:
-            k, v = line.split(":", 1)
-            parts = v.strip().split()
-            m[k] = int(parts[0]) if parts else 0  # in kB
-    
+    try:
+        m = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                try:
+                    k, v = line.split(":", 1)
+                    parts = v.strip().split()
+                    if parts:
+                        m[k] = int(parts[0])  # in kB
+                except (ValueError, IndexError):
+                    # Skip malformed lines
+                    continue
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        raise RuntimeError(f"Could not read /proc/meminfo: {e}")
+
     total = m.get("MemTotal", 0)
-    free = m.get("MemFree", 0)
-    mem_available = m.get("MemAvailable", 0)
-    
-    # Calculate memory usage excluding cache/buffers
-    if mem_available > 0 and total > 0:
-        # Preferred method: Use MemAvailable (Linux 3.14+)
-        # This is the most accurate metric used by modern monitoring tools
-        used_pct_excl_cache = (100.0 * (1.0 - mem_available / total))
-        used_bytes_excl_cache = (total - mem_available) * 1024
+    if total <= 0:
+        raise RuntimeError("MemTotal not found or is zero in /proc/meminfo")
+
+    mem_available = m.get("MemAvailable")
+    if mem_available is None:
+        raise RuntimeError("MemAvailable not found in /proc/meminfo (requires Linux 3.14+)")
+
+    # Industry-standard memory calculation using MemAvailable
+    # This is the most accurate metric used by modern monitoring tools
+    if mem_available > total:
+        # Handle corrupt data - clamp to valid range
+        used_pct = 0.0
+        used_bytes = 0
     else:
-        # Fallback method: Manual calculation for older kernels
-        buffers = m.get("Buffers", 0)
-        cached = m.get("Cached", 0)
-        srecl = m.get("SReclaimable", 0)
-        shmem = m.get("Shmem", 0)
-        buff_cache = buffers + max(0, cached + srecl - shmem)
-        used_no_cache = max(0, total - free - buff_cache)
-        used_pct_excl_cache = (100.0 * used_no_cache / total) if total > 0 else 0.0
-        used_bytes_excl_cache = used_no_cache * 1024
-    
-    # Also calculate including cache/buffers for comparison/debugging
-    used_incl_cache = max(0, total - free)
-    used_pct_incl_cache = (100.0 * used_incl_cache / total) if total > 0 else 0.0
-    
-    return (total * 1024, free * 1024, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
+        used_pct = max(0.0, min(100.0, 100.0 * (1.0 - mem_available / total)))
+        used_bytes = max(0, (total - mem_available) * 1024)
+
+    return (total * 1024, used_pct, used_bytes)
 
 def read_loadavg():
     # Read system load averages and return per-core load for 1-min average
@@ -1226,7 +1319,7 @@ def read_host_nic_speed_mbit(iface: str):
 
 def nic_utilization_pct(prev, cur, dt_sec, link_mbit):
     if prev is None or cur is None or dt_sec <= 0 or link_mbit <= 0:
-        return 0.0
+        return None
     dtx = max(0, cur[0] - prev[0])
     drx = max(0, cur[1] - prev[1])
     bits = (dtx + drx) * 8.0
@@ -1554,6 +1647,94 @@ def validate_oracle_configuration():
     if warnings and any("CRITICAL" in w for w in warnings):
         logger.warning("⚠️  Configuration may result in VM reclamation! Review targets before proceeding.")
 
+class NetworkFallbackState:
+    """
+    Manages network fallback state and timing for Oracle VM protection.
+
+    Implements smart fallback logic:
+    - E2 shapes: Activate when CPU (p95) AND network both at risk
+    - A1 shapes: Activate when CPU (p95), network, AND memory all at risk
+    """
+    def __init__(self):
+        self.active = False
+        self.last_change = 0.0
+        self.activation_count = 0
+        self.last_activation = 0.0
+        self.last_deactivation = 0.0
+
+    def should_activate(self, is_e2: bool, cpu_p95: Optional[float], net_avg: Optional[float], mem_avg: Optional[float]) -> bool:
+        """
+        Determine if network fallback should activate based on Oracle reclamation rules.
+
+        Args:
+            is_e2 (bool): True if E2 shape, False if A1
+            cpu_p95 (float|None): CPU 95th percentile over 7 days
+            net_avg (float|None): Current network utilization average
+            mem_avg (float|None): Current memory utilization average
+
+        Returns:
+            bool: True if fallback should be active
+        """
+        if NET_ACTIVATION == 'off':
+            return False
+        elif NET_ACTIVATION == 'always':
+            return True
+        elif NET_ACTIVATION != 'adaptive':
+            return False  # Invalid mode
+
+        now = time.time()
+
+        # Check minimum on/off time requirements
+        if self.active and (now - self.last_activation) < NET_FALLBACK_MIN_ON_SEC:
+            return True  # Must stay on for minimum time
+        if not self.active and (now - self.last_deactivation) < NET_FALLBACK_MIN_OFF_SEC:
+            return False  # Must stay off for minimum time
+
+        # Check debounce period
+        if (now - self.last_change) < NET_FALLBACK_DEBOUNCE_SEC:
+            return self.active  # No state change during debounce
+
+        # Determine if metrics are at risk based on Oracle rules
+        if is_e2:
+            # E2 shapes: Only CPU (95th percentile) and network matter for Oracle reclamation
+            cpu_at_risk = cpu_p95 is not None and cpu_p95 < NET_FALLBACK_RISK_THRESHOLD_PCT
+            net_at_risk = net_avg is not None and net_avg < NET_FALLBACK_START_PCT
+            should_activate = cpu_at_risk and net_at_risk
+        else:
+            # A1 shapes: CPU (95th percentile), network, AND memory all matter for Oracle reclamation
+            cpu_at_risk = cpu_p95 is not None and cpu_p95 < NET_FALLBACK_RISK_THRESHOLD_PCT
+            net_at_risk = net_avg is not None and net_avg < NET_FALLBACK_START_PCT
+            mem_at_risk = mem_avg is not None and mem_avg < NET_FALLBACK_RISK_THRESHOLD_PCT
+            should_activate = cpu_at_risk and net_at_risk and mem_at_risk
+
+        # Check stop condition (hysteresis)
+        if self.active and net_avg is not None and net_avg > NET_FALLBACK_STOP_PCT:
+            should_activate = False
+
+        # Update state if changed
+        if should_activate != self.active:
+            self.active = should_activate
+            self.last_change = now
+            if should_activate:
+                self.activation_count += 1
+                self.last_activation = now
+            else:
+                self.last_deactivation = now
+
+        return self.active
+
+    def get_debug_info(self) -> Dict[str, Any]:
+        """Get debug information about fallback state."""
+        now = time.time()
+        return {
+            'active': self.active,
+            'activation_count': self.activation_count,
+            'seconds_since_change': now - self.last_change,
+            'in_debounce': (now - self.last_change) < NET_FALLBACK_DEBOUNCE_SEC,
+            'last_activation_ago': now - self.last_activation if self.last_activation > 0 else None,
+            'last_deactivation_ago': now - self.last_deactivation if self.last_deactivation > 0 else None
+        }
+
 def main():
     # Initialize configuration on first use
     _initialize_config()
@@ -1603,6 +1784,17 @@ def main():
         p.start()
 
     stop_evt = threading.Event()
+
+    # Setup signal handlers for graceful shutdown
+    def handle_shutdown(signum, frame):
+        logger.info(f"Received signal {signum}, initiating graceful shutdown")
+        stop_evt.set()
+        paused.value = 1.0  # Pause all workers immediately
+        duty.value = 0.0    # Set CPU duty to 0
+
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+
     t_mem = threading.Thread(target=mem_nurse_thread, args=(stop_evt,), daemon=True)
     t_mem.start()
 
@@ -1616,6 +1808,9 @@ def main():
     # Initialize 7-day metrics storage (needed before health server)
     metrics_storage = MetricsStorage()
     cleanup_counter = 0  # Cleanup old data periodically
+
+    # Initialize network fallback state management
+    network_fallback_state = NetworkFallbackState()
 
     # Start health check server
     t_health = threading.Thread(
@@ -1660,14 +1855,14 @@ def main():
     prev_nic_t = time.time()
 
     try:
-        while True:
+        while not stop_evt.is_set():
             # CPU%
             cpu_pct, prev_cpu = cpu_percent_over(CONTROL_PERIOD, prev_cpu)
             cpu_avg = ema.cpu.update(cpu_pct)
 
             # MEM% (EXCLUDING cache/buffers for Oracle compliance)
-            total_b, free_b, mem_used_no_cache_pct, used_no_cache_b, mem_used_incl_cache_pct = read_meminfo()
-            mem_avg = ema.mem.update(mem_used_no_cache_pct)
+            total_b, mem_used_pct, used_b = read_meminfo()
+            mem_avg = ema.mem.update(mem_used_pct)
 
             # NIC utilization
             if NET_SENSE_MODE == "host":
@@ -1678,17 +1873,28 @@ def main():
             dt = now - prev_nic_t if prev_nic_t else CONTROL_PERIOD
             nic_util = nic_utilization_pct(prev_nic, cur_nic, dt, link_mbit)
             prev_nic, prev_nic_t = cur_nic, now
-            net_avg = ema.net.update(nic_util)
+
+            # Only update EMA when NIC metrics are available
+            if nic_util is not None:
+                net_avg = ema.net.update(nic_util)
+            else:
+                # Keep previous average when NIC metrics unavailable
+                net_avg = ema.net.val if ema.net.val is not None else None
 
             # Load average (per-core)
             load_1min, load_5min, load_15min, per_core_load = read_loadavg()
             load_avg = ema.load.update(per_core_load)
 
+            # Calculate network fallback status for health endpoints
+            is_e2 = is_e2_shape()
+            cpu_p95 = metrics_storage.get_percentile('cpu') if metrics_storage else None
+            fallback_debug = network_fallback_state.get_debug_info()
+
             # Update controller state for health endpoints
             controller_state.update({
                 'cpu_pct': cpu_pct,
                 'cpu_avg': cpu_avg,
-                'mem_pct': mem_used_no_cache_pct,
+                'mem_pct': mem_used_pct,
                 'mem_avg': mem_avg,
                 'net_pct': nic_util,
                 'net_avg': net_avg,
@@ -1698,11 +1904,15 @@ def main():
                 'paused': paused.value,
                 'cpu_target': cpu_target_now,
                 'mem_target': mem_target_now,
-                'net_target': net_target_now
+                'net_target': net_target_now,
+                'network_fallback_active': fallback_debug['active'],
+                'network_fallback_count': fallback_debug['activation_count'],
+                'is_e2_shape': is_e2,
+                'cpu_p95_7d': cpu_p95
             })
 
             # Store metrics sample for 7-day analysis
-            metrics_storage.store_sample(cpu_pct, mem_used_no_cache_pct, nic_util, per_core_load)
+            metrics_storage.store_sample(cpu_pct, mem_used_pct, nic_util, per_core_load)
             
             # Cleanup old data every ~1000 iterations (roughly every 1.4 hours at 5sec intervals)
             cleanup_counter += 1
@@ -1758,21 +1968,35 @@ def main():
                     new_duty = duty.value + KP_CPU * (err / 100.0)
                     duty.value = min(MAX_DUTY, max(0.0, new_duty))
 
-                # RAM target (no-cache used)
+                # RAM target (excluding cache/buffers)
                 desired_used_b = int(total_b * (mem_target_now / 100.0))
-                need_delta_b = desired_used_b - used_no_cache_b
-                # Keep some real free memory
+                need_delta_b = desired_used_b - used_b
+                # Keep some minimum free memory available
                 min_free_b = MEM_MIN_FREE_MB * 1024 * 1024
-                if need_delta_b > 0 and (free_b - need_delta_b) < min_free_b:
-                    need_delta_b = max(0, int(free_b - min_free_b))
+                available_b = total_b - used_b  # Available memory from MemAvailable calculation
+                if need_delta_b > 0 and (available_b - need_delta_b) < min_free_b:
+                    need_delta_b = max(0, int(available_b - min_free_b))
                 with mem_lock:
                     our_current = len(mem_block)
                 target_alloc = max(0, our_current + need_delta_b)
                 set_mem_target_bytes(target_alloc)
 
+                # Network fallback decision (Oracle VM protection)
+                # (reuse is_e2 and cpu_p95 calculated earlier for controller state)
+                fallback_active = network_fallback_state.should_activate(is_e2, cpu_p95, net_avg, mem_avg)
+
+                # Apply fallback to network target (override jittered target if needed)
+                effective_net_target = net_target_now
+                if fallback_active and net_target_now < NET_FALLBACK_START_PCT:
+                    effective_net_target = NET_FALLBACK_START_PCT
+                    logger.info(f"Network fallback ACTIVE (E2={is_e2}, CPU_p95={cpu_p95:.1f}%, "
+                              f"Net={net_avg:.1f}%, Mem={mem_avg:.1f}%) -> target={effective_net_target:.1f}%")
+                elif network_fallback_state.active and not fallback_active:
+                    logger.info(f"Network fallback DEACTIVATED")
+
                 # NET rate control (Mbps)
                 if net_avg is not None and NET_MODE == "client" and NET_PEERS:
-                    err_net = net_target_now - net_avg
+                    err_net = effective_net_target - net_avg
                     new_rate = float(net_rate_mbit.value) + KP_NET * (err_net)
                     net_rate_mbit.value = max(NET_MIN_RATE, min(NET_MAX_RATE, new_rate))
 
@@ -1793,16 +2017,13 @@ def main():
                 load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f} {load_p95_str}" if LOAD_CHECK_ENABLED else "load=disabled"
                 sample_count = metrics_storage.get_sample_count()
                 
-                # Memory metric display (show both for debugging if needed)
-                mem_display = f"mem(excl-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str}"
-                # Optionally show both metrics for validation (add DEBUG_MEM_METRICS=true to enable)
-                if os.getenv("DEBUG_MEM_METRICS", "false").lower() == "true":
-                    mem_display += f" [incl-cache={mem_used_incl_cache_pct:5.1f}%]"
+                # Memory metric display (industry standards - excludes cache/buffers)
+                mem_display = f"mem now={mem_used_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str}"
                 
                 logger.info(f"cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% {cpu_p95_str} | "
                            f"{mem_display} | "
                            f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
-                           f"now={nic_util:5.2f}% avg={net_avg:5.2f}% {net_p95_str} | "
+                           f"now={'N/A' if nic_util is None else f'{nic_util:5.2f}%'} avg={'N/A' if net_avg is None else f'{net_avg:5.2f}%'} {net_p95_str} | "
                            f"{load_status} | "
                            f"duty={duty.value:4.2f} paused={int(paused.value)} "
                            f"targets cpu≈{cpu_target_now:.1f}% mem≈{mem_target_now:.1f}% net≈{net_target_now:.1f}% "
@@ -1811,12 +2032,38 @@ def main():
 
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        # Log control loop error with sanitized details to prevent information disclosure
+        logger.error(f"Control loop fatal error: {type(e).__name__}")
+        logger.debug(f"Control loop fatal error details: {e}")
+        # Fatal errors in the main loop should cause shutdown
+        raise
     finally:
         stop_evt.set()
         duty.value = 0.0
         paused.value = 1.0
         set_mem_target_bytes(0)
-        logger.info("exiting...")
+
+        # Gracefully terminate threads and processes
+        logger.info("Shutting down threads and processes...")
+
+        # Wait for threads to finish (they check stop_evt)
+        if 't_mem' in locals() and t_mem.is_alive():
+            t_mem.join(timeout=2.0)
+        if 't_net' in locals() and t_net.is_alive():
+            t_net.join(timeout=2.0)
+        if 't_health' in locals() and t_health.is_alive():
+            t_health.join(timeout=2.0)
+
+        # Terminate CPU worker processes
+        for p in workers:
+            if p.is_alive():
+                p.join(timeout=1.0)
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=1.0)
+
+        logger.info("Graceful shutdown complete")
 
 if __name__ == "__main__":
     main()

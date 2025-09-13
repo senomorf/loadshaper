@@ -68,7 +68,7 @@ Thank you for your interest in contributing to `loadshaper`! This project helps 
 ### Code Style
 - **Language**: Python 3.8+
 - **Formatting**: PEP 8 style, 4-space indentation
-- **Dependencies**: Keep minimal (stdlib + `iperf3` binary only)
+- **Dependencies**: Keep minimal (stdlib only)
 - **Names**: `snake_case` for functions/variables, `UPPER_SNAKE_CASE` for constants
 - **Priority**: All CPU work must use `os.nice(19)` for lowest priority
 

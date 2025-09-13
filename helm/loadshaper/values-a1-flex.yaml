@@ -16,7 +16,7 @@ config:
   # Target percentages optimized for A1.Flex shape
   CPU_TARGET_PCT: "35.0"    # Higher target for more capable ARM CPUs
   MEM_TARGET_PCT: "45.0"    # CRITICAL: Maintain above 20% memory usage to avoid reclamation rule
-  NET_TARGET_PCT: "15.0"    # Target 15% of 1 Gbps per vCPU
+  NET_TARGET_PCT: "25.0"    # Target 25% of 1 Gbps per vCPU (consistent with config templates)
   
   # Safety stop thresholds
   CPU_STOP_PCT: "85.0"      # Standard stop threshold
