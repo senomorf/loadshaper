@@ -49,6 +49,71 @@ class TestP95ControllerIntegration(unittest.TestCase):
         except OSError:
             pass
 
+    def _insert_batch_data(self, base_time, samples_per_day, days=7):
+        """Helper to insert test data efficiently using batch transactions"""
+        import sqlite3
+
+        # Use direct database access for bulk insertion performance
+        conn = sqlite3.connect(self.metrics_storage.db_path)
+        cursor = conn.cursor()
+
+        try:
+            conn.execute("BEGIN TRANSACTION")
+
+            # Generate all samples at once for better performance
+            samples = []
+            for day in range(days):
+                for sample in range(samples_per_day):
+                    timestamp = base_time - (day * 86400) - (sample * 5)
+
+                    # 95% of samples at 20%, 5% at 40% (should give P95 ≈ 20%)
+                    cpu_pct = 40.0 if (sample % 20) == 0 else 20.0
+                    mem_pct = 25.0
+                    net_pct = 15.0
+                    load_avg = 0.3
+
+                    samples.append((timestamp, cpu_pct, mem_pct, net_pct, load_avg))
+
+            # Batch insert all samples
+            cursor.executemany("""
+                INSERT INTO metrics (timestamp, cpu_pct, mem_pct, net_pct, load_avg)
+                VALUES (?, ?, ?, ?, ?)
+            """, samples)
+
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+    def _insert_simple_batch(self, base_time, count, cpu_pct=25.0, mem_pct=25.0, net_pct=15.0, load_avg=0.3):
+        """Helper to insert simple test data efficiently"""
+        import sqlite3
+
+        conn = sqlite3.connect(self.metrics_storage.db_path)
+        cursor = conn.cursor()
+
+        try:
+            conn.execute("BEGIN TRANSACTION")
+
+            samples = []
+            for i in range(count):
+                timestamp = base_time - (i * 5)
+                samples.append((timestamp, cpu_pct, mem_pct, net_pct, load_avg))
+
+            cursor.executemany("""
+                INSERT INTO metrics (timestamp, cpu_pct, mem_pct, net_pct, load_avg)
+                VALUES (?, ?, ?, ?, ?)
+            """, samples)
+
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
     def test_configuration_loading_with_p95_variables(self):
         """Test that P95 configuration variables are properly loaded"""
         # Test that all P95 variables are accessible
@@ -64,20 +129,10 @@ class TestP95ControllerIntegration(unittest.TestCase):
         """Test that MetricsStorage correctly calculates P95 values"""
         # Store sample data over 7 days
         now = time.time()
-        samples_per_day = 17280  # 24 * 60 * 12 (every 5 seconds)
+        samples_per_day = 200  # Reduced from 17280 for test performance (still sufficient for P95)
 
-        # Create test data: mostly low CPU (20%) with occasional spikes (40%)
-        for day in range(7):
-            for sample in range(samples_per_day):
-                timestamp = now - (day * 86400) - (sample * 5)
-
-                # 95% of samples at 20%, 5% at 40% (should give P95 ≈ 40%)
-                cpu_pct = 40.0 if (sample % 20) == 0 else 20.0
-                mem_pct = 25.0
-                net_pct = 15.0
-                load_avg = 0.3
-
-                self.metrics_storage.store_sample(cpu_pct, mem_pct, net_pct, load_avg)
+        # Create test data using batch insertion for performance
+        self._insert_batch_data(now, samples_per_day, days=7)
 
         # Calculate P95 - with 5% samples at 40%, P95 should be around 20% (the 95th percentile)
         p95 = self.metrics_storage.get_percentile('cpu', percentile=95)
@@ -89,10 +144,7 @@ class TestP95ControllerIntegration(unittest.TestCase):
         """Test controller state machine with real P95 data"""
         # Store data that should trigger BUILDING state (low P95)
         now = time.time()
-        for i in range(100):
-            timestamp = now - (i * 5)
-            # Low CPU data - should trigger BUILDING
-            self.metrics_storage.store_sample(15.0, 25.0, 15.0, 0.3)
+        self._insert_simple_batch(now, 30, cpu_pct=15.0)  # Reduced from 100 to 30
 
         # Clear controller cache to force fresh query
         self.controller._p95_cache = None
@@ -105,11 +157,8 @@ class TestP95ControllerIntegration(unittest.TestCase):
         # Should be in BUILDING state due to low P95
         self.assertEqual(self.controller.state, 'BUILDING')
 
-        # Now store high CPU data
-        for i in range(100):
-            timestamp = now - (i * 5)
-            # High CPU data - should eventually trigger REDUCING
-            self.metrics_storage.store_sample(35.0, 25.0, 15.0, 0.3)
+        # Now store high CPU data (use different base time to avoid timestamp conflicts)
+        self._insert_simple_batch(now - 200, 30, cpu_pct=35.0)  # Reduced from 100 to 30
 
         # Clear cache and update
         self.controller._p95_cache = None
@@ -178,8 +227,7 @@ class TestP95ControllerIntegration(unittest.TestCase):
         """Test that P95 caching improves performance"""
         # Store some sample data
         now = time.time()
-        for i in range(50):
-            self.metrics_storage.store_sample(25.0, 25.0, 15.0, 0.3)
+        self._insert_simple_batch(now, 20)  # Reduced from 50 to 20
 
         # First call should query database
         start_time = time.time()
