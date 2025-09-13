@@ -202,6 +202,7 @@ class TestStressFailureModes(unittest.TestCase):
                 target=loadshaper.cpu_worker,
                 args=(loadshaper.duty, loadshaper.paused)
             )
+            worker_thread.daemon = True
             worker_thread.start()
 
             time.sleep(0.1)

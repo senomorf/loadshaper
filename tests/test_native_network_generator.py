@@ -533,6 +533,7 @@ class TestNetworkClientThread(unittest.TestCase):
             target=loadshaper.net_client_thread,
             args=(stop_evt, paused_fn, rate_val)
         )
+        thread.daemon = True
         thread.start()
 
         # Let it run briefly
@@ -564,6 +565,7 @@ class TestNetworkClientThread(unittest.TestCase):
                 target=loadshaper.net_client_thread,
                 args=(stop_evt, paused_fn, rate_val)
             )
+            thread.daemon = True
             thread.start()
 
             # Let it run briefly while paused
@@ -596,6 +598,7 @@ class TestNetworkClientThread(unittest.TestCase):
                 target=loadshaper.net_client_thread,
                 args=(stop_evt, paused_fn, rate_val)
             )
+            thread.daemon = True
             thread.start()
 
             try:
@@ -626,6 +629,7 @@ class TestNetworkClientThread(unittest.TestCase):
                 target=loadshaper.net_client_thread,
                 args=(stop_evt, paused_fn, rate_val)
             )
+            thread.daemon = True
             thread.start()
             thread.join(timeout=1.0)
 
