@@ -1,0 +1,143 @@
+# Security-hardened values for loadshaper
+# This example provides maximum security for sensitive environments
+
+# Maximum security configuration
+security:
+  procHostMountEnabled: false  # Disabled for security compliance
+
+# Hardened security context
+securityContext:
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65534  # nobody user
+  runAsGroup: 65534
+  capabilities:
+    drop: [ALL]
+  allowPrivilegeEscalation: false
+  seccompProfile:
+    type: RuntimeDefault
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+serviceAccount:
+  create: true
+  automount: false  # Security hardening - no K8s API access
+
+# Network security enforced
+networkPolicy:
+  enabled: true
+  allowDNS: true
+  allowPeersFromSameApp: false  # Strict isolation
+  extraEgress: []  # No additional egress allowed
+
+# Conservative resource limits
+resources:
+  limits:
+    cpu: 200m      # Minimal CPU to reduce attack surface
+    memory: 256Mi  # Minimal memory
+    ephemeral-storage: 100Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+    ephemeral-storage: 50Mi
+
+# Secure storage configuration
+persistence:
+  enabled: true
+  size: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  # Use secure storage class with encryption
+  # storageClass: "encrypted-ssd"
+
+# No service exposure in hardened mode
+service:
+  enabled: false  # Completely disabled for security
+
+# No monitoring exposure
+serviceMonitor:
+  enabled: false
+
+# Aggressive health checks for security
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 2  # Fail fast
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 2
+
+# Security-focused configuration
+config:
+  # Minimal resource utilization for stealth operation
+  CPU_TARGET_PCT: "15.0"
+  MEM_TARGET_PCT: "30.0"
+  NET_TARGET_PCT: "5.0"
+  
+  # Conservative safety thresholds
+  CPU_STOP_PCT: "70.0"
+  MEM_STOP_PCT: "75.0"
+  NET_STOP_PCT: "40.0"
+  
+  # Slower, less detectable operation
+  CONTROL_PERIOD_SEC: "10.0"
+  AVG_WINDOW_SEC: "600.0"
+  HYSTERESIS_PCT: "2.0"
+  
+  # Strict load monitoring
+  LOAD_CHECK_ENABLED: "true"
+  LOAD_THRESHOLD: "0.3"
+  LOAD_RESUME_THRESHOLD: "0.2"
+  
+  # Minimal jitter for stealth
+  JITTER_PCT: "5.0"
+  JITTER_PERIOD_SEC: "10.0"
+  
+  # No health endpoint for security
+  HEALTH_ENABLED: "false"
+  
+  # Network configuration - client only, no exposure
+  NET_MODE: "client"
+  NET_SENSE_MODE: "container"  # No host access
+  NET_PROTOCOL: "udp"
+  NET_PEERS: ""  # No network peers for security
+
+# Security annotations
+podAnnotations:
+  # Security scanning annotations
+  security.alpha.kubernetes.io/sysctls: ""
+  security.alpha.kubernetes.io/unsafe-sysctls: ""
+  
+# Node selection for security compliance
+nodeSelector:
+  security.example.com/compliance: "pci-dss"  # Example compliance requirement
+
+# Security tolerations
+tolerations:
+- key: "security.example.com/isolated"
+  operator: "Equal"
+  value: "true"
+  effect: "NoSchedule"
+
+# Priority for security workloads
+priorityClassName: "security-high"
+
+# Additional security volumes (read-only)
+volumes:
+- name: security-config
+  configMap:
+    name: security-baseline
+    defaultMode: 0444  # Read-only

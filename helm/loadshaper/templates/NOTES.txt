@@ -1,0 +1,85 @@
+1. Get the application name:
+  export APP_NAME=$(kubectl get pods -l "app.kubernetes.io/name={{ include "loadshaper.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+
+2. Check the loadshaper status:
+  kubectl get pods -l "app.kubernetes.io/name={{ include "loadshaper.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+
+3. View loadshaper logs:
+  kubectl logs -f $APP_NAME
+
+4. Look for telemetry showing 95th percentile metrics compliance:
+  kubectl logs $APP_NAME | grep "\[loadshaper\]" | tail -5
+
+5. Check current configuration:
+  kubectl get configmap {{ include "loadshaper.fullname" . }}-config -o yaml
+
+{{- if .Values.persistence.enabled }}
+6. Verify metrics storage:
+  kubectl get pvc {{ .Values.persistence.existingClaim | default (include "loadshaper.fullname" .) }}
+{{- end }}
+
+{{- if and (eq .Values.config.HEALTH_ENABLED "true") .Values.service.metrics.enabled .Values.service.enabled }}
+{{- if .Values.serviceMonitor.enabled }}
+7. Prometheus metrics endpoint (ServiceMonitor enabled):
+  # Metrics are automatically scraped by Prometheus
+  # Manual access: kubectl port-forward svc/{{ include "loadshaper.fullname" . }} {{ .Values.config.HEALTH_PORT }}:{{ .Values.config.HEALTH_PORT }}
+  # Then visit http://127.0.0.1:{{ .Values.config.HEALTH_PORT }}/metrics
+{{- else }}
+7. Access metrics endpoint:
+  kubectl port-forward svc/{{ include "loadshaper.fullname" . }} {{ .Values.config.HEALTH_PORT }}:{{ .Values.config.HEALTH_PORT }}
+  # Then visit http://127.0.0.1:{{ .Values.config.HEALTH_PORT }}/metrics
+{{- end }}
+{{- end }}
+
+{{- if and .Values.service.enabled .Values.service.iperf.enabled }}
+{{- if eq .Values.service.type "LoadBalancer" }}
+8. Get the external IP for iperf network testing:
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "loadshaper.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo "iperf service available at: $SERVICE_IP:{{ .Values.service.iperf.port }}"
+{{- else if eq .Values.service.type "ClusterIP" }}
+8. Port-forward to access iperf service:
+  kubectl port-forward svc/{{ include "loadshaper.fullname" . }} {{ .Values.service.iperf.port }}:{{ .Values.service.iperf.port }}
+{{- end }}
+{{- else if .Values.service.enabled }}
+8. Service configuration:
+  # iperf service is disabled (default) - loadshaper runs in client mode only
+  # Enable with: service.iperf.enabled=true if running iperf server
+{{- end }}
+
+Oracle Cloud Always Free Compliance:
+{{- if contains "e2-micro" .Values.image.tag }}
+✅ E2.1.Micro: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.NET_TARGET_PCT }}% of 50 Mbps network
+{{- else if contains "a1-flex" .Values.image.tag }}
+✅ A1.Flex: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
+{{- else }}
+✅ Default: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
+{{- end }}
+
+⚠️  Important: loadshaper runs at lowest priority (nice 19) and automatically pauses when real workloads need resources.
+    Monitor system load to ensure it remains unobtrusive to your applications.
+
+📊 Metrics are stored for 7-day rolling window analysis to match Oracle's reclamation criteria.
+    Database cleanup happens automatically - no maintenance required.
+
+{{- if .Values.networkPolicy.enabled }}
+
+🔒 SECURITY: NetworkPolicy is enabled for enhanced security.
+   Default configuration allows only DNS and same-app pod communication.
+   Configure networkPolicy.extraEgress for additional network peers.
+{{- end }}
+
+{{- if .Values.security.procHostMountEnabled }}
+
+⚠️  SECURITY WARNING: hostPath /proc mount is enabled.
+   This reduces container isolation and may be blocked by security policies.
+   Only use when host-level system monitoring is required.
+{{- end }}
+
+{{- if gt (.Values.replicaCount | int) 1 }}
+
+📝 SCALING NOTE: Multiple replicas ({{ .Values.replicaCount }}) require ReadWriteMany storage.
+   Current access mode: {{ .Values.persistence.accessModes | first }}
+   Consider using ReadWriteMany or separate PVCs for each replica.
+{{- end }}
+
+For more information, visit: https://github.com/senomorf/loadshaper

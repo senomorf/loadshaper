@@ -1,0 +1,256 @@
+# Default values for loadshaper.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1  # NOTE: Values > 1 require ReadWriteMany PVC or separate PVCs per replica
+
+image:
+  repository: ghcr.io/senomorf/loadshaper
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+  # Whether to automount the service account token (security hardening)
+  automount: false
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+  fsGroupChangePolicy: OnRootMismatch  # Efficiency improvement for volume permissions
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true   # Improved security: only write to mounted volumes
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+  # Run with nice priority for minimal system impact
+  # This is handled by the application, not container security context
+
+# Security configuration for hostPath mounts
+security:
+  # WARNING: Enabling hostPath mounts reduces container isolation and may be blocked by security policies
+  # Only enable if you need host-level system monitoring capabilities
+  procHostMountEnabled: false   # Mount host /proc directory (breaks container isolation)
+  # Note: /sys mount is automatically controlled by NET_SENSE_MODE=host setting
+
+service:
+  enabled: true
+  type: ClusterIP
+  # iperf port configuration (note: loadshaper typically runs as client-only)
+  iperf:
+    enabled: false  # Disable by default - enable only if running iperf server
+    port: 15201
+  # metrics port configuration (for health/metrics endpoint)
+  metrics:
+    enabled: true   # Enable metrics service when health endpoint is enabled
+  annotations: {}
+  # loadBalancerIP: ""
+  # loadBalancerSourceRanges: []
+  # nodePort: 30201
+
+# Loadshaper configuration - environment variables
+config:
+  # Core target percentages
+  CPU_TARGET_PCT: "30.0"
+  MEM_TARGET_PCT: "60.0"
+  NET_TARGET_PCT: "10.0"
+  
+  # Safety stop thresholds
+  CPU_STOP_PCT: "85.0"
+  MEM_STOP_PCT: "90.0"
+  NET_STOP_PCT: "60.0"
+  
+  # Control system parameters
+  CONTROL_PERIOD_SEC: "5.0"
+  AVG_WINDOW_SEC: "300.0"
+  HYSTERESIS_PCT: "5.0"
+  
+  # Load average monitoring (pause when real workloads need CPU)
+  LOAD_THRESHOLD: "0.6"      # pause when load avg per core > this
+  LOAD_RESUME_THRESHOLD: "0.4"  # resume when load avg per core < this
+  LOAD_CHECK_ENABLED: "true"
+  
+  # Jitter configuration
+  JITTER_PCT: "10.0"
+  JITTER_PERIOD_SEC: "5.0"
+  
+  # Memory allocation parameters
+  MEM_MIN_FREE_MB: "512"
+  MEM_STEP_MB: "64"
+  
+  # Network configuration
+  NET_MODE: "client"
+  NET_PEERS: ""  # Comma-separated list of peer IPs/hostnames
+  NET_PORT: "15201"
+  NET_BURST_SEC: "10"
+  NET_IDLE_SEC: "10"
+  NET_PROTOCOL: "udp"
+  
+  # Network sensing and interface configuration
+  NET_SENSE_MODE: "container"  # container|host
+  NET_IFACE: "ens3"           # for host mode (requires /sys mount and may need privileged access)
+  NET_IFACE_INNER: "eth0"     # for container mode (/proc/net/dev)
+  NET_LINK_MBIT: "1000.0"     # used directly in container mode
+  
+  # Network rate limits (Mbps)
+  NET_MIN_RATE_MBIT: "1.0"
+  NET_MAX_RATE_MBIT: "800.0"
+  
+  # Health endpoints configuration
+  HEALTH_ENABLED: "true"
+  HEALTH_HOST: "0.0.0.0"
+  HEALTH_PORT: "8080"
+  
+  # Extra configuration (key-value pairs)
+  extra: {}
+
+# Additional environment variables
+env: []
+
+# Health checks
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Startup probe (useful for slow starting containers)
+startupProbe:
+  enabled: false
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 6  # Allow up to 3 minutes for startup (6 * 30s)
+
+# Resource limits and requests
+resources:
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Persistence for metrics storage
+persistence:
+  enabled: true
+  # storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+  # existingClaim: ""
+  # selector: {}
+
+# Network policy configuration
+networkPolicy:
+  enabled: true   # Enable by default for better security posture
+  # Allow DNS resolution
+  allowDNS: true
+  # Allow communication with pods that have the same app label
+  allowPeersFromSameApp: true
+  # Custom ingress rules (if not specified, default rules are used)
+  ingress: []
+  # Custom egress rules (if not specified, default rules are used)
+  egress: []
+  # Extra egress rules for specific network peers (e.g., iperf servers)
+  extraEgress: []
+
+# Pod Disruption Budget for maintaining availability during cluster maintenance
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1    # Minimum number of pods that must be available
+  # maxUnavailable: 1  # Maximum number of pods that can be unavailable
+  # Use either minAvailable OR maxUnavailable, not both
+
+# ServiceMonitor for Prometheus monitoring
+serviceMonitor:
+  enabled: false
+  # namespace: monitoring
+  labels: {}
+  annotations: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  # port: 8080  # This will be set from config.HEALTH_PORT
+  jobLabel: ""
+  metricRelabelings: []
+  relabelings: []
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity: {}
+  # Example anti-affinity to spread pods across nodes:
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #   - weight: 100
+  #     podAffinityTerm:
+  #       labelSelector:
+  #         matchExpressions:
+  #         - key: app.kubernetes.io/name
+  #           operator: In
+  #           values:
+  #           - loadshaper
+  #       topologyKey: kubernetes.io/hostname
+
+# Topology spread constraints for even distribution across zones/nodes
+topologySpreadConstraints: []
+  # Example to spread across zones:
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: DoNotSchedule
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: loadshaper
+  # Example to spread across nodes:
+  # - maxSkew: 1
+  #   topologyKey: kubernetes.io/hostname
+  #   whenUnsatisfiable: ScheduleAnyway
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: loadshaper
+
+# Priority class name for pod scheduling
+priorityClassName: ""
+
+# Additional volumes
+volumes: []
+
+# Additional volume mounts
+volumeMounts: []

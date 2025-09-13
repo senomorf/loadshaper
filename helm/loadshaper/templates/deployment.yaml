@@ -1,0 +1,178 @@
+{{- include "loadshaper.validateConfig" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "loadshaper.fullname" . }}
+  labels:
+    {{- include "loadshaper.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "loadshaper.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "loadshaper.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "loadshaper.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount | default false }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "loadshaper.fullname" . }}-config
+          {{- if .Values.env }}
+          env:
+            {{- toYaml .Values.env | nindent 12 }}
+          {{- end }}
+          ports:
+            {{- if and .Values.service.iperf.enabled .Values.service.enabled }}
+            - name: iperf
+              containerPort: {{ .Values.config.NET_PORT }}
+              protocol: {{ .Values.config.NET_PROTOCOL | upper }}
+            {{- end }}
+            {{- if and (eq .Values.config.HEALTH_ENABLED "true") .Values.service.metrics.enabled .Values.service.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.config.HEALTH_PORT }}
+              protocol: TCP
+            {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            {{- if eq .Values.config.HEALTH_ENABLED "true" }}
+            httpGet:
+              path: /health
+              port: metrics
+            {{- else }}
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "pgrep -f 'python.*loadshaper.py' > /dev/null"
+            {{- end }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            {{- if eq .Values.config.HEALTH_ENABLED "true" }}
+            httpGet:
+              path: /health
+              port: metrics
+            {{- else }}
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "test -f /var/lib/loadshaper/metrics.db || test -f /tmp/loadshaper_metrics.db"
+            {{- end }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            {{- if eq .Values.config.HEALTH_ENABLED "true" }}
+            httpGet:
+              path: /health
+              port: metrics
+            {{- else }}
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "pgrep -f 'python.*loadshaper.py' > /dev/null"
+            {{- end }}
+            initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: metrics-storage
+              mountPath: /var/lib/loadshaper
+            {{- if .Values.security.procHostMountEnabled }}
+            - name: proc
+              mountPath: /proc
+              readOnly: true
+            {{- end }}
+            {{- if eq .Values.config.NET_SENSE_MODE "host" }}
+            - name: sys
+              mountPath: /host_sys_class_net
+              subPath: class/net
+              readOnly: true
+            {{- end }}
+            # Add tmpfs for any temporary files since root filesystem is read-only
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: metrics-storage
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "loadshaper.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        # tmpfs volume for temporary files (read-only root filesystem)
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        {{- if .Values.security.procHostMountEnabled }}
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+        {{- end }}
+        {{- if eq .Values.config.NET_SENSE_MODE "host" }}
+        - name: sys
+          hostPath:
+            path: /sys
+            type: Directory
+        {{- end }}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      restartPolicy: Always

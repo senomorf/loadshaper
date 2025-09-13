@@ -1,0 +1,82 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "loadshaper.fullname" . }}
+  labels:
+    {{- include "loadshaper.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "loadshaper.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if .Values.networkPolicy.ingress }}
+    {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
+    {{- else }}
+    # Allow iperf traffic for network load generation between loadshaper instances (if iperf service enabled)
+    {{- if .Values.service.iperf.enabled }}
+    - from:
+        {{- if .Values.networkPolicy.allowPeersFromSameApp }}
+        - podSelector:
+            matchLabels:
+              {{- include "loadshaper.selectorLabels" . | nindent 14 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "loadshaper.selectorLabels" . | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
+          port: {{ .Values.config.NET_PORT }}
+    {{- end }}
+    # Allow Prometheus scraping if ServiceMonitor is enabled
+    {{- if .Values.serviceMonitor.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.serviceMonitor.namespace | default "monitoring" }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.HEALTH_PORT | default 8080 }}
+    {{- end }}
+    {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress }}
+    {{- toYaml .Values.networkPolicy.egress | nindent 4 }}
+    {{- else }}
+    # Allow DNS resolution
+    {{- if .Values.networkPolicy.allowDNS }}
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    # Allow communication with peers from same app (if enabled)
+    {{- if .Values.networkPolicy.allowPeersFromSameApp }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "loadshaper.selectorLabels" . | nindent 14 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "loadshaper.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: {{ .Values.config.NET_PROTOCOL | upper }}
+          port: {{ .Values.config.NET_PORT }}
+    {{- end }}
+    # Extra egress rules for specific network peers (e.g., configured iperf servers)
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "loadshaper.fullname" . }}-config
+  labels:
+    {{- include "loadshaper.labels" . | nindent 4 }}
+data:
+  # Core target percentages
+  CPU_TARGET_PCT: {{ .Values.config.CPU_TARGET_PCT | quote }}
+  MEM_TARGET_PCT: {{ .Values.config.MEM_TARGET_PCT | quote }}
+  NET_TARGET_PCT: {{ .Values.config.NET_TARGET_PCT | quote }}
+  
+  # Safety stop thresholds
+  CPU_STOP_PCT: {{ .Values.config.CPU_STOP_PCT | quote }}
+  MEM_STOP_PCT: {{ .Values.config.MEM_STOP_PCT | quote }}
+  NET_STOP_PCT: {{ .Values.config.NET_STOP_PCT | quote }}
+  
+  # Control system parameters
+  CONTROL_PERIOD_SEC: {{ .Values.config.CONTROL_PERIOD_SEC | quote }}
+  AVG_WINDOW_SEC: {{ .Values.config.AVG_WINDOW_SEC | quote }}
+  HYSTERESIS_PCT: {{ .Values.config.HYSTERESIS_PCT | quote }}
+  
+  # Load average monitoring
+  LOAD_THRESHOLD: {{ .Values.config.LOAD_THRESHOLD | quote }}
+  LOAD_RESUME_THRESHOLD: {{ .Values.config.LOAD_RESUME_THRESHOLD | quote }}
+  LOAD_CHECK_ENABLED: {{ .Values.config.LOAD_CHECK_ENABLED | quote }}
+  
+  # Jitter configuration
+  JITTER_PCT: {{ .Values.config.JITTER_PCT | quote }}
+  JITTER_PERIOD_SEC: {{ .Values.config.JITTER_PERIOD_SEC | quote }}
+  
+  # Memory allocation parameters
+  MEM_MIN_FREE_MB: {{ .Values.config.MEM_MIN_FREE_MB | quote }}
+  MEM_STEP_MB: {{ .Values.config.MEM_STEP_MB | quote }}
+  
+  # Network configuration
+  NET_MODE: {{ .Values.config.NET_MODE | quote }}
+  NET_PEERS: {{ .Values.config.NET_PEERS | quote }}
+  NET_PORT: {{ .Values.config.NET_PORT | quote }}
+  NET_BURST_SEC: {{ .Values.config.NET_BURST_SEC | quote }}
+  NET_IDLE_SEC: {{ .Values.config.NET_IDLE_SEC | quote }}
+  NET_PROTOCOL: {{ .Values.config.NET_PROTOCOL | quote }}
+  
+  # Network sensing and interface configuration
+  NET_SENSE_MODE: {{ .Values.config.NET_SENSE_MODE | quote }}
+  NET_IFACE: {{ .Values.config.NET_IFACE | quote }}
+  NET_IFACE_INNER: {{ .Values.config.NET_IFACE_INNER | quote }}
+  NET_LINK_MBIT: {{ .Values.config.NET_LINK_MBIT | quote }}
+  
+  # Network rate limits
+  NET_MIN_RATE_MBIT: {{ .Values.config.NET_MIN_RATE_MBIT | quote }}
+  NET_MAX_RATE_MBIT: {{ .Values.config.NET_MAX_RATE_MBIT | quote }}
+  
+  # Health and metrics endpoints
+  HEALTH_ENABLED: {{ .Values.config.HEALTH_ENABLED | quote }}
+  HEALTH_HOST: {{ .Values.config.HEALTH_HOST | quote }}
+  HEALTH_PORT: {{ .Values.config.HEALTH_PORT | quote }}
+  
+  {{- if .Values.config.extra }}
+  {{- range $key, $value := .Values.config.extra }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}

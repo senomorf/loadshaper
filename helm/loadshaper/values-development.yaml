@@ -1,0 +1,95 @@
+# Development values for loadshaper
+# This example provides a minimal, easy-to-debug configuration
+
+# Relaxed security for development
+security:
+  procHostMountEnabled: false  # Keep disabled by default
+
+# Simple single replica
+replicaCount: 1
+
+# Disable PDB for development
+podDisruptionBudget:
+  enabled: false
+
+# Minimal resources for development
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# EmptyDir storage for development (no persistence needed)
+persistence:
+  enabled: false
+
+# Disable NetworkPolicy for easier debugging
+networkPolicy:
+  enabled: false
+
+# Enable monitoring for development debugging
+serviceMonitor:
+  enabled: false  # Enable if you have Prometheus in dev
+
+# Fast startup for development iteration
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 5
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Development-friendly configuration
+config:
+  # Higher targets for visible activity in development
+  CPU_TARGET_PCT: "40.0"
+  MEM_TARGET_PCT: "70.0"
+  NET_TARGET_PCT: "20.0"
+  
+  # Relaxed safety thresholds
+  CPU_STOP_PCT: "90.0"
+  MEM_STOP_PCT: "95.0"
+  NET_STOP_PCT: "70.0"
+  
+  # Faster feedback in development
+  CONTROL_PERIOD_SEC: "2.0"
+  AVG_WINDOW_SEC: "60.0"
+  
+  # Load monitoring for development awareness
+  LOAD_CHECK_ENABLED: "true"
+  LOAD_THRESHOLD: "0.5"
+  LOAD_RESUME_THRESHOLD: "0.3"
+  
+  # Health endpoint for debugging
+  HEALTH_ENABLED: "true"
+  HEALTH_HOST: "0.0.0.0"
+  HEALTH_PORT: "8080"
+  
+  # Network configuration
+  NET_MODE: "client"
+  NET_SENSE_MODE: "container"  # Safe default
+  NET_PROTOCOL: "udp"
+  NET_PEERS: ""  # Usually empty in development
+
+# Enable both iperf and metrics services for development testing
+service:
+  enabled: true
+  type: ClusterIP
+  iperf:
+    enabled: true   # Enable for development testing
+    port: 15201
+  metrics:
+    enabled: true
+    
+# Allow debugging with port-forward
+# kubectl port-forward svc/loadshaper 8080:8080  # metrics
+# kubectl port-forward svc/loadshaper 15201:15201  # iperf
