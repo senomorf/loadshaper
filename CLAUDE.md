@@ -26,6 +26,8 @@
 - **Slot-based control**: 60-second slots with high (35%) or baseline (20%) CPU intensity
 - **Adaptive hysteresis**: Prevents oscillation with state-dependent deadbands
 - **Safety scaling**: Proportional intensity reduction based on system load
+- **Cold start protection**: Ring buffer state persistence prevents P95 spikes after restarts
+- **High-load fallback**: Forces minimum high slots during sustained load to prevent P95 collapse
 - **Oracle compliance**: Targets 22-28% P95 range (safe buffer above 20% reclamation threshold)
 
 ## Memory Calculation Principles

@@ -1012,6 +1012,14 @@ class CPUP95Controller:
         self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
         self.slots_skipped_safety = 0
 
+        # Sustained high-load fallback mechanism
+        self.consecutive_skipped_slots = 0
+        self.last_high_slot_time = time.monotonic()
+
+        # Fallback thresholds
+        self.MAX_CONSECUTIVE_SKIPPED_SLOTS = 120  # 2 hours at 60s slots
+        self.MIN_HIGH_SLOT_INTERVAL_SEC = 3600   # Force one high slot per hour minimum
+
         # Ring buffer for last 24h of slot data (fast control)
         # Calculate size dynamically based on slot duration: 86400 seconds / slot_duration
         self.slot_history_size = max(1, int(ceil(86400.0 / CPU_P95_SLOT_DURATION)))
@@ -1023,6 +1031,9 @@ class CPUP95Controller:
         self._p95_cache = None
         self._p95_cache_time = 0
         self._p95_cache_ttl_sec = self.P95_CACHE_TTL_SEC
+
+        # Try to load persisted ring buffer state to solve cold start problem
+        self._load_ring_buffer_state()
 
         # Initialize first slot (no load average available yet)
         self._start_new_slot(current_load_avg=None)
@@ -1044,6 +1055,87 @@ class CPUP95Controller:
             self._p95_cache_time = now
 
         return p95
+
+    def _get_ring_buffer_path(self):
+        """Get path for ring buffer persistence file"""
+        # Use same directory as metrics database for consistency
+        try:
+            # Try primary location first
+            db_dir = "/var/lib/loadshaper"
+            if os.path.exists(db_dir) and os.access(db_dir, os.W_OK):
+                return os.path.join(db_dir, "p95_ring_buffer.json")
+        except (OSError, PermissionError):
+            pass
+
+        # Fall back to temp directory
+        return "/tmp/loadshaper_p95_ring_buffer.json"
+
+    def _save_ring_buffer_state(self):
+        """Save ring buffer state to disk for persistence across restarts"""
+        # Skip persistence in test mode for predictable test behavior
+        if os.environ.get('PYTEST_CURRENT_TEST'):
+            return
+
+        try:
+            ring_buffer_path = self._get_ring_buffer_path()
+            state = {
+                'slot_history': self.slot_history,
+                'slot_history_index': self.slot_history_index,
+                'slots_recorded': self.slots_recorded,
+                'slot_history_size': self.slot_history_size,
+                'timestamp': time.time(),  # Use wall clock time for persistence
+                'current_slot_is_high': self.current_slot_is_high
+            }
+
+            with open(ring_buffer_path, 'w') as f:
+                json.dump(state, f)
+
+            logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
+
+        except (OSError, PermissionError, json.JSONEncodeError) as e:
+            logger.debug(f"Failed to save P95 ring buffer state: {e}")
+            # Non-fatal error - continue operation without persistence
+
+    def _load_ring_buffer_state(self):
+        """Load ring buffer state from disk if available and recent"""
+        # Skip persistence in test mode for predictable test behavior
+        if os.environ.get('PYTEST_CURRENT_TEST'):
+            logger.debug("Skipping ring buffer loading in test mode")
+            return
+
+        try:
+            ring_buffer_path = self._get_ring_buffer_path()
+
+            if not os.path.exists(ring_buffer_path):
+                logger.debug("No persisted P95 ring buffer state found")
+                return
+
+            with open(ring_buffer_path, 'r') as f:
+                state = json.load(f)
+
+            # Validate state age - only use if less than 2 hours old
+            state_age_hours = (time.time() - state.get('timestamp', 0)) / 3600
+            if state_age_hours > 2:
+                logger.debug(f"P95 ring buffer state too old ({state_age_hours:.1f}h), ignoring")
+                return
+
+            # Validate state structure and size consistency
+            expected_size = max(1, int(ceil(86400.0 / CPU_P95_SLOT_DURATION)))
+            if (state.get('slot_history_size') != expected_size or
+                len(state.get('slot_history', [])) != expected_size):
+                logger.debug("P95 ring buffer state size mismatch, ignoring")
+                return
+
+            # Restore state
+            self.slot_history = state['slot_history']
+            self.slot_history_index = state['slot_history_index']
+            self.slots_recorded = state['slots_recorded']
+
+            logger.info(f"Restored P95 ring buffer state ({self.slots_recorded}/{self.slot_history_size} slots, age={state_age_hours:.1f}h)")
+
+        except (OSError, PermissionError, json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.debug(f"Failed to load P95 ring buffer state: {e}")
+            # Non-fatal error - continue with fresh ring buffer
 
     def update_state(self, cpu_p95):
         """Update state machine with adaptive thresholds based on current CPU P95"""
@@ -1172,15 +1264,28 @@ class CPUP95Controller:
         if self.slots_recorded < self.slot_history_size:
             self.slots_recorded += 1  # Don't exceed buffer size
 
+        # Persist ring buffer state for cold start protection
+        self._save_ring_buffer_state()
+
     def _start_new_slot(self, current_load_avg):
         """Start new slot and determine its type"""
         self.current_slot_start = time.monotonic()
+        now = self.current_slot_start
+
+        # Check if we need to force a high slot due to sustained blocking
+        time_since_high_slot = now - self.last_high_slot_time
+        force_high_slot = (self.consecutive_skipped_slots >= self.MAX_CONSECUTIVE_SKIPPED_SLOTS or
+                          time_since_high_slot >= self.MIN_HIGH_SLOT_INTERVAL_SEC)
 
         # Safety check - scale intensity based on system load (only if load checking is enabled)
-        if LOAD_CHECK_ENABLED and current_load_avg is not None and current_load_avg > LOAD_THRESHOLD:
+        # But allow forced high slots to override safety when P95 protection is at risk
+        if (LOAD_CHECK_ENABLED and current_load_avg is not None and
+            current_load_avg > LOAD_THRESHOLD and not force_high_slot):
             self.slots_skipped_safety += 1
+            self.consecutive_skipped_slots += 1
             self.current_slot_is_high = False
             self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg)
+            logger.debug(f"P95 controller: skipped slot due to load (consecutive={self.consecutive_skipped_slots}, time_since_high={time_since_high_slot:.0f}s)")
             return
 
         # Calculate current exceedance from recent slot history
@@ -1192,15 +1297,28 @@ class CPUP95Controller:
         # Get target exceedance based on state (adaptive based on distance from P95 target)
         exceedance_target = self.get_exceedance_target() / 100.0
 
-        # Decide slot type based on exceedance budget control
+        # Decide slot type based on exceedance budget control or forced fallback
         # Key insight: We "spend" our exceedance budget (6.5%) by running high slots
         # If we're under budget, we can afford to run high; if over budget, run baseline
-        if current_exceedance < exceedance_target:
+        # But force high slots when necessary to prevent P95 collapse during sustained load
+        if force_high_slot:
+            self.current_slot_is_high = True
+            self.current_target_intensity = self.get_target_intensity()
+            # Use reduced intensity for forced slots to minimize system impact
+            if current_load_avg is not None and current_load_avg > LOAD_THRESHOLD:
+                self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg)
+            logger.info(f"P95 controller: forced high slot (consecutive_skipped={self.consecutive_skipped_slots}, hours_since_high={time_since_high_slot/3600:.1f})")
+        elif current_exceedance < exceedance_target:
             self.current_slot_is_high = True
             self.current_target_intensity = self.get_target_intensity()
         else:
             self.current_slot_is_high = False
             self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
+
+        # Reset counters when running a high slot
+        if self.current_slot_is_high:
+            self.consecutive_skipped_slots = 0
+            self.last_high_slot_time = now
 
     def _calculate_current_exceedance(self):
         """
@@ -1227,6 +1345,11 @@ class CPUP95Controller:
         time_in_slot = time.monotonic() - self.current_slot_start if self.current_slot_start else 0
         slot_remaining = max(0, CPU_P95_SLOT_DURATION - time_in_slot)
 
+        # High-load fallback status
+        time_since_high_slot = time.monotonic() - self.last_high_slot_time
+        fallback_risk = (self.consecutive_skipped_slots >= self.MAX_CONSECUTIVE_SKIPPED_SLOTS or
+                        time_since_high_slot >= self.MIN_HIGH_SLOT_INTERVAL_SEC)
+
         return {
             'state': self.state,
             'cpu_p95': cpu_p95,
@@ -1237,6 +1360,9 @@ class CPUP95Controller:
             'slot_remaining_sec': slot_remaining,
             'slots_recorded': self.slots_recorded,
             'slots_skipped_safety': self.slots_skipped_safety,
+            'consecutive_skipped_slots': self.consecutive_skipped_slots,
+            'hours_since_high_slot': time_since_high_slot / 3600,
+            'fallback_risk': fallback_risk,
             'target_intensity': self.current_target_intensity
         }
 

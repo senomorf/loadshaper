@@ -1083,5 +1083,71 @@ class TestAdditionalEdgeCases(unittest.TestCase):
         self.assertEqual(target, 1.0)  # REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET
 
 
+class TestHighLoadFallback(unittest.TestCase):
+    """Test high-load fallback mechanism"""
+
+    def setUp(self):
+        self.mock_storage = MockMetricsStorage()
+        self.patches = patch.multiple(loadshaper,
+                                    CPU_P95_SLOT_DURATION=60.0,
+                                    CPU_P95_BASELINE_INTENSITY=20.0,
+                                    CPU_P95_HIGH_INTENSITY=35.0,
+                                    CPU_P95_TARGET_MIN=22.0,
+                                    CPU_P95_TARGET_MAX=28.0,
+                                    CPU_P95_EXCEEDANCE_TARGET=6.5,
+                                    LOAD_CHECK_ENABLED=True,
+                                    LOAD_THRESHOLD=0.6)
+        self.patches.start()
+        self.controller = CPUP95Controller(self.mock_storage)
+
+    def tearDown(self):
+        self.patches.stop()
+
+    def test_fallback_mechanism_tracks_consecutive_skips(self):
+        """Test that consecutive skipped slots are tracked correctly"""
+        # Initial state should have zero consecutive skips
+        self.assertEqual(self.controller.consecutive_skipped_slots, 0)
+
+        # Directly call _start_new_slot with high load to test skip tracking
+        base_time = time.monotonic()
+        for i in range(5):
+            # Mock the current slot start time
+            self.controller.current_slot_start = base_time + i * 60
+
+            # Call _start_new_slot with high load
+            self.controller._start_new_slot(0.8)  # High load above LOAD_THRESHOLD (0.6)
+
+            # Verify slot was skipped due to high load
+            self.assertFalse(self.controller.current_slot_is_high)
+
+        # Should have tracked consecutive skips
+        self.assertEqual(self.controller.consecutive_skipped_slots, 5)
+
+    def test_fallback_forces_high_slot_after_max_skips(self):
+        """Test that fallback forces high slot after max consecutive skips"""
+        # Set consecutive skips to just below the threshold
+        self.controller.consecutive_skipped_slots = self.controller.MAX_CONSECUTIVE_SKIPPED_SLOTS - 1
+
+        # Next high load should trigger the fallback
+        with patch('time.monotonic', return_value=0):
+            is_high, intensity = self.controller.should_run_high_slot(0.8)  # High load
+            # This should force a high slot despite the high load
+            self.assertTrue(is_high)
+
+    def test_status_includes_fallback_metrics(self):
+        """Test that status includes new fallback-related metrics"""
+        status = self.controller.get_status()
+
+        # Should include new metrics
+        self.assertIn('consecutive_skipped_slots', status)
+        self.assertIn('hours_since_high_slot', status)
+        self.assertIn('fallback_risk', status)
+
+        # Initial values should be reasonable
+        self.assertEqual(status['consecutive_skipped_slots'], 0)
+        self.assertGreaterEqual(status['hours_since_high_slot'], 0)
+        self.assertFalse(status['fallback_risk'])
+
+
 if __name__ == '__main__':
     unittest.main()
