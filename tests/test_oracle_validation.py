@@ -17,14 +17,14 @@ class TestOracleValidation(unittest.TestCase):
     def setUp(self):
         """Set up test environment before each test."""
         # Store original values
-        self.original_cpu_target = getattr(loadshaper, 'CPU_TARGET_PCT', 25.0)
+        self.original_cpu_target = getattr(loadshaper, 'CPU_P95_SETPOINT', 25.0)
         self.original_mem_target = getattr(loadshaper, 'MEM_TARGET_PCT', 0.0)
         self.original_net_target = getattr(loadshaper, 'NET_TARGET_PCT', 25.0)
         self.original_detected_shape = getattr(loadshaper, 'DETECTED_SHAPE', 'Unknown')
 
     def tearDown(self):
         """Clean up after each test."""
-        loadshaper.CPU_TARGET_PCT = self.original_cpu_target
+        loadshaper.CPU_P95_SETPOINT = self.original_cpu_target
         loadshaper.MEM_TARGET_PCT = self.original_mem_target
         loadshaper.NET_TARGET_PCT = self.original_net_target
         loadshaper.DETECTED_SHAPE = self.original_detected_shape
@@ -33,19 +33,19 @@ class TestOracleValidation(unittest.TestCase):
         """Test E2: critical warning when both CPU and network below 20%."""
         # Set E2 shape with both metrics below threshold
         loadshaper.DETECTED_SHAPE = "VM.Standard.E2.1.Micro"
-        loadshaper.CPU_TARGET_PCT = 15.0  # Below 20%
+        loadshaper.CPU_P95_SETPOINT = 15.0  # Below 20%
         loadshaper.MEM_TARGET_PCT = 0.0   # Disabled (correct for E2)
         loadshaper.NET_TARGET_PCT = 15.0  # Below 20%
 
         # Check validation logic for E2 shape
         targets_below_20 = []
-        if loadshaper.CPU_TARGET_PCT < 20.0:
-            targets_below_20.append(f"CPU_TARGET_PCT={loadshaper.CPU_TARGET_PCT}%")
+        if loadshaper.CPU_P95_SETPOINT < 20.0:
+            targets_below_20.append(f"CPU_P95_SETPOINT={loadshaper.CPU_P95_SETPOINT}%")
         if loadshaper.NET_TARGET_PCT < 20.0:
             targets_below_20.append(f"NET_TARGET_PCT={loadshaper.NET_TARGET_PCT}%")
 
         # E2 critical condition: both CPU and NET below 20%
-        cpu_below = loadshaper.CPU_TARGET_PCT < 20.0
+        cpu_below = loadshaper.CPU_P95_SETPOINT < 20.0
         net_below = loadshaper.NET_TARGET_PCT < 20.0
         should_be_critical = cpu_below and net_below
 
@@ -58,12 +58,12 @@ class TestOracleValidation(unittest.TestCase):
         """Test E2: safe configuration when CPU above 20% (network can be below)."""
         # Set E2 shape with CPU safe, network below threshold
         loadshaper.DETECTED_SHAPE = "VM.Standard.E2.1.Micro"
-        loadshaper.CPU_TARGET_PCT = 25.0  # Above 20% (safe)
+        loadshaper.CPU_P95_SETPOINT = 25.0  # Above 20% (safe)
         loadshaper.MEM_TARGET_PCT = 0.0   # Disabled (correct for E2)
         loadshaper.NET_TARGET_PCT = 15.0  # Below 20% (acceptable)
 
         # Check validation logic
-        cpu_below = loadshaper.CPU_TARGET_PCT < 20.0
+        cpu_below = loadshaper.CPU_P95_SETPOINT < 20.0
         net_below = loadshaper.NET_TARGET_PCT < 20.0
         should_be_critical = cpu_below and net_below
 
@@ -74,12 +74,12 @@ class TestOracleValidation(unittest.TestCase):
         """Test E2: safe configuration when network above 20% (CPU can be below)."""
         # Set E2 shape with network safe, CPU below threshold
         loadshaper.DETECTED_SHAPE = "VM.Standard.E2.1.Micro"
-        loadshaper.CPU_TARGET_PCT = 15.0  # Below 20% (acceptable)
+        loadshaper.CPU_P95_SETPOINT = 15.0  # Below 20% (acceptable)
         loadshaper.MEM_TARGET_PCT = 0.0   # Disabled (correct for E2)
         loadshaper.NET_TARGET_PCT = 25.0  # Above 20% (safe)
 
         # Check validation logic
-        cpu_below = loadshaper.CPU_TARGET_PCT < 20.0
+        cpu_below = loadshaper.CPU_P95_SETPOINT < 20.0
         net_below = loadshaper.NET_TARGET_PCT < 20.0
         should_be_critical = cpu_below and net_below
 
@@ -90,14 +90,14 @@ class TestOracleValidation(unittest.TestCase):
         """Test A1: critical warning when all three metrics below 20%."""
         # Set A1 shape with all metrics below threshold
         loadshaper.DETECTED_SHAPE = "VM.Standard.A1.Flex"
-        loadshaper.CPU_TARGET_PCT = 15.0  # Below 20%
+        loadshaper.CPU_P95_SETPOINT = 15.0  # Below 20%
         loadshaper.MEM_TARGET_PCT = 15.0  # Below 20%
         loadshaper.NET_TARGET_PCT = 15.0  # Below 20%
 
         # Check validation logic for A1 shape
         targets_below_20 = []
-        if loadshaper.CPU_TARGET_PCT < 20.0:
-            targets_below_20.append(f"CPU_TARGET_PCT={loadshaper.CPU_TARGET_PCT}%")
+        if loadshaper.CPU_P95_SETPOINT < 20.0:
+            targets_below_20.append(f"CPU_P95_SETPOINT={loadshaper.CPU_P95_SETPOINT}%")
         if loadshaper.MEM_TARGET_PCT < 20.0 and "A1.Flex" in loadshaper.DETECTED_SHAPE:
             targets_below_20.append(f"MEM_TARGET_PCT={loadshaper.MEM_TARGET_PCT}%")
         if loadshaper.NET_TARGET_PCT < 20.0:
@@ -115,14 +115,14 @@ class TestOracleValidation(unittest.TestCase):
         """Test A1: warning when two metrics below 20%."""
         # Set A1 shape with two metrics below threshold
         loadshaper.DETECTED_SHAPE = "VM.Standard.A1.Flex"
-        loadshaper.CPU_TARGET_PCT = 15.0  # Below 20%
+        loadshaper.CPU_P95_SETPOINT = 15.0  # Below 20%
         loadshaper.MEM_TARGET_PCT = 25.0  # Above 20% (safe)
         loadshaper.NET_TARGET_PCT = 15.0  # Below 20%
 
         # Check validation logic
         targets_below_20 = []
-        if loadshaper.CPU_TARGET_PCT < 20.0:
-            targets_below_20.append(f"CPU_TARGET_PCT={loadshaper.CPU_TARGET_PCT}%")
+        if loadshaper.CPU_P95_SETPOINT < 20.0:
+            targets_below_20.append(f"CPU_P95_SETPOINT={loadshaper.CPU_P95_SETPOINT}%")
         if loadshaper.MEM_TARGET_PCT < 20.0 and "A1.Flex" in loadshaper.DETECTED_SHAPE:
             targets_below_20.append(f"MEM_TARGET_PCT={loadshaper.MEM_TARGET_PCT}%")
         if loadshaper.NET_TARGET_PCT < 20.0:
@@ -140,14 +140,14 @@ class TestOracleValidation(unittest.TestCase):
         """Test A1: safe configuration when at least one metric above 20%."""
         # Set A1 shape with one metric safe
         loadshaper.DETECTED_SHAPE = "VM.Standard.A1.Flex"
-        loadshaper.CPU_TARGET_PCT = 15.0  # Below 20%
+        loadshaper.CPU_P95_SETPOINT = 15.0  # Below 20%
         loadshaper.MEM_TARGET_PCT = 15.0  # Below 20%
         loadshaper.NET_TARGET_PCT = 25.0  # Above 20% (safe)
 
         # Check validation logic
         targets_below_20 = []
-        if loadshaper.CPU_TARGET_PCT < 20.0:
-            targets_below_20.append(f"CPU_TARGET_PCT={loadshaper.CPU_TARGET_PCT}%")
+        if loadshaper.CPU_P95_SETPOINT < 20.0:
+            targets_below_20.append(f"CPU_P95_SETPOINT={loadshaper.CPU_P95_SETPOINT}%")
         if loadshaper.MEM_TARGET_PCT < 20.0 and "A1.Flex" in loadshaper.DETECTED_SHAPE:
             targets_below_20.append(f"MEM_TARGET_PCT={loadshaper.MEM_TARGET_PCT}%")
         if loadshaper.NET_TARGET_PCT < 20.0:
@@ -165,14 +165,14 @@ class TestOracleValidation(unittest.TestCase):
         """Test that memory targeting is correctly disabled for E2 shapes."""
         # Set test values for E2 shape
         loadshaper.DETECTED_SHAPE = "VM.Standard.E2.1.Micro"
-        loadshaper.CPU_TARGET_PCT = 25.0  # Set a valid value
+        loadshaper.CPU_P95_SETPOINT = 25.0  # Set a valid value
         loadshaper.MEM_TARGET_PCT = 0.0   # Correctly disabled
         loadshaper.NET_TARGET_PCT = 25.0  # Set a valid value
 
         # Memory should not be included in E2 validation
         targets_below_20 = []
-        if loadshaper.CPU_TARGET_PCT < 20.0:
-            targets_below_20.append(f"CPU_TARGET_PCT={loadshaper.CPU_TARGET_PCT}%")
+        if loadshaper.CPU_P95_SETPOINT < 20.0:
+            targets_below_20.append(f"CPU_P95_SETPOINT={loadshaper.CPU_P95_SETPOINT}%")
         # Note: Memory check only for A1.Flex shapes
         if loadshaper.MEM_TARGET_PCT < 20.0 and "A1.Flex" in loadshaper.DETECTED_SHAPE:
             targets_below_20.append(f"MEM_TARGET_PCT={loadshaper.MEM_TARGET_PCT}%")

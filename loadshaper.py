@@ -944,6 +944,7 @@ class CPUP95Controller:
 
     # State machine timing constants
     STATE_CHANGE_COOLDOWN_SEC = 300  # 5 minutes cooldown after state change
+    P95_CACHE_TTL_SEC = 180  # Cache P95 calculations for 3 minutes
 
     # Hysteresis values for adaptive deadbands
     HYSTERESIS_SMALL_PCT = 0.5       # Small hysteresis for stable periods
@@ -1022,7 +1023,7 @@ class CPUP95Controller:
         # P95 caching to reduce database queries (performance optimization)
         self._p95_cache = None
         self._p95_cache_time = 0
-        self._p95_cache_ttl_sec = 180  # Cache for 3 minutes
+        self._p95_cache_ttl_sec = self.P95_CACHE_TTL_SEC
 
         # Initialize first slot (no load average available yet)
         self._start_new_slot(current_load_avg=None)
@@ -1192,11 +1193,7 @@ class CPUP95Controller:
         # Exceedance = percentage of slots that were high intensity
         # This is the core metric for controlling P95: approximately 6.5% of slots
         # should be high intensity to achieve target P95 above the baseline
-        if self.slots_recorded == 0:
-            current_exceedance = 0.0
-        else:
-            high_slots = sum(self.slot_history[:self.slots_recorded])
-            current_exceedance = high_slots / self.slots_recorded
+        current_exceedance = self._calculate_current_exceedance()
 
         # Get target exceedance based on state (adaptive based on distance from P95 target)
         exceedance_target = self.get_exceedance_target() / 100.0
@@ -1211,12 +1208,21 @@ class CPUP95Controller:
             self.current_slot_is_high = False
             self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
 
-    def get_current_exceedance(self):
-        """Get current exceedance percentage from slot history"""
+    def _calculate_current_exceedance(self):
+        """
+        Calculate current exceedance as ratio (0.0-1.0) from slot history.
+
+        Returns:
+            float: Exceedance ratio (0.0 = 0%, 1.0 = 100%)
+        """
         if self.slots_recorded == 0:
             return 0.0
         high_slots = sum(self.slot_history[:self.slots_recorded])
-        return (high_slots * 100.0) / self.slots_recorded
+        return high_slots / self.slots_recorded
+
+    def get_current_exceedance(self):
+        """Get current exceedance percentage from slot history"""
+        return self._calculate_current_exceedance() * 100.0
 
     def get_status(self):
         """Get controller status for telemetry"""

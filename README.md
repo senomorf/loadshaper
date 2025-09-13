@@ -351,19 +351,48 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_MIN_RATE_MBIT` | `1` | Minimum traffic generation rate |
 | `NET_MAX_RATE_MBIT` | `800` | Maximum traffic generation rate |
 
+### Proportional Safety Scaling
+
+LoadShaper implements **proportional safety scaling** to prevent Oracle VM reclamation while maintaining system responsiveness. This advanced feature dynamically adjusts CPU intensity based on system load and P95 positioning.
+
+#### Exceedance Budget Control
+
+The P95 controller uses an "exceedance budget" approach:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CPU_P95_EXCEEDANCE_TARGET` | `6.5` | Target percentage of high-intensity slots (0-100%) |
+
+**How it works:**
+- **6.5% exceedance** means ~6.5% of 5-second time slots run above the setpoint
+- **93.5% of slots** run at or below the setpoint, achieving the target P95
+- **Dynamic scaling**: High system load reduces intensity proportionally
+- **Automatic adaptation**: Controller adjusts to maintain the exceedance budget
+
+#### Load-Based Intensity Scaling
+
+```python
+# Example: At 80% system load, intensity scales down proportionally
+if load_average > LOAD_THRESHOLD:
+    intensity_factor = max(0.1, 1.0 - (load_average - LOAD_THRESHOLD) / 2.0)
+    actual_intensity = base_intensity * intensity_factor
+```
+
+This ensures CPU stress never competes with legitimate workloads while maintaining Oracle compliance.
+
 ### Shape-Specific Recommendations
 
 **VM.Standard.E2.1.Micro (x86-64):**
 ```bash
 # Conservative settings for shared 1/8 OCPU
-CPU_P95_SETPOINT=23.5 MEM_TARGET_PCT=0 NET_TARGET_PCT=15
+CPU_P95_SETPOINT=23.5 CPU_P95_EXCEEDANCE_TARGET=6.5 MEM_TARGET_PCT=0 NET_TARGET_PCT=15
 NET_LINK_MBIT=50 LOAD_THRESHOLD=0.6
 ```
 
 **A1.Flex (ARM64):**
-```bash  
+```bash
 # Higher targets for dedicated resources
-CPU_P95_SETPOINT=28.5 MEM_TARGET_PCT=25 NET_TARGET_PCT=25
+CPU_P95_SETPOINT=28.5 CPU_P95_EXCEEDANCE_TARGET=6.5 MEM_TARGET_PCT=25 NET_TARGET_PCT=25
 NET_LINK_MBIT=1000 LOAD_THRESHOLD=0.8
 ```
 
@@ -471,6 +500,118 @@ HEALTH_ENABLED=false docker run ...
 ```
 
 **Security Note**: Only bind to external interfaces (`0.0.0.0`) in trusted environments or behind proper network security controls.
+
+## Production Monitoring & Alerting
+
+For production deployments, proper monitoring is essential to ensure LoadShaper effectively prevents Oracle VM reclamation while maintaining system stability.
+
+### Key Metrics to Monitor
+
+Monitor these critical metrics via the `GET /metrics` endpoint:
+
+| Metric | Path | Critical Threshold | Description |
+|--------|------|-------------------|-------------|
+| **CPU P95** | `percentiles_7d.cpu_p95` | Must stay > 20% | Primary Oracle reclamation metric |
+| **Health Status** | `status` | Must be "healthy" | Overall LoadShaper health |
+| **Controller State** | `p95_controller.state` | Watch for stability | P95 controller operational state |
+| **Exceedance %** | `p95_controller.exceedance_pct` | Target ~6.5% | Percentage of high-intensity slots |
+| **Load Average** | `current.load_average` | Monitor spikes | System load impact tracking |
+
+### Recommended Alert Thresholds
+
+#### 🚨 CRITICAL Alerts
+```bash
+# LoadShaper Down - Immediate reclamation risk
+curl -f http://localhost:8080/health || ALERT "LoadShaper unreachable"
+
+# CPU P95 Below Oracle Threshold
+if cpu_p95 < 20% for > 60 minutes:
+  ALERT "CPU P95 approaching Oracle reclamation threshold"
+```
+
+#### ⚠️ WARNING Alerts
+```bash
+# Low CPU Activity Warning
+if cpu_p95 < 25% for > 30 minutes:
+  WARN "CPU P95 trending toward danger zone"
+
+# High Exceedance - Overshooting target
+if exceedance_pct > 15% for > 30 minutes:
+  WARN "P95 controller exceedance above optimal range"
+
+# Controller Instability
+if p95_controller.state in ["BUILDING","REDUCING"] for > 20 minutes:
+  WARN "P95 controller unable to reach stable state"
+```
+
+#### ℹ️ INFO Alerts
+```bash
+# Process Restart Tracking
+if uptime_seconds < 60:
+  INFO "LoadShaper restarted - monitoring for stability"
+```
+
+### Integration Examples
+
+#### Prometheus + JSON Exporter
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'loadshaper'
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: /metrics
+    scrape_interval: 30s
+```
+
+#### Simple Bash Monitoring Script
+```bash
+#!/bin/bash
+# monitor-loadshaper.sh
+METRICS=$(curl -s http://localhost:8080/metrics)
+CPU_P95=$(echo $METRICS | jq -r '.percentiles_7d.cpu_p95 // 0')
+
+if (( $(echo "$CPU_P95 < 20" | bc -l) )); then
+  echo "CRITICAL: CPU P95 ($CPU_P95%) below Oracle threshold"
+  # Send notification (email, Slack, PagerDuty, etc.)
+fi
+```
+
+#### OCI Monitoring Validation
+```bash
+# Verify LoadShaper activity is visible to Oracle
+# Check OCI Console > Compute > Instance Details > Metrics
+# CPU Utilization should show consistent activity pattern
+```
+
+### Verification Checklist
+
+**✅ Confirm LoadShaper is Working:**
+1. CPU P95 stabilizes in target range (23-28%)
+2. Controller state reaches "MAINTAINING" after warmup
+3. Exceedance percentage near 6.5%
+4. OCI Console shows consistent CPU activity
+
+**⚠️ Warning Signs:**
+- CPU P95 trending downward toward 20%
+- Controller stuck in "BUILDING" or "REDUCING" states
+- Volatile CPU patterns instead of stable control
+- Gaps in monitoring data indicating downtime
+
+**🔧 Troubleshooting:**
+- Check Docker logs: `docker logs loadshaper`
+- Verify database: `docker exec loadshaper ls -la /var/lib/loadshaper/`
+- Test health endpoint: `curl http://localhost:8080/health`
+- Monitor system load: Ensure load average isn't constantly high
+
+### Monitoring Tool Recommendations
+
+- **Prometheus + Grafana**: Best for comprehensive monitoring and alerting
+- **Datadog/New Relic**: Good for managed environments with agent-based monitoring
+- **Simple cron + curl**: Sufficient for basic deployments with shell script alerting
+- **OCI Monitoring**: Use as secondary validation of LoadShaper effectiveness
+
+**Remember**: The ultimate success metric is your VM remaining active. Monitor consistently, but trust the system's design to maintain Oracle compliance automatically.
 
 ## FAQ
 

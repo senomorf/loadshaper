@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **P95-driven CPU control**: Pure Oracle-compliant 95th percentile control system
 - **CPU P95 state machine**: BUILDING/MAINTAINING/REDUCING states based on 7-day CPU P95 trends
 - **Exceedance budget controller**: Maintains approximately 6.5% of time slots above threshold to achieve target P95
+- **Proportional safety scaling**: Dynamic CPU intensity adjustment based on system load to maintain responsiveness while achieving P95 targets
 - **Oracle rules compliance**: CPU uses P95 measurement, memory/network use simple thresholds (per official Oracle documentation)
 - **P95 controller configuration**: `CPU_P95_TARGET_MIN`, `CPU_P95_TARGET_MAX`, `CPU_P95_SETPOINT`, etc.
 - **Enhanced telemetry**: Shows CPU P95 controller state, exceedance percentage, and target ranges
@@ -40,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Critical Oracle compliance issue**: CPU control now uses 95th percentile matching Oracle's exact reclamation criteria
 - **Issue #73**: LoadShaper now uses P95 values for control decisions, not just telemetry display
 - **Load gating mismatch**: Fixed critical bug where controller recorded high slots even when main loop forced baseline due to load constraints
+- **Jumbo config template fixes**: Updated jumbo frame configuration templates to use correct P95 variables instead of deprecated CPU_TARGET_PCT
 - **Test failures**: Resolved P95 cache pollution issues in test suite causing incorrect exceedance target calculations
 - **Code documentation**: Added comprehensive docstrings and improved critical code comments for Oracle compliance logic
 

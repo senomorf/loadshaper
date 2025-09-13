@@ -38,6 +38,37 @@
 - **Resilient**: Handles storage failures, network issues, and system restarts
 - **Observable**: Rich telemetry for monitoring and debugging
 
+### P95 CPU Controller Technical Details
+
+The **CPUP95Controller** implements advanced 95th percentile targeting using a state machine approach:
+
+#### State Machine Architecture
+- **BUILDING**: Ramps up CPU intensity when P95 is below target
+- **MAINTAINING**: Sustains optimal CPU load with controlled exceedances
+- **REDUCING**: Backs off when P95 exceeds target or system load is high
+
+#### Exceedance Budget Management
+- **Slot-based tracking**: 24-hour ring buffer of 5-second intensity decisions
+- **Exceedance ratio**: `CPU_P95_EXCEEDANCE_TARGET` (default 6.5%) controls high-intensity slots
+- **Adaptive scaling**: Load-based intensity reduction maintains system responsiveness
+- **Cache optimization**: 180-second TTL for P95 calculations reduces database load
+
+#### Technical Implementation
+```python
+# Core algorithm: Maintain exceedance budget while achieving P95 target
+current_exceedance = high_intensity_slots / total_slots
+target_exceedance = CPU_P95_EXCEEDANCE_TARGET / 100.0
+
+if current_exceedance < target_exceedance:
+    # Room in exceedance budget - can run high intensity
+    intensity_decision = 1  # High intensity slot
+else:
+    # At budget limit - run at baseline
+    intensity_decision = 0  # Normal intensity slot
+```
+
+This approach ensures precise P95 positioning while maintaining Oracle compliance and system stability.
+
 ## Project Structure & Module Organization
 - `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
 - `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
