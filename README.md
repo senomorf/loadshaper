@@ -640,6 +640,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `CPU_P95_SLOT_DURATION_SEC` | `60.0` | Duration of each control slot (seconds) |
 | `CPU_P95_HIGH_INTENSITY` | `35.0` | CPU utilization during high-intensity slots (%) |
 | `CPU_P95_BASELINE_INTENSITY` | `20.0` | CPU utilization during normal slots (minimum for Oracle compliance) |
+| `CPU_P95_RING_BUFFER_BATCH_SIZE` | `10` | Number of slots between ring buffer state saves (performance optimization) |
 
 ### Load Average Monitoring
 
@@ -1083,8 +1084,77 @@ A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STO
 **Q: Network traffic isn't being generated**
 A: Check network state in telemetry output. The new network generator (v75+) uses public DNS servers by default (`NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9`). Monitor network health scores and state transitions. If state shows ERROR or DEGRADED_LOCAL, check connectivity to external addresses.
 
-**Q: Memory usage isn't increasing on A1.Flex**  
+**Q: Memory usage isn't increasing on A1.Flex**
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
+
+## Custom Persistent Storage Path
+
+By default, LoadShaper uses `/var/lib/loadshaper` as its persistent storage directory. You can customize this location using the `PERSISTENCE_DIR` environment variable if needed.
+
+### Docker Compose Override
+
+To use a custom storage path with Docker Compose:
+
+```yaml
+# compose.override.yaml
+services:
+  loadshaper:
+    environment:
+      - PERSISTENCE_DIR=/data/loadshaper  # Custom path inside container
+    volumes:
+      - loadshaper-metrics:/data/loadshaper  # Mount volume to custom path
+```
+
+### Kubernetes ConfigMap
+
+For Kubernetes deployments with custom paths:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadshaper-config
+data:
+  PERSISTENCE_DIR: "/data/loadshaper"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loadshaper-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadshaper
+spec:
+  template:
+    spec:
+      containers:
+      - name: loadshaper
+        envFrom:
+        - configMapRef:
+            name: loadshaper-config
+        volumeMounts:
+        - name: storage
+          mountPath: /data/loadshaper  # Must match PERSISTENCE_DIR
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: loadshaper-storage
+```
+
+### Important Notes
+
+- **Path consistency**: The `PERSISTENCE_DIR` environment variable must match the volume mount path
+- **Volume permissions**: The directory must be owned by UID/GID 1000 (LoadShaper user)
+- **Single instance**: Only one LoadShaper instance can use a given storage path
+- **Migration**: When changing storage paths, historical metrics will not be migrated automatically
 
 ## Contributing
 
@@ -1184,18 +1254,46 @@ docker logs -f loadshaper | grep "nic("
 docker logs loadshaper
 
 # Common entrypoint issues:
-# 1. "Permission denied" - persistent storage mount point permissions
-docker exec loadshaper ls -ld /var/lib/loadshaper || echo "Mount point not accessible"
-sudo chown -R 1000:1000 ./persistent-storage/  # Fix host permissions
+# 1. "NOT a mount point" - NEW: Container now verifies persistent volume is actually mounted
+docker exec loadshaper mount | grep /var/lib/loadshaper || echo "No volume mounted - container will not start"
+# Fix: Ensure docker-compose.yaml has the volume configured:
+#   volumes:
+#     - loadshaper-metrics:/var/lib/loadshaper
 
-# 2. "Write test failed" - storage not writable
+# 2. "Permission denied" - persistent storage mount point permissions
+docker exec loadshaper ls -ld /var/lib/loadshaper || echo "Mount point not accessible"
+# Fix for named volumes:
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+# Fix for bind mounts:
+sudo chown -R 1000:1000 ./persistent-storage/
+
+# 3. "Write test failed" - storage not writable (uses mktemp for security)
 docker exec loadshaper touch /var/lib/loadshaper/test && docker exec loadshaper rm /var/lib/loadshaper/test || echo "Storage not writable"
 
-# 3. "Database migration failed" - corrupted or incompatible database
+# 4. "Database migration failed" - corrupted or incompatible database
 docker exec loadshaper rm -f /var/lib/loadshaper/metrics.db && docker restart loadshaper
 
-# 4. Verify compose configuration includes persistent volume
+# 5. Verify compose configuration includes persistent volume
 docker compose config | grep -A5 volumes || echo "No volumes configured - add persistent storage"
+```
+
+**Mount Point Verification (NEW in v2.0.0):**
+```shell
+# Container now requires /var/lib/loadshaper to be a mount point
+# This prevents accidental use of container's filesystem which loses data on restart
+
+# Verify mount inside container:
+docker exec loadshaper sh -c 'stat -c "%d" /var/lib/loadshaper; stat -c "%d" /var/lib'
+# Different device IDs = properly mounted; Same IDs = NOT mounted (container won't start)
+
+# For Kubernetes users - avoid emptyDir:
+# emptyDir volumes are NOT persistent across pod restarts
+# Use PersistentVolumeClaim (PVC) instead for true persistence
+
+# Debug mount issues:
+docker inspect loadshaper | jq '.[0].Mounts'  # Show all mounts
+docker volume ls                               # List volumes
+docker volume inspect loadshaper-metrics       # Check volume details
 ```
 
 **CPU not reaching target percentage:**

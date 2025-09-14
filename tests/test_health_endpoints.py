@@ -147,7 +147,8 @@ class TestHealthEndpoints:
         assert response_data['checks'] == ['all_systems_operational']
         assert response_data['metrics_storage'] == 'available'
         assert response_data['persistence_storage'] == 'available'
-        assert 'var/lib/loadshaper' in response_data['database_path']  # Should be using persistent-like path
+        # database_path removed for security - check persistence_storage instead
+        assert response_data['persistence_storage'] == 'available'
         assert response_data['load_generation'] == 'active'
 
     def test_health_endpoint_unhealthy_paused(self, unhealthy_state, metrics_storage):
@@ -223,7 +224,8 @@ class TestHealthEndpoints:
         assert 'persistence_not_available' in response_data['checks']
         assert response_data['metrics_storage'] == 'available'  # Storage exists
         assert response_data['persistence_storage'] == 'not_mounted'  # But not persistent
-        assert response_data['database_path'] == "/tmp/test_metrics.db"
+        # database_path removed for security - verify storage is degraded instead
+        assert response_data['persistence_storage'] == 'not_mounted'
 
     def test_metrics_endpoint_basic(self, healthy_state, metrics_storage):
         """Test /metrics endpoint with basic functionality."""

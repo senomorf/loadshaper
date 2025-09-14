@@ -28,7 +28,7 @@ serviceAccount:
 podAnnotations: {}
 
 podSecurityContext:
-  fsGroup: 2000
+  fsGroup: 1000  # Match the container's runAsGroup for consistency
   fsGroupChangePolicy: OnRootMismatch  # Efficiency improvement for volume permissions
 
 securityContext:

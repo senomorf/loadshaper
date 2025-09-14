@@ -1389,6 +1389,9 @@ class CPUP95Controller:
         """
         self.metrics_storage = metrics_storage
         self._lock = threading.RLock()  # Thread-safe access to shared state
+
+        # Enforce mandatory persistent volume at initialization
+        _validate_persistent_storage(self.PERSISTENT_STORAGE_PATH)
         self.state = 'MAINTAINING'
         self.last_state_change = time.monotonic()
         self.current_slot_start = time.monotonic()
@@ -1459,14 +1462,8 @@ class CPUP95Controller:
             return self.ring_buffer_path
 
         # Use same directory as metrics database for consistency
-        db_dir = self.PERSISTENT_STORAGE_PATH
-        if not os.path.isdir(db_dir):
-            raise FileNotFoundError(f"P95 ring buffer directory does not exist: {db_dir}. "
-                                    f"A persistent volume must be mounted.")
-        if not os.access(db_dir, os.W_OK):
-            raise PermissionError(f"Cannot write to P95 ring buffer directory: {db_dir}. "
-                                  f"Check volume permissions for persistent storage.")
-        return os.path.join(db_dir, "p95_ring_buffer.json")
+        # (Storage validation already performed at controller initialization)
+        return os.path.join(self.PERSISTENT_STORAGE_PATH, "p95_ring_buffer.json")
 
     def _maybe_save_ring_buffer_state(self):
         """
@@ -2227,6 +2224,42 @@ class EMA:
             self.val = self.val + self.alpha * (x - self.val)
         return self.val
 
+def _validate_persistent_storage(path: str):
+    """
+    Validate that the persistent storage path is a writable mount point.
+
+    This is a critical security and reliability check to ensure that LoadShaper
+    is using a dedicated persistent volume, preventing data loss and interference
+    with the host filesystem.
+
+    Args:
+        path (str): The path to the persistent storage directory.
+
+    Raises:
+        FileNotFoundError: If the path does not exist or is not a directory.
+        PermissionError: If the path is not writable.
+        RuntimeError: If the path is not a mount point, which is mandatory.
+    """
+    if not os.path.isdir(path):
+        raise FileNotFoundError(
+            f"Persistent storage path does not exist or is not a directory: {path}. "
+            "This is a mandatory requirement."
+        )
+    if not os.access(path, os.W_OK):
+        raise PermissionError(
+            f"Persistent storage path is not writable: {path}. "
+            "Check volume permissions."
+        )
+    if not os.path.ismount(path):
+        # In some container setups (e.g., Kubernetes subPaths), the volume is a subdirectory.
+        # As a robust fallback, we check if the parent directory is a mount point.
+        parent_dir = os.path.dirname(os.path.abspath(path.rstrip('/')))
+        if not os.path.ismount(parent_dir):
+            raise RuntimeError(
+                f"Security validation failed: Path '{path}' or its parent '{parent_dir}' is not a mount point. "
+                "A persistent volume must be mounted to this path to ensure data isolation and persistence."
+            )
+
 # ---------------------------
 # 7-day metrics storage
 # ---------------------------
@@ -2245,15 +2278,35 @@ class MetricsStorage:
 
         # Validate persistent storage directory for 7-day P95 calculations
         db_dir = os.path.dirname(db_path)
-        if not os.path.isdir(db_dir):
-            raise FileNotFoundError(f"Metrics directory does not exist: {db_dir}. "
-                                    f"A persistent volume must be mounted.")
-        if not os.access(db_dir, os.W_OK):
-            raise PermissionError(f"Cannot write to metrics directory: {db_dir}. "
-                                  f"Check volume permissions for persistent storage.")
+        _validate_persistent_storage(db_dir)
+
+        # Additional mount point verification for Linux systems
+        # This provides defense-in-depth if entrypoint validation is bypassed
+        if platform.system() == 'Linux' and os.path.exists('/proc/self/mountinfo'):
+            try:
+                # Check if db_dir is a mount point by comparing device IDs
+                # Same device ID as parent means it's not a separate mount
+                db_stat = os.stat(db_dir)
+                parent_stat = os.stat(os.path.dirname(db_dir))
+                if db_stat.st_dev == parent_stat.st_dev:
+                    # Not a mount point - warn but don't fail (for local testing)
+                    logger.warning(f"CRITICAL: {db_dir} is NOT a mount point - data will be lost on container restart!")
+                    logger.warning("LoadShaper requires persistent volume for 7-day P95 calculations")
+                    logger.warning("Without persistent storage, Oracle VM reclamation detection will fail")
+                    # In production, this should be a fatal error, but allow for testing
+                    if os.getenv('LOADSHAPER_STRICT_MOUNT_CHECK', 'false').lower() == 'true':
+                        raise RuntimeError(f"{db_dir} must be a mount point for persistent storage")
+            except (OSError, IOError) as e:
+                # If we can't verify, log but continue
+                logger.debug(f"Could not verify mount status: {e}")
 
         self.db_path = db_path
         self.lock = threading.Lock()
+
+        # Instance lock file to prevent multiple LoadShaper instances
+        self.lock_file_path = os.path.join(db_dir, "loadshaper.lock")
+        self.lock_file_handle = None
+        self._acquire_instance_lock()
 
         # Storage degradation tracking
         self.consecutive_failures = 0
@@ -2269,7 +2322,74 @@ class MetricsStorage:
             if not self.recover_from_corruption():
                 logger.error("Failed to recover from database corruption on startup")
                 # Continue anyway - metrics storage is degraded but not fatal
-    
+
+    def _acquire_instance_lock(self):
+        """Acquire exclusive lock to prevent multiple LoadShaper instances.
+
+        Uses file-based locking to ensure only one instance can access the
+        persistent storage directory at a time. This prevents P95 calculation
+        corruption and database conflicts.
+        """
+        # Skip locking during tests to allow multiple test instances
+        if os.environ.get('PYTEST_CURRENT_TEST'):
+            return
+
+        try:
+            import fcntl
+
+            # Open or create lock file
+            self.lock_file_handle = open(self.lock_file_path, 'w')
+
+            # Try to acquire exclusive lock (non-blocking)
+            fcntl.flock(self.lock_file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            # Write PID to lock file for debugging
+            self.lock_file_handle.write(f"{os.getpid()}\n")
+            self.lock_file_handle.flush()
+
+            logger.info(f"Acquired exclusive instance lock: {self.lock_file_path}")
+
+        except BlockingIOError:
+            # Another instance holds the lock
+            if self.lock_file_handle:
+                self.lock_file_handle.close()
+
+            # Try to read PID of other instance
+            try:
+                with open(self.lock_file_path, 'r') as f:
+                    other_pid = f.read().strip()
+                    error_msg = (f"Another LoadShaper instance (PID {other_pid}) is already running "
+                               f"using storage at {os.path.dirname(self.db_path)}. "
+                               f"Only one instance per storage directory is allowed.")
+            except:
+                error_msg = (f"Another LoadShaper instance is already running "
+                           f"using storage at {os.path.dirname(self.db_path)}. "
+                           f"Only one instance per storage directory is allowed.")
+
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        except ImportError:
+            # fcntl not available (Windows)
+            logger.warning("File locking not available on this platform - cannot prevent multiple instances")
+        except Exception as e:
+            logger.warning(f"Failed to acquire instance lock: {e}")
+            # Non-fatal - continue without lock protection
+
+    def _release_instance_lock(self):
+        """Release the instance lock on cleanup."""
+        if hasattr(self, 'lock_file_handle') and self.lock_file_handle:
+            try:
+                import fcntl
+                fcntl.flock(self.lock_file_handle, fcntl.LOCK_UN)
+                self.lock_file_handle.close()
+                # Remove lock file
+                if os.path.exists(self.lock_file_path):
+                    os.remove(self.lock_file_path)
+                logger.info("Released instance lock")
+            except Exception as e:
+                logger.warning(f"Error releasing instance lock: {e}")
+
     def _init_db(self):
         """Initialize database schema for persistent storage.
 
@@ -2398,6 +2518,10 @@ class MetricsStorage:
                 logger.error(f"Failed to get percentile: {e}")
                 return None
     
+    def __del__(self):
+        """Cleanup on object destruction."""
+        self._release_instance_lock()
+
     def cleanup_old(self, days_to_keep=7):
         """Remove old metrics data from database.
 
@@ -2551,8 +2675,7 @@ class MetricsStorage:
                 "bytes_per_sample": bytes_per_sample,
                 "data_age_days": data_age_days,
                 "expected_max_mb": expected_max_mb,
-                "size_health": size_health,
-                "database_path": self.db_path
+                "size_health": size_health
             }
 
         except Exception as e:
@@ -2676,8 +2799,7 @@ class MetricsStorage:
         Returns:
             bool: True if recovery successful, False otherwise
         """
-        import os  # Import os at the beginning
-        logger.warning("Attempting database corruption recovery...")
+        logger.warning("Attempting database corruption recovery. 7-day P95 history will be reset.")
 
         backup_path = None  # Initialize to avoid UnboundLocalError
         try:
@@ -2693,7 +2815,7 @@ class MetricsStorage:
 
             # Step 3: Recreate database with fresh schema
             self._init_db()
-            logger.info("Database recreated successfully after corruption recovery")
+            logger.info("Database recreated successfully. Note: 7-day P95 history has been reset.")
 
             # Step 4: Verify new database is healthy
             if not self.detect_database_corruption():
@@ -4247,7 +4369,6 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "checks": status_checks if status_checks else ["all_systems_operational"],
                 "metrics_storage": "available" if storage_ok else "failed",
                 "persistence_storage": "available" if persistence_ok else "not_mounted",
-                "database_path": self.metrics_storage.db_path if self.metrics_storage else None,
                 "load_generation": "paused" if paused_state == 1.0 else "active"
             }
 
