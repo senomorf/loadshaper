@@ -57,7 +57,7 @@ services:
       # === Network shaping (no host net; unprivileged port) ===
       NET_MODE: "${NET_MODE:-client}"                 # off|client
       NET_PROTOCOL: "${NET_PROTOCOL:-udp}"            # udp (lower CPU) | tcp
-      NET_PEERS: "${NET_PEERS:-10.0.0.2,10.0.0.3}"    # other VMs
+      NET_PEERS: "${NET_PEERS:-8.8.8.8,1.1.1.1,9.9.9.9}"    # public DNS servers for reliable external traffic
       NET_PORT: "${NET_PORT:-15201}"                  # network generation port
       NET_BURST_SEC: "${NET_BURST_SEC:-10}"           # client burst duration
       NET_IDLE_SEC: "${NET_IDLE_SEC:-10}"             # idle between bursts

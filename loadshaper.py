@@ -12,13 +12,130 @@ import struct
 from datetime import datetime, timezone
 from typing import Tuple, Optional, Dict, Any
 from multiprocessing import Process, Value
-from math import isfinite, exp, ceil
+from math import isfinite, ceil
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 
 # Set up module logger
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------
+# Network state management
+# ---------------------------
+
+from enum import Enum
+import ipaddress
+
+
+class NetworkState(Enum):
+    """Network generator operational states."""
+    OFF = "OFF"
+    INITIALIZING = "INITIALIZING"
+    VALIDATING = "VALIDATING"
+    ACTIVE_UDP = "ACTIVE_UDP"
+    ACTIVE_TCP = "ACTIVE_TCP"
+    ERROR = "ERROR"
+
+
+class PeerState(Enum):
+    """Individual peer validation states."""
+    UNVALIDATED = "UNVALIDATED"
+    VALID = "VALID"
+    INVALID = "INVALID"
+    DEGRADED = "DEGRADED"
+
+
+def is_external_address(address: str) -> bool:
+    """
+    Check if an IP address is external (not private/local).
+
+    Args:
+        address: IP address string to check
+
+    Returns:
+        bool: True if address is external, False if private/local
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+
+        # Reject IPv4 private/special addresses
+        if isinstance(ip, ipaddress.IPv4Address):
+            # Check special-use ranges explicitly
+            if (ip.is_private or           # RFC 1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+                ip.is_loopback or          # 127.0.0.0/8
+                ip.is_link_local or        # 169.254.0.0/16
+                ip.is_multicast or         # 224.0.0.0/4
+                ip.is_reserved or          # Various reserved ranges
+                ip.is_unspecified):        # 0.0.0.0
+                return False
+
+            # Check CGNAT range properly (100.64.0.0/10)
+            if ip in ipaddress.ip_network('100.64.0.0/10'):
+                return False
+
+            # Check RFC 2544 benchmarking range (198.18.0.0/15)
+            if ip in ipaddress.ip_network('198.18.0.0/15'):
+                return False
+
+            # Check TEST-NET ranges
+            if (ip in ipaddress.ip_network('192.0.2.0/24') or     # TEST-NET-1
+                ip in ipaddress.ip_network('198.51.100.0/24') or  # TEST-NET-2
+                ip in ipaddress.ip_network('203.0.113.0/24')):    # TEST-NET-3
+                return False
+
+            # Check other special-use ranges
+            if (ip in ipaddress.ip_network('192.0.0.0/24') or     # IETF Protocol Assignments
+                ip in ipaddress.ip_network('192.88.99.0/24') or   # Deprecated 6to4 relay
+                ip in ipaddress.ip_network('240.0.0.0/4')):       # Reserved for future use
+                return False
+
+            return True
+
+        # Reject IPv6 private/special addresses
+        elif isinstance(ip, ipaddress.IPv6Address):
+            if (ip.is_private or           # fc00::/7 (ULA)
+                ip.is_loopback or          # ::1
+                ip.is_link_local or        # fe80::/10
+                ip.is_multicast or         # ff00::/8
+                ip.is_reserved or          # Various reserved ranges
+                ip.is_unspecified):        # ::
+                return False
+
+            # Check documentation range properly
+            if ip in ipaddress.ip_network('2001:db8::/32'):
+                return False
+
+            # Check ORCHIDv2 range
+            if ip in ipaddress.ip_network('2001:10::/28'):
+                return False
+
+            return True
+
+        return False
+    except ValueError:
+        # Not a valid IP address
+        return False
+
+
+def read_nic_tx_bytes(interface: str) -> Optional[int]:
+    """
+    Read transmitted bytes from network interface statistics.
+
+    Args:
+        interface: Network interface name (e.g., 'eth0')
+
+    Returns:
+        int or None: Transmitted bytes count or None if unavailable
+    """
+    try:
+        with open(f'/sys/class/net/{interface}/statistics/tx_bytes', 'r') as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, PermissionError, ValueError):
+        return None
+
+
 
 
 # ---------------------------
@@ -703,12 +820,14 @@ def _validate_network_fallback_config():
     Validate network fallback configuration values.
 
     Called after network fallback variables are initialized to validate
-    their values and reset to defaults if invalid.
+    their values and reset to defaults if invalid. Ensures proper ordering
+    of fallback thresholds and prevents configuration errors that could
+    cause oscillation or improper fallback behavior.
     """
-    # Use globals() to check and access global variables
+    # Use globals() to access all network fallback variables dynamically
     global_vars = globals()
 
-    # Validate network fallback percentage values
+    # Validate network fallback percentage values (0-100)
     for var_name, default_value in [
         ("NET_FALLBACK_START_PCT", 19.0),
         ("NET_FALLBACK_STOP_PCT", 23.0),
@@ -717,7 +836,7 @@ def _validate_network_fallback_config():
         if var_name in global_vars:
             var_value = global_vars[var_name]
             if not (0 <= var_value <= 100):
-                logger.warning(f"Invalid {var_name}={var_value} (must be 0-100%), using default")
+                logger.warning(f"Invalid {var_name}={var_value} (must be 0-100%), using default {default_value}")
                 global_vars[var_name] = default_value
 
     # Validate fallback debounce and timing values (must be positive)
@@ -725,12 +844,12 @@ def _validate_network_fallback_config():
         ("NET_FALLBACK_DEBOUNCE_SEC", 30),
         ("NET_FALLBACK_MIN_ON_SEC", 60),
         ("NET_FALLBACK_MIN_OFF_SEC", 30),
-        ("NET_FALLBACK_RAMP_SEC", 10),  # Added trailing comma for consistency
+        ("NET_FALLBACK_RAMP_SEC", 10),
     ]:
         if var_name in global_vars:
             var_value = global_vars[var_name]
             if var_value < 0:
-                logger.warning(f"Invalid {var_name}={var_value} (must be >= 0), using default")
+                logger.warning(f"Invalid {var_name}={var_value} (must be >= 0), using default {default_value}")
                 global_vars[var_name] = default_value
 
     # Validate NET_ACTIVATION mode
@@ -739,6 +858,32 @@ def _validate_network_fallback_config():
         if global_vars["NET_ACTIVATION"] not in valid_modes:
             logger.warning(f"Invalid NET_ACTIVATION='{global_vars['NET_ACTIVATION']}' (must be one of {valid_modes}), using 'adaptive'")
             global_vars["NET_ACTIVATION"] = 'adaptive'
+
+    # Use direct global access for clarity in logical checks
+    global NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
+
+    # Validate that start threshold is less than stop threshold
+    if NET_FALLBACK_START_PCT is not None and NET_FALLBACK_STOP_PCT is not None:
+        if NET_FALLBACK_START_PCT >= NET_FALLBACK_STOP_PCT:
+            logger.warning(f"NET_FALLBACK_START_PCT={NET_FALLBACK_START_PCT}% must be less than "
+                          f"NET_FALLBACK_STOP_PCT={NET_FALLBACK_STOP_PCT}%. Adjusting thresholds.")
+            # Ensure at least 2% hysteresis gap
+            gap = max(2.0, (NET_FALLBACK_STOP_PCT + NET_FALLBACK_START_PCT) * 0.1)
+            mid_point = (NET_FALLBACK_START_PCT + NET_FALLBACK_STOP_PCT) / 2.0
+            NET_FALLBACK_START_PCT = mid_point - gap / 2.0
+            NET_FALLBACK_STOP_PCT = mid_point + gap / 2.0
+            logger.info(f"Adjusted fallback thresholds: START={NET_FALLBACK_START_PCT:.1f}% "
+                       f"STOP={NET_FALLBACK_STOP_PCT:.1f}%")
+
+    # Validate risk threshold is within reasonable bounds
+    if NET_FALLBACK_RISK_THRESHOLD_PCT is not None:
+        if NET_FALLBACK_START_PCT is not None and NET_FALLBACK_STOP_PCT is not None:
+            if not (NET_FALLBACK_START_PCT <= NET_FALLBACK_RISK_THRESHOLD_PCT <= NET_FALLBACK_STOP_PCT):
+                new_risk_threshold = (NET_FALLBACK_START_PCT + NET_FALLBACK_STOP_PCT) / 2.0
+                logger.warning(f"NET_FALLBACK_RISK_THRESHOLD_PCT={NET_FALLBACK_RISK_THRESHOLD_PCT}% "
+                              f"should be between START and STOP thresholds. "
+                              f"Adjusting to {new_risk_threshold:.1f}%.")
+                NET_FALLBACK_RISK_THRESHOLD_PCT = new_risk_threshold
 
 
 def _validate_p95_config():
@@ -751,6 +896,13 @@ def _validate_p95_config():
     global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT
     global CPU_P95_SLOT_DURATION, CONTROL_PERIOD
     global CPU_P95_BASELINE_INTENSITY, CPU_P95_HIGH_INTENSITY
+
+    # Validate that target minimum is less than target maximum
+    if CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MAX is not None:
+        if CPU_P95_TARGET_MIN >= CPU_P95_TARGET_MAX:
+            logger.warning(f"CPU_P95_TARGET_MIN={CPU_P95_TARGET_MIN}% must be less than "
+                          f"CPU_P95_TARGET_MAX={CPU_P95_TARGET_MAX}%. Swapping values.")
+            CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX = CPU_P95_TARGET_MAX, CPU_P95_TARGET_MIN
 
     # Validate that setpoint falls within target range
     if CPU_P95_SETPOINT is not None and CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MAX is not None:
@@ -786,35 +938,9 @@ def _validate_p95_config():
 # ---------------------------
 # Env / config
 # ---------------------------
-def getenv_float(name, default):
-    """Get float environment variable with fallback to default.
-
-    Args:
-        name: Environment variable name
-        default: Default value if variable not set or invalid
-
-    Returns:
-        float: Environment variable value or default
-    """
-    try:
-        return float(os.getenv(name, default))
-    except Exception:
-        return float(default)
-
-def getenv_int(name, default):
-    """Get integer environment variable with fallback to default.
-
-    Args:
-        name: Environment variable name
-        default: Default value if variable not set or invalid
-
-    Returns:
-        int: Environment variable value or default
-    """
-    try:
-        return int(os.getenv(name, default))
-    except Exception:
-        return int(default)
+# Note: Legacy getenv_float and getenv_int functions removed.
+# All configuration now uses getenv_*_with_template functions for consistency,
+# except health endpoint configuration which is parsed directly.
 
 # Configuration variables (initialized lazily to avoid issues during testing)
 _config_initialized = False
@@ -1087,7 +1213,7 @@ def _initialize_config():
     MEM_TOUCH_INTERVAL_SEC = getenv_float_with_template("MEM_TOUCH_INTERVAL_SEC", 1.0, CONFIG_TEMPLATE)
 
     NET_MODE          = getenv_with_template("NET_MODE", "client", CONFIG_TEMPLATE).strip().lower()
-    NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "", CONFIG_TEMPLATE).split(",") if p.strip()]
+    NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "8.8.8.8,1.1.1.1,9.9.9.9", CONFIG_TEMPLATE).split(",") if p.strip()]
     NET_PORT          = getenv_int_with_template("NET_PORT", 15201, CONFIG_TEMPLATE)
     NET_BURST_SEC     = getenv_int_with_template("NET_BURST_SEC", 10, CONFIG_TEMPLATE)
     NET_IDLE_SEC      = getenv_int_with_template("NET_IDLE_SEC", 10, CONFIG_TEMPLATE)
@@ -1105,7 +1231,16 @@ def _initialize_config():
 
     # Native network generator configuration
     NET_TTL           = getenv_int_with_template("NET_TTL", 1, CONFIG_TEMPLATE)
-    NET_PACKET_SIZE   = getenv_int_with_template("NET_PACKET_SIZE", 8900, CONFIG_TEMPLATE)
+    NET_PACKET_SIZE   = getenv_int_with_template("NET_PACKET_SIZE", 8900, CONFIG_TEMPLATE)  # Optimized for MTU 9000
+
+    # Network validation and reliability configuration
+    NET_VALIDATE_STARTUP = getenv_with_template("NET_VALIDATE_STARTUP", "true", CONFIG_TEMPLATE).strip().lower() in ['true', '1', 'yes']
+    NET_REQUIRE_EXTERNAL = getenv_with_template("NET_REQUIRE_EXTERNAL", "true", CONFIG_TEMPLATE).strip().lower() in ['true', '1', 'yes']
+    NET_VALIDATION_TIMEOUT_MS = getenv_int_with_template("NET_VALIDATION_TIMEOUT_MS", 200, CONFIG_TEMPLATE)
+    NET_STATE_DEBOUNCE_SEC = getenv_float_with_template("NET_STATE_DEBOUNCE_SEC", 5.0, CONFIG_TEMPLATE)
+    NET_STATE_MIN_ON_SEC = getenv_float_with_template("NET_STATE_MIN_ON_SEC", 15.0, CONFIG_TEMPLATE)
+    NET_STATE_MIN_OFF_SEC = getenv_float_with_template("NET_STATE_MIN_OFF_SEC", 20.0, CONFIG_TEMPLATE)
+    NET_IPV6 = getenv_with_template("NET_IPV6", "auto", CONFIG_TEMPLATE).strip().lower()
 
     # Network fallback configuration
     NET_ACTIVATION          = getenv_with_template("NET_ACTIVATION", "adaptive", CONFIG_TEMPLATE).strip().lower()
@@ -1133,7 +1268,14 @@ def _initialize_config():
     _config_initialized = True
 
 # Health check server configuration
-HEALTH_PORT       = getenv_int("HEALTH_PORT", 8080)
+# Health endpoint doesn't use template system, parse directly
+_health_port_str = os.getenv("HEALTH_PORT", "8080").strip()
+try:
+    HEALTH_PORT = int(_health_port_str)
+except ValueError:
+    HEALTH_PORT = 8080
+    logger.warning(f"Invalid HEALTH_PORT value: {_health_port_str}, using default: 8080")
+
 HEALTH_HOST       = os.getenv("HEALTH_HOST", "127.0.0.1").strip()
 HEALTH_ENABLED    = _parse_boolean(os.getenv("HEALTH_ENABLED", "true"))
 
@@ -1236,6 +1378,9 @@ class CPUP95Controller:
         """
         self.metrics_storage = metrics_storage
         self._lock = threading.RLock()  # Thread-safe access to shared state
+
+        # Enforce mandatory persistent volume at initialization
+        _validate_persistent_storage(self.PERSISTENT_STORAGE_PATH)
         self.state = 'MAINTAINING'
         self.last_state_change = time.monotonic()
         self.current_slot_start = time.monotonic()
@@ -1306,14 +1451,8 @@ class CPUP95Controller:
             return self.ring_buffer_path
 
         # Use same directory as metrics database for consistency
-        db_dir = self.PERSISTENT_STORAGE_PATH
-        if not os.path.isdir(db_dir):
-            raise FileNotFoundError(f"P95 ring buffer directory does not exist: {db_dir}. "
-                                    f"A persistent volume must be mounted.")
-        if not os.access(db_dir, os.W_OK):
-            raise PermissionError(f"Cannot write to P95 ring buffer directory: {db_dir}. "
-                                  f"Check volume permissions for persistent storage.")
-        return os.path.join(db_dir, "p95_ring_buffer.json")
+        # (Storage validation already performed at controller initialization)
+        return os.path.join(self.PERSISTENT_STORAGE_PATH, "p95_ring_buffer.json")
 
     def _maybe_save_ring_buffer_state(self):
         """
@@ -2076,6 +2215,49 @@ class EMA:
             self.val = self.val + self.alpha * (x - self.val)
         return self.val
 
+def _validate_persistent_storage(path: str):
+    """
+    Validate that the persistent storage path is a writable mount point.
+
+    This is a critical security and reliability check to ensure that LoadShaper
+    is using a dedicated persistent volume, preventing data loss and interference
+    with the host filesystem.
+
+    Args:
+        path (str): The path to the persistent storage directory.
+
+    Raises:
+        FileNotFoundError: If the path does not exist or is not a directory.
+        PermissionError: If the path is not writable.
+        RuntimeError: If the path is not a mount point, which is mandatory.
+    """
+    # Skip all validation in test mode for easier test execution
+    # SECURITY NOTE: This should ONLY be used in test environments
+    if os.getenv('LOADSHAPER_TEST_MODE', 'false').lower() == 'true':
+        logger.debug("Test mode enabled - skipping persistent storage validation")
+        return
+
+    if not os.path.isdir(path):
+        raise FileNotFoundError(
+            f"Persistent storage path does not exist or is not a directory: {path}. "
+            "This is a mandatory requirement."
+        )
+    if not os.access(path, os.W_OK):
+        raise PermissionError(
+            f"Persistent storage path is not writable: {path}. "
+            "Check volume permissions."
+        )
+
+    if not os.path.ismount(path):
+        # In some container setups (e.g., Kubernetes subPaths), the volume is a subdirectory.
+        # As a robust fallback, we check if the parent directory is a mount point.
+        parent_dir = os.path.dirname(os.path.abspath(path.rstrip('/')))
+        if not os.path.ismount(parent_dir):
+            raise RuntimeError(
+                f"Security validation failed: Path '{path}' or its parent '{parent_dir}' is not a mount point. "
+                "A persistent volume must be mounted to this path to ensure data isolation and persistence."
+            )
+
 # ---------------------------
 # 7-day metrics storage
 # ---------------------------
@@ -2094,12 +2276,7 @@ class MetricsStorage:
 
         # Validate persistent storage directory for 7-day P95 calculations
         db_dir = os.path.dirname(db_path)
-        if not os.path.isdir(db_dir):
-            raise FileNotFoundError(f"Metrics directory does not exist: {db_dir}. "
-                                    f"A persistent volume must be mounted.")
-        if not os.access(db_dir, os.W_OK):
-            raise PermissionError(f"Cannot write to metrics directory: {db_dir}. "
-                                  f"Check volume permissions for persistent storage.")
+        _validate_persistent_storage(db_dir)
 
         # Additional mount point verification for Linux systems
         # This provides defense-in-depth if entrypoint validation is bypassed
@@ -2533,7 +2710,7 @@ class MetricsStorage:
 
     def detect_database_corruption(self):
         """
-        Detect database corruption using SQLite's integrity check.
+        Detect database corruption using SQLite's integrity check and schema validation.
 
         Returns:
             bool: True if corruption detected, False if database is healthy
@@ -2548,17 +2725,38 @@ class MetricsStorage:
                 result = cursor.fetchone()
 
                 # SQLite returns "ok" if database is healthy
-                is_corrupted = result[0] != "ok" if result else True
+                pragma_corrupted = result[0] != "ok" if result else True
 
-                if is_corrupted:
-                    logger.error(f"Database corruption detected: {result[0] if result else 'Unknown error'}")
+                if pragma_corrupted:
+                    logger.error(f"Database corruption detected via PRAGMA: {result[0] if result else 'Unknown error'}")
+                    return True
 
-                return is_corrupted
+                # Additional validation: check if expected table exists and is accessible
+                try:
+                    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='metrics'")
+                    table_result = cursor.fetchone()
+                    if not table_result:
+                        logger.error("Database corruption detected: metrics table missing")
+                        return True
+
+                    # Try to access the table structure
+                    cursor = conn.execute("PRAGMA table_info(metrics)")
+                    columns = cursor.fetchall()
+                    if not columns:
+                        logger.error("Database corruption detected: metrics table has no columns")
+                        return True
+
+                except sqlite3.Error as table_error:
+                    logger.error(f"Database corruption detected during table validation: {table_error}")
+                    return True
+
+                return False
 
         except sqlite3.DatabaseError as e:
             logger.error(f"Database corruption detected during integrity check: {e}")
             return True
         except Exception as e:
+            logger.error(f"DEBUG: Unexpected exception in detect_database_corruption: {type(e)} - {e}")
             logger.warning(f"Could not check database integrity: {e}")
             return False
 
@@ -2601,7 +2799,7 @@ class MetricsStorage:
         """
         logger.warning("Attempting database corruption recovery. 7-day P95 history will be reset.")
 
-        backup_path = None  # Initialize to handle exception logging
+        backup_path = None  # Initialize to avoid UnboundLocalError
         try:
             # Step 1: Backup corrupted database
             backup_path = self.backup_corrupted_database()
@@ -2986,7 +3184,9 @@ class TokenBucket:
         now = time.time()
         elapsed = now - self.last_update
 
-        if elapsed > 0:
+        # Optimization: Only update tokens if enough time has passed
+        # This reduces overhead for high-frequency calls
+        if elapsed >= self.tick_interval:
             tokens_to_add = elapsed * self.rate_mbps * 1_000_000
             self.tokens = min(self.capacity_bits, self.tokens + tokens_to_add)
             self.last_update = now
@@ -2994,20 +3194,60 @@ class TokenBucket:
 
 class NetworkGenerator:
     """
-    Native Python network traffic generator with token bucket rate limiting.
+    Enhanced network traffic generator with state machine and peer validation.
 
-    Provides UDP and TCP traffic generation with RFC 2544 benchmark addresses
-    as safe defaults. Supports jumbo frames (MTU 9000) optimization and
-    configurable TTL for network safety.
+    Implements reliable network generation with automatic fallback mechanisms,
+    peer validation, tx_bytes monitoring, and comprehensive health scoring.
+    Designed for Oracle Cloud VM protection with robust external traffic validation.
     """
 
-    # RFC 2544 benchmark addresses - safe for testing
-    RFC2544_ADDRESSES = ["198.18.0.1", "198.19.255.254"]
+    # Default public DNS servers for reliable external traffic
+
+    # PEER REPUTATION SYSTEM CONSTANTS
+    # Reputation range: 0.0 (blacklisted) to 100.0 (perfect peer)
+    REPUTATION_INITIAL_NEUTRAL = 50.0     # New peers start with neutral reputation
+    REPUTATION_VALIDATION_BOOST = 10.0    # Bonus for passing initial validation
+    REPUTATION_VALIDATION_PENALTY = 20.0  # Penalty for failing initial validation
+    REPUTATION_SUCCESS_INCREMENT = 1.0    # Small bonus for each successful send
+    REPUTATION_FAILURE_PENALTY = 5.0     # Moderate penalty for each failed send
+    REPUTATION_RECOVERY_BOOST = 15.0      # Large bonus for peer recovery
+    REPUTATION_BLACKLIST_THRESHOLD = 20.0 # Below this triggers temporary blacklist
+    REPUTATION_RECOVERY_MINIMUM = 20.0    # Minimum reputation after recovery boost
+    REPUTATION_MAX = 100.0               # Maximum possible reputation
+    REPUTATION_MIN = 0.0                 # Minimum possible reputation
+
+    # BLACKLIST AND RECOVERY TIMING CONSTANTS
+    BLACKLIST_DURATION_SEC = 120.0       # 2 minutes blacklist for failed peers
+    RECOVERY_CHECK_INTERVAL_SEC = 60.0   # Check every minute for peer recovery
+
+    # NETWORK VALIDATION TIMEOUTS (in seconds)
+    TCP_VALIDATION_TIMEOUT = 0.3         # 300ms for TCP handshake validation
+
+    # HEALTH SCORING SYSTEM CONSTANTS
+    # Health score range: 0 (completely failed) to 100 (perfect health)
+    HEALTH_SCORE_ACTIVE_UDP = 100        # Perfect score for active UDP state
+    HEALTH_SCORE_ACTIVE_TCP = 75         # Good score for active TCP state
+    HEALTH_SCORE_VALIDATING = 50         # Moderate score during validation
+    HEALTH_SCORE_INITIALIZING = 40       # Lower score during initialization
+    HEALTH_SCORE_ERROR_OFF = 0           # Failed score for error/off states
+
+    # Health scoring weights for composite calculation (must sum to 100%)
+    HEALTH_WEIGHT_SEND_SUCCESS = 40      # 40% weight for send success rate
+    HEALTH_WEIGHT_TX_BYTES = 40          # 40% weight for tx_bytes verification
+    HEALTH_WEIGHT_PEER_AVAILABILITY = 10 # 10% weight for peer availability
+    HEALTH_WEIGHT_EXTERNAL_VERIFICATION = 10  # 10% weight for external egress verification
+
+
+    # CPU YIELD AND PERFORMANCE CONSTANTS
+    CPU_YIELD_INTERVAL = 100             # Yield CPU every 100 packet sends
+    CPU_YIELD_DURATION = 0.0001          # 0.1ms yield duration
+    TOKEN_BUCKET_MAX_WAIT_SEC = 0.010    # Maximum sleep time for token bucket (10ms)
 
     def __init__(self, rate_mbps: float, protocol: str = "udp", ttl: int = 1,
-                 packet_size: int = 8900, port: int = 15201, timeout: float = 0.5):
+                 packet_size: int = 1100, port: int = 15201, timeout: float = 0.5,
+                 require_external: bool = False, validate_startup: bool = True):
         """
-        Initialize network generator.
+        Initialize enhanced network generator.
 
         Args:
             rate_mbps: Target rate in megabits per second
@@ -3015,121 +3255,352 @@ class NetworkGenerator:
             ttl: IP Time-to-Live (1 = first hop only for safety)
             packet_size: Packet payload size in bytes
             port: Target port number
-            timeout: Connection timeout in seconds for TCP connections
+            timeout: Connection timeout in seconds
+            require_external: Require external (non-RFC1918) addresses for E2 compliance
+            validate_startup: Validate peer connectivity at startup
         """
+        # Core networking
         self.bucket = TokenBucket(rate_mbps)
         self.protocol = protocol.lower()
         self.ttl = max(1, ttl)
-        self.packet_size = max(64, min(65507, packet_size))  # UDP max is 65507
+        self.packet_size = max(64, min(65507, packet_size))
         self.port = max(1024, min(65535, port))
-        self.timeout = max(0.1, timeout)  # Minimum 0.1s timeout
+        self.timeout = max(0.1, timeout)
+        self.require_external = require_external
+        self.validate_startup = validate_startup
+
+        # State machine
+        self.state = NetworkState.OFF
+        self.state_start_time = time.monotonic()
+        self.state_transitions = []  # History of state changes
+
+        # Peer management
+        self.peers = {}  # {address: PeerInfo}
+        self.current_peer_index = 0
+        self.last_used_peer = None  # Track the last peer we selected for use
+        self.last_sent_peer = None  # Track the last peer we actually sent to successfully
+
+        # Connection management
         self.socket = None
-        self.packet_data = None
-        self.tcp_connections = {}  # Cache for persistent TCP connections
-        self.resolved_targets = {}  # Cache for DNS resolutions
-        self.tcp_retry_delays = {}  # Exponential backoff for failed connections
-        self.tcp_retry_base_delay = 1.0  # Base delay in seconds
-        self.tcp_retry_max_delay = 30.0  # Maximum delay in seconds
+        self.tcp_connections = {}
+
+        # Validation and monitoring
+        self.tx_bytes_ema = 0.0
+        self.tx_bytes_alpha = 0.2  # EMA smoothing factor
+        self.last_tx_bytes = None
+        self.network_interface = None
+        self.validation_failures = 0
+        self.external_egress_verified = False
+
+        # Health scoring
+        self.health_score = 0
+        self.send_success_rate = 0.0
+        self.recent_send_attempts = []
+        self.peer_availability = 0.0
+        self.recent_errors = []
+
+        # Timing and hysteresis
+        self.state_debounce_sec = 5.0
+        self.state_min_on_sec = 15.0
+        self.state_min_off_sec = 20.0
+        self.last_transition_time = time.monotonic()
+
+        # DNS generation settings
+
+        # Initialize packet data
         self._prepare_packet_data()
 
         # Pre-allocate socket buffers for efficiency
-        self.send_buffer_size = max(1024 * 1024, self.packet_size * 10)  # 1MB minimum
+        self.send_buffer_size = max(1024 * 1024, self.packet_size * 10)
 
     def _prepare_packet_data(self):
         """Pre-allocate packet data for zero-copy sending."""
-        # Create packet with timestamp and sequence pattern
         timestamp = struct.pack('!d', time.time())
         sequence_pattern = b'LoadShaper-' + (b'x' * (self.packet_size - len(timestamp) - 11))
         self.packet_data = timestamp + sequence_pattern[:self.packet_size - len(timestamp)]
 
-    def update_rate(self, new_rate_mbps: float):
-        """Update target transmission rate."""
-        self.bucket.update_rate(new_rate_mbps)
-
-    def _resolve_targets(self, target_addresses: list):
-        """
-        Resolve target addresses to IP addresses with IPv6 support and caching.
-
-        Args:
-            target_addresses: List of hostnames or IP addresses to resolve
-        """
-        resolved = {}
-        for target in target_addresses:
-            if target in self.resolved_targets:
-                # Use cached resolution
-                resolved[target] = self.resolved_targets[target]
-                continue
-
-            try:
-                # Try to resolve hostname to IP address(es)
-                # This supports both IPv4 and IPv6
-                addr_info = socket.getaddrinfo(target, self.port, socket.AF_UNSPEC,
-                                              socket.SOCK_DGRAM if self.protocol == "udp" else socket.SOCK_STREAM)
-
-                # Use first available address (prefer IPv4 for compatibility)
-                ipv4_addr = None
-                ipv6_addr = None
-
-                for family, sock_type, proto, canonname, sockaddr in addr_info:
-                    if family == socket.AF_INET and not ipv4_addr:
-                        ipv4_addr = (sockaddr[0], family)
-                    elif family == socket.AF_INET6 and not ipv6_addr:
-                        ipv6_addr = (sockaddr[0], family)
-
-                # Prefer IPv4 for compatibility, fallback to IPv6
-                if ipv4_addr:
-                    resolved[target] = ipv4_addr
-                elif ipv6_addr:
-                    resolved[target] = ipv6_addr
-                else:
-                    logger.warning(f"Could not resolve {target}, skipping")
-                    continue
-
-                # Cache the resolution
-                self.resolved_targets[target] = resolved[target]
-
-            except socket.gaierror as e:
-                logger.warning(f"Failed to resolve {target}: {e}, skipping")
-                continue
-
-        self.target_addresses = resolved
-
     def start(self, target_addresses: list):
         """
-        Start network generation session.
+        Start network generation with state machine validation.
 
         Args:
             target_addresses: List of target IP addresses/hostnames
         """
-        if not target_addresses:
-            target_addresses = self.RFC2544_ADDRESSES
-            logger.info(f"Using RFC 2544 benchmark addresses for network generation: {target_addresses}")
-
-        # Resolve and cache target addresses with IPv6 support
-        self._resolve_targets(target_addresses)
+        self._transition_state(NetworkState.INITIALIZING, "start() called")
 
         try:
-            if self.protocol == "udp":
+            # Initialize peer list
+            if not target_addresses:
+                logger.info("No peers provided, network generation disabled")
+                target_addresses = []
+
+            # Validate external address requirement
+            if self.require_external:
+                for addr in target_addresses:
+                    if not self._is_address_external(addr):
+                        error_msg = f"E2 shape requires external peers, got internal address: {addr}"
+                        logger.error(error_msg)
+                        self._transition_state(NetworkState.ERROR, error_msg)
+                        return
+
+            # Initialize peers
+            self._initialize_peers(target_addresses)
+
+            # Detect network interface for tx_bytes monitoring
+            self._detect_network_interface()
+
+            if self.validate_startup:
+                self._transition_state(NetworkState.VALIDATING, "validating peers")
+                self._validate_all_peers()
+
+            # Validate protocol before transitioning state
+            if self.protocol not in ["udp", "tcp"]:
+                raise ValueError(f"Unsupported protocol: {self.protocol}")
+
+            # Start primary protocol
+            target_state = NetworkState.ACTIVE_TCP if self.protocol == "tcp" else NetworkState.ACTIVE_UDP
+            self._transition_state(target_state, "validation complete")
+            self._start_protocol(self.protocol)
+
+        except Exception as e:
+            error_msg = f"Failed to start network generator: {e}"
+            logger.error(error_msg)
+            self._transition_state(NetworkState.ERROR, error_msg)
+
+    def _initialize_peers(self, addresses: list):
+        """Initialize peer tracking structures."""
+        self.peers = {}
+        for addr in addresses:
+            self.peers[addr] = {
+                'state': PeerState.UNVALIDATED,
+                'reputation': self.REPUTATION_INITIAL_NEUTRAL,
+                'failures': 0,
+                'successes': 0,
+                'last_attempt': 0.0,
+                'blacklist_until': 0.0,
+                'is_external': self._is_address_external(addr)
+            }
+
+    def _detect_network_interface(self):
+        """Detect primary network interface for tx_bytes monitoring."""
+        try:
+            # Try common interface names
+            for interface in ['eth0', 'ens5', 'enp0s3', 'wlan0']:
+                if read_nic_tx_bytes(interface) is not None:
+                    self.network_interface = interface
+                    logger.debug(f"Using network interface {interface} for tx_bytes monitoring")
+                    return
+
+            logger.warning("Could not detect network interface for tx_bytes monitoring")
+        except Exception as e:
+            logger.warning(f"Failed to detect network interface: {e}")
+
+    def _is_address_external(self, address: str) -> bool:
+        """Check if address is external using DNS resolution if needed."""
+        try:
+            # Try to parse as IP address first
+            if is_external_address(address):
+                return True
+
+            # If not a valid IP, try DNS resolution
+            addr_info = socket.getaddrinfo(address, 53, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+            for family, sock_type, proto, canonname, sockaddr in addr_info:
+                ip = sockaddr[0]
+                if is_external_address(ip):
+                    return True
+
+            return False
+        except Exception:
+            return False
+
+    def _validate_all_peers(self):
+        """Validate connectivity to all peers."""
+        valid_peers = 0
+
+        for address, peer_info in self.peers.items():
+            if self._validate_peer(address):
+                peer_info['state'] = PeerState.VALID
+                peer_info['reputation'] += self.REPUTATION_VALIDATION_BOOST
+                valid_peers += 1
+            else:
+                peer_info['state'] = PeerState.INVALID
+                peer_info['reputation'] -= self.REPUTATION_VALIDATION_PENALTY
+
+        if valid_peers == 0:
+            logger.warning("No valid peers found - network generation disabled")
+
+        logger.info(f"Peer validation complete: {valid_peers}/{len(self.peers)} peers valid")
+
+    def _validate_peer(self, address: str) -> bool:
+        """Validate connectivity to a single peer with real reachability test."""
+        try:
+            # For all peers, try TCP handshake on configured port
+            return self._validate_generic_peer(address)
+        except Exception as e:
+            logger.debug(f"Peer validation failed for {address}: {e}")
+            return False
+
+
+    def _validate_generic_peer(self, address: str) -> bool:
+        """Validate generic peer with TCP handshake."""
+        try:
+            # Get address info for protocol-agnostic connection
+            addr_info = socket.getaddrinfo(address, self.port, socket.AF_UNSPEC,
+                                         socket.SOCK_STREAM, socket.IPPROTO_TCP)
+
+            # Try TCP handshake on first available address
+            for family, socktype, proto, canonname, sockaddr in addr_info:
+                try:
+                    test_sock = socket.socket(family, socktype, proto)
+                    test_sock.settimeout(self.TCP_VALIDATION_TIMEOUT)
+                    test_sock.connect(sockaddr)
+                    test_sock.close()
+                    return True
+                except (socket.timeout, socket.error, OSError):
+                    if 'test_sock' in locals():
+                        test_sock.close()
+                    continue
+
+            return False
+        except Exception:
+            return False
+
+    def _check_peer_recovery(self):
+        """Periodically attempt to recover blacklisted peers."""
+        current_time = time.time()
+
+        # Only check for recovery every 60 seconds to avoid excessive overhead
+        if not hasattr(self, '_last_recovery_check'):
+            self._last_recovery_check = current_time
+        elif current_time - self._last_recovery_check < self.RECOVERY_CHECK_INTERVAL_SEC:
+            return
+
+        self._last_recovery_check = current_time
+
+        # Check blacklisted peers for recovery
+        for address, peer_info in self.peers.items():
+            if (peer_info['state'] == PeerState.INVALID and
+                peer_info['blacklist_until'] > 0 and
+                current_time > peer_info['blacklist_until']):
+
+                logger.debug(f"Attempting recovery for blacklisted peer {address}")
+
+                # Reset blacklist and try validation
+                peer_info['blacklist_until'] = 0.0
+                if self._validate_peer(address):
+                    peer_info['state'] = PeerState.VALID
+                    peer_info['reputation'] = max(self.REPUTATION_RECOVERY_MINIMUM, peer_info['reputation'] + self.REPUTATION_RECOVERY_BOOST)
+                    logger.info(f"Peer {address} recovered and returned to service")
+                else:
+                    # Failed recovery - extend blacklist with exponential backoff
+                    peer_info['failures'] += 1
+                    backoff_time = min(600, 120 * (2 ** min(peer_info['failures'], 5)))  # Max 10 minutes
+                    peer_info['blacklist_until'] = current_time + backoff_time
+                    logger.debug(f"Peer {address} failed recovery, blacklisted for {backoff_time}s")
+
+    def _transition_state(self, new_state: NetworkState, reason: str):
+        """Transition to new state with logging and hysteresis checks."""
+        if new_state == self.state:
+            return
+
+        current_time = time.monotonic()
+        time_in_state = current_time - self.state_start_time
+
+        # Allow first transition from OFF state without timing restrictions (startup)
+        # Also allow transitions to ERROR state (critical failures should not be delayed)
+        # Also allow transitions during startup sequence (INITIALIZING -> VALIDATING -> ACTIVE_*)
+        # Also allow transitions to OFF state (stop() should always work)
+        is_first_transition = (self.state == NetworkState.OFF and
+                               len(self.state_transitions) == 0)
+        is_error_transition = (new_state == NetworkState.ERROR)
+        is_startup_sequence = (self.state in [NetworkState.INITIALIZING, NetworkState.VALIDATING] and
+                               new_state in [NetworkState.VALIDATING, NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP])
+        is_stop_transition = (new_state == NetworkState.OFF)
+
+        if not is_first_transition and not is_error_transition and not is_startup_sequence and not is_stop_transition:
+            # Check debounce timing - prevent rapid state changes
+            if hasattr(self, 'last_transition_time'):
+                time_since_last_transition = current_time - self.last_transition_time
+                if time_since_last_transition < self.state_debounce_sec:
+                    logger.debug(f"State transition blocked by debounce: {time_since_last_transition:.1f}s < {self.state_debounce_sec}s")
+                    return
+
+            # Check hysteresis rules - minimum time in active states
+            if self.state in [NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP]:
+                if time_in_state < self.state_min_on_sec:
+                    logger.debug(f"State transition blocked by min-on time: {time_in_state:.1f}s < {self.state_min_on_sec}s")
+                    return
+
+            # Check minimum off time for inactive states (but not for initial startup)
+            if self.state in [NetworkState.OFF, NetworkState.ERROR]:
+                if time_in_state < self.state_min_off_sec:
+                    logger.debug(f"State transition blocked by min-off time: {time_in_state:.1f}s < {self.state_min_off_sec}s")
+                    return
+
+        # Record transition
+        self.state_transitions.append({
+            'from_state': self.state.value,
+            'to_state': new_state.value,
+            'reason': reason,
+            'timestamp': current_time,
+            'time_in_previous_state': time_in_state
+        })
+
+        # Keep only recent transitions
+        if len(self.state_transitions) > 20:
+            self.state_transitions = self.state_transitions[-20:]
+
+        logger.info(f"Network state: {self.state.value} → {new_state.value} ({reason})")
+        self.state = new_state
+        self.state_start_time = current_time
+        self.last_transition_time = current_time
+
+    def _start_protocol(self, protocol: str):
+        """Initialize socket for the specified protocol."""
+        try:
+            self.protocol = protocol.lower()
+
+            if protocol == "udp":
                 self._start_udp()
-            elif self.protocol == "tcp":
+            elif protocol == "tcp":
                 self._start_tcp()
             else:
-                raise ValueError(f"Unsupported protocol: {self.protocol}")
+                raise ValueError(f"Unsupported protocol: {protocol}")
+
         except Exception as e:
-            # Use target_addresses from the parameter, not self.targets which doesn't exist
-            targets_display = target_addresses[:3] if len(target_addresses) > 3 else target_addresses
-            logger.error(f"Failed to start network generator (protocol={self.protocol}, targets={targets_display}{'...' if len(target_addresses) > 3 else ''}): {type(e).__name__}: {e}")
-            self.stop()
+            peer_list = list(self.peers.keys())
+            logger.error(f"Failed to start network generator (protocol={self.protocol}, targets={peer_list[:3]}{'...' if len(peer_list) > 3 else ''}): {type(e).__name__}: {e}")
+            self._handle_protocol_failure()
 
     def _start_udp(self):
-        """Initialize UDP socket for traffic generation with IPv4/IPv6 support."""
-        # Determine address family from first resolved target
-        if not self.target_addresses:
-            raise ValueError("No target addresses resolved")
+        """Initialize UDP socket with improved error handling."""
+        # Determine address family from first valid peer
+        target_ip = self._get_next_valid_peer()
+        if not target_ip:
+            self._handle_no_valid_peers()
+            # After fallback, try to get a peer again
+            target_ip = self._get_next_valid_peer()
+            if not target_ip:
+                # Still no peers after fallback, cannot continue
+                return
 
-        # Get address family from first target
-        first_target = next(iter(self.target_addresses.values()))
-        family = first_target[1]  # AF_INET or AF_INET6
+        family = socket.AF_INET
+        try:
+            socket.inet_aton(target_ip)
+        except socket.error:
+            # Try IPv6
+            try:
+                socket.inet_pton(socket.AF_INET6, target_ip)
+                family = socket.AF_INET6
+            except socket.error:
+                # Must be hostname, resolve it
+                try:
+                    addr_info = socket.getaddrinfo(target_ip, self.port, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+                    family = addr_info[0][0]
+                except socket.gaierror as e:
+                    logger.error(f"Failed to resolve {target_ip}: {e}")
+                    self._handle_protocol_failure()
+                    return
 
         self.socket = socket.socket(family, socket.SOCK_DGRAM)
 
@@ -3139,96 +3610,75 @@ class NetworkGenerator:
         elif family == socket.AF_INET6:
             self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
 
-        # Optimize send buffer
+        # Optimize socket
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
-
-        # Non-blocking mode for better control
         self.socket.setblocking(False)
 
     def _start_tcp(self):
-        """Initialize TCP socket settings for traffic generation."""
-        # TCP uses persistent connections managed in tcp_connections dict
-        # Set socket to None to indicate TCP mode
-        self.socket = None
-        # Connections will be created on-demand in _get_tcp_connection()
+        """Initialize TCP connection management."""
+        self.socket = None  # TCP uses connection pool
+        self.tcp_connections = {}
 
-    def _get_tcp_connection(self, target: str):
-        """
-        Get or create a persistent TCP connection for the target.
+    def _get_next_valid_peer(self) -> Optional[str]:
+        """Get next valid peer using round-robin."""
+        # Include UNVALIDATED peers if validate_startup is False (optimistic sending)
+        if not self.validate_startup:
+            valid_peers = [addr for addr, info in self.peers.items()
+                          if info['state'] in [PeerState.VALID, PeerState.UNVALIDATED] and time.time() > info['blacklist_until']]
+        else:
+            valid_peers = [addr for addr, info in self.peers.items()
+                          if info['state'] == PeerState.VALID and time.time() > info['blacklist_until']]
 
-        Args:
-            target: Target hostname/IP (key in self.target_addresses)
-
-        Returns:
-            socket.socket: Connected TCP socket or None if failed
-        """
-        if target not in self.target_addresses:
+        if not valid_peers:
             return None
 
-        ip_addr, family = self.target_addresses[target]
+        # Round-robin through valid peers
+        if self.current_peer_index >= len(valid_peers):
+            self.current_peer_index = 0
 
-        # Check if we have a cached connection
-        if target in self.tcp_connections:
-            conn = self.tcp_connections[target]
-            try:
-                # Test if connection is still alive by trying to send 0 bytes
-                conn.send(b'')
-                return conn
-            except (socket.error, OSError):
-                # Connection is dead, remove it
-                try:
-                    conn.close()
-                except:
-                    pass
-                del self.tcp_connections[target]
+        peer = valid_peers[self.current_peer_index]
+        self.current_peer_index = (self.current_peer_index + 1) % len(valid_peers)
+        self.last_used_peer = peer  # Track for tx_bytes validation
+        return peer
 
-        # Check exponential backoff for failed connections
-        current_time = time.time()
-        if target in self.tcp_retry_delays:
-            retry_time, delay = self.tcp_retry_delays[target]
-            if current_time < retry_time:
-                # Still in backoff period
-                return None
+    def _get_current_peer(self) -> Optional[str]:
+        """Get the last peer that was actually used for sending."""
+        return self.last_used_peer
 
-        # Create new connection
-        try:
-            tcp_sock = socket.socket(family, socket.SOCK_STREAM)
+    def _handle_no_valid_peers(self):
+        """Handle situation when no valid peers are available."""
+        logger.warning("No external peers available, network generation disabled")
+        self._transition_state(NetworkState.ERROR, "no valid peers available")
 
-            # Apply socket options
-            if family == socket.AF_INET:
-                tcp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
-            elif family == socket.AF_INET6:
-                tcp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
 
-            tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.send_buffer_size)
-            tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            tcp_sock.settimeout(self.timeout)  # Configurable timeout
 
-            tcp_sock.connect((ip_addr, self.port))
+    def _handle_protocol_failure(self):
+        """Handle protocol-level failures with fallback logic."""
+        if self.state == NetworkState.ACTIVE_UDP:
+            logger.info("UDP failed, falling back to TCP")
+            self._transition_state(NetworkState.ACTIVE_TCP, "UDP protocol failure")
+            self._start_protocol("tcp")
+        elif self.state == NetworkState.ACTIVE_TCP:
+            logger.warning("TCP also failed, attempting peer rotation")
+            self._rotate_to_next_peer()
+        else:
+            logger.error("Protocol failure in unexpected state")
+            self._transition_state(NetworkState.ERROR, "protocol failure")
 
-            # Cache the connection and clear any retry delay
-            self.tcp_connections[target] = tcp_sock
-            if target in self.tcp_retry_delays:
-                del self.tcp_retry_delays[target]
-            return tcp_sock
-
-        except (socket.error, OSError) as e:
-            # Apply exponential backoff for failed connections
-            current_delay = self.tcp_retry_base_delay
-            if target in self.tcp_retry_delays:
-                _, previous_delay = self.tcp_retry_delays[target]
-                current_delay = min(previous_delay * 2, self.tcp_retry_max_delay)
-
-            retry_time = time.time() + current_delay
-            self.tcp_retry_delays[target] = (retry_time, current_delay)
-
-            logger.debug(f"Failed to connect to {target} ({ip_addr}): {e}. "
-                        f"Retrying after {current_delay:.1f}s")
-            return None
+    def _rotate_to_next_peer(self):
+        """Rotate to next available peer or fallback."""
+        next_peer = self._get_next_valid_peer()
+        if next_peer:
+            logger.info(f"Rotating to next peer: {next_peer}")
+            target_state = NetworkState.ACTIVE_TCP if self.protocol == "tcp" else NetworkState.ACTIVE_UDP
+            self._transition_state(target_state, "peer rotation")
+            self._start_protocol(self.protocol)
+        else:
+            self._handle_no_valid_peers()
 
     def send_burst(self, duration_seconds: float) -> int:
         """
-        Send traffic burst for specified duration.
+        Send traffic burst with validation and state management.
 
         Args:
             duration_seconds: How long to send traffic
@@ -3236,90 +3686,322 @@ class NetworkGenerator:
         Returns:
             int: Number of packets sent
         """
-        if not self.target_addresses:
+        if self.state == NetworkState.OFF:
             return 0
 
-        # UDP requires socket, TCP creates connections per packet
-        if self.protocol == "udp" and not self.socket:
-            return 0
+        # Record tx_bytes before burst for validation
+        tx_before = self._get_tx_bytes()
 
         packets_sent = 0
+        bytes_sent = 0  # Track actual bytes sent for accurate validation
         start_time = time.time()
+        send_attempts = 0
 
         while (time.time() - start_time) < duration_seconds:
+            # Determine actual packet size based on state and target
+            peer = self._get_next_valid_peer()
+            # Use configured packet size (optimized for MTU 9000)
+            actual_packet_size = self.packet_size
+
             # Check if we can send a packet
-            if not self.bucket.can_send(self.packet_size):
-                wait_time = self.bucket.wait_time(self.packet_size)
+            if not self.bucket.can_send(actual_packet_size):
+                wait_time = self.bucket.wait_time(actual_packet_size)
                 if wait_time > 0:
-                    time.sleep(min(wait_time, 0.001))  # Max 1ms sleep
+                    # Sleep for the actual wait time needed, but cap at 10ms to stay responsive
+                    # This prevents busy-waiting while still maintaining reasonable burst control
+                    sleep_time = min(wait_time, self.TOKEN_BUCKET_MAX_WAIT_SEC)
+                    time.sleep(sleep_time)
                 continue
 
-            # Select random target
-            target = random.choice(list(self.target_addresses.keys()))
+            send_attempts += 1
+            success = False
 
             try:
-                if self.protocol == "udp":
-                    packets_sent += self._send_udp_packet(target)
-                elif self.protocol == "tcp":
-                    packets_sent += self._send_tcp_packet(target)
+                if self.state == NetworkState.ACTIVE_UDP:
+                    success = self._send_udp_burst_packet()
+                elif self.state == NetworkState.ACTIVE_TCP:
+                    success = self._send_tcp_burst_packet()
 
-                # Consume tokens after successful send
-                self.bucket.consume(self.packet_size)
+                if success:
+                    packets_sent += 1
+                    bytes_sent += actual_packet_size
+                    self.bucket.consume(actual_packet_size)
 
             except Exception as e:
-                # Log errors but continue generation
-                if packets_sent == 0:  # Only log first error to avoid spam
-                    logger.debug(f"Network send error to {target}: {e}")
-                time.sleep(0.001)  # Brief pause on error
+                logger.debug(f"Send error in state {self.state.value}: {e}")
 
-            # Yield CPU every few packets
-            if packets_sent % 100 == 0:
-                time.sleep(0.0001)
+            # Yield CPU periodically
+            if send_attempts % self.CPU_YIELD_INTERVAL == 0:
+                time.sleep(self.CPU_YIELD_DURATION)
+
+        # Validate transmission effectiveness with actual bytes sent
+        self._validate_transmission_effectiveness(tx_before, bytes_sent, send_attempts)
+
+        # Check for peer recovery periodically
+        self._check_peer_recovery()
+
+        # Update health metrics
+        self._update_health_metrics(packets_sent, send_attempts)
 
         return packets_sent
 
-    def _send_udp_packet(self, target: str) -> int:
-        """Send single UDP packet with IPv4/IPv6 support."""
+    def _send_udp_burst_packet(self) -> bool:
+        """Send single UDP packet to current peer."""
+        peer = self._get_next_valid_peer()
+        if not peer:
+            self._handle_no_valid_peers()
+            return False
+
         try:
-            if target not in self.target_addresses:
-                return 0
-            ip_addr, family = self.target_addresses[target]
+            # Send regular UDP packet
+            packet = self._get_current_packet()
+            port = self.port
 
-            # Refresh packet timestamp
-            current_time = struct.pack('!d', time.time())
-            packet = current_time + self.packet_data[8:]
+            self.socket.sendto(packet, (peer, port))
+            self._record_peer_success(peer)
+            self.last_sent_peer = peer  # Track successful send
+            return True
 
-            self.socket.sendto(packet, (ip_addr, self.port))
-            return 1
-        except socket.error:
-            # Expected for non-blocking UDP - just continue
-            return 0
+        except socket.error as e:
+            self._record_peer_failure(peer, str(e))
+            return False
 
-    def _send_tcp_packet(self, target: str) -> int:
-        """Send TCP packet using persistent connection pool."""
+    def _send_tcp_burst_packet(self) -> bool:
+        """Send single TCP packet using connection pool."""
+        peer = self._get_next_valid_peer()
+        if not peer:
+            self._handle_no_valid_peers()
+            return False
+
         try:
-            # Get or create persistent connection
-            tcp_sock = self._get_tcp_connection(target)
-            if not tcp_sock:
-                return 0
+            conn = self._get_tcp_connection(peer)
+            if not conn:
+                return False
 
-            # Send packet data with current timestamp
-            current_time = struct.pack('!d', time.time())
-            packet = current_time + self.packet_data[8:]
-            tcp_sock.send(packet)
-            return 1
-        except (socket.error, OSError):
-            # Connection failed, remove from pool
-            if target in self.tcp_connections:
+            packet = self._get_current_packet()
+            conn.send(packet)
+            self._record_peer_success(peer)
+            self.last_sent_peer = peer  # Track successful send
+            return True
+
+        except (socket.error, OSError) as e:
+            self._record_peer_failure(peer, str(e))
+            if peer in self.tcp_connections:
                 try:
-                    self.tcp_connections[target].close()
+                    self.tcp_connections[peer].close()
                 except:
                     pass
-                del self.tcp_connections[target]
-            return 0
+                del self.tcp_connections[peer]
+            return False
+
+
+
+
+    def _get_current_packet(self) -> bytes:
+        """Get packet with current timestamp."""
+        current_time = struct.pack('!d', time.time())
+        return current_time + self.packet_data[8:]
+
+    def _get_tcp_connection(self, peer: str):
+        """Get or create TCP connection for peer with IPv4/IPv6 support."""
+        if peer in self.tcp_connections:
+            return self.tcp_connections[peer]
+
+        try:
+            # Use getaddrinfo for protocol-agnostic connection
+            addr_info = socket.getaddrinfo(peer, self.port, socket.AF_UNSPEC,
+                                         socket.SOCK_STREAM, socket.IPPROTO_TCP)
+
+            # Try each address family until one succeeds
+            for family, socktype, proto, canonname, sockaddr in addr_info:
+                try:
+                    sock = socket.socket(family, socktype, proto)
+                    sock.settimeout(self.timeout)
+                    if family == socket.AF_INET6:
+                        # Set IPv6 TTL/hop limit equivalent
+                        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
+                    else:
+                        # Set IPv4 TTL
+                        sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
+
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    sock.connect(sockaddr)
+                    self.tcp_connections[peer] = sock
+                    return sock
+                except (socket.error, OSError) as e:
+                    if 'sock' in locals():
+                        sock.close()
+                    continue
+
+            # All addresses failed
+            return None
+        except (socket.error, OSError):
+            return None
+
+    def _validate_transmission_effectiveness(self, tx_before: Optional[int], bytes_sent: int, attempts: int):
+        """Validate that transmission actually increased tx_bytes.
+
+        Args:
+            tx_before: tx_bytes count before burst
+            bytes_sent: Actual bytes sent during burst
+            attempts: Number of send attempts made
+        """
+        if self.network_interface is None:
+            logger.debug("No network interface available for tx_bytes validation")
+            return
+
+        tx_after = self._get_tx_bytes()
+        if tx_before is None or tx_after is None:
+            logger.warning("tx_bytes monitoring unavailable (container environment?)")
+            return
+
+        tx_delta = tx_after - tx_before
+        expected_bytes = bytes_sent  # Use actual bytes sent, not estimated
+
+        # Calculate elapsed time for rate calculation
+        elapsed_time = 0.1  # Minimum assumed time to prevent division by zero
+        if hasattr(self, '_last_validation_time'):
+            elapsed_time = max(0.1, time.time() - self._last_validation_time)
+        self._last_validation_time = time.time()
+
+        # Convert to bytes per second for EMA
+        tx_rate_bps = tx_delta / elapsed_time if elapsed_time > 0 else 0
+
+        # Update EMA with rate, not raw bytes
+        self.tx_bytes_ema = (self.tx_bytes_alpha * tx_rate_bps +
+                           (1 - self.tx_bytes_alpha) * self.tx_bytes_ema)
+
+        # Verify external egress for E2 compliance
+        # Only mark as verified if we actually sent to external peers
+        if tx_delta > expected_bytes * 0.6:  # 60% threshold for validation
+            # Check if the last peer we actually sent to was external
+            if self.last_sent_peer and self.peers.get(self.last_sent_peer, {}).get('is_external', False):
+                self.external_egress_verified = True
+        else:
+            logger.debug(f"Low tx_bytes delta: {tx_delta} bytes vs {expected_bytes} expected")
+            self._handle_ineffective_transmission()
+
+
+    def _get_tx_bytes(self) -> Optional[int]:
+        """Get current tx_bytes count from network interface."""
+        if self.network_interface:
+            return read_nic_tx_bytes(self.network_interface)
+        return None
+
+    def _handle_ineffective_transmission(self):
+        """Handle case where transmission appears ineffective."""
+        self.validation_failures += 1
+
+        if self.validation_failures >= 3:
+            logger.warning("Multiple validation failures, triggering fallback")
+            self._trigger_fallback()
+            self.validation_failures = 0
+
+    def _trigger_fallback(self):
+        """Trigger fallback due to validation failures."""
+        if self.state == NetworkState.ACTIVE_UDP:
+            self._handle_protocol_failure()
+        elif self.state == NetworkState.ACTIVE_TCP:
+            self._rotate_to_next_peer()
+
+    def _record_peer_success(self, peer: str):
+        """Record successful transmission to peer."""
+        if peer in self.peers:
+            peer_info = self.peers[peer]
+            peer_info['successes'] += 1
+            peer_info['reputation'] = min(self.REPUTATION_MAX, peer_info['reputation'] + self.REPUTATION_SUCCESS_INCREMENT)
+            peer_info['last_attempt'] = time.time()
+
+    def _record_peer_failure(self, peer: str, error: str):
+        """Record failed transmission to peer."""
+        if peer in self.peers:
+            peer_info = self.peers[peer]
+            peer_info['failures'] += 1
+            peer_info['reputation'] = max(self.REPUTATION_MIN, peer_info['reputation'] - self.REPUTATION_FAILURE_PENALTY)
+            peer_info['last_attempt'] = time.time()
+
+            # Blacklist peer temporarily if reputation is very low
+            if peer_info['reputation'] < self.REPUTATION_BLACKLIST_THRESHOLD:
+                peer_info['blacklist_until'] = time.time() + self.BLACKLIST_DURATION_SEC
+                peer_info['state'] = PeerState.INVALID
+                logger.debug(f"Peer {peer} temporarily blacklisted due to low reputation")
+
+    def _update_health_metrics(self, packets_sent: int, attempts: int):
+        """Update health scoring metrics."""
+        # Update send success rate
+        if attempts > 0:
+            success_rate = packets_sent / attempts
+            self.recent_send_attempts.append(success_rate)
+
+            # Keep only recent attempts
+            if len(self.recent_send_attempts) > 100:
+                self.recent_send_attempts = self.recent_send_attempts[-100:]
+
+            self.send_success_rate = sum(self.recent_send_attempts) / len(self.recent_send_attempts)
+
+        # Update peer availability
+        valid_peers = sum(1 for info in self.peers.values() if info['state'] == PeerState.VALID)
+        total_peers = len(self.peers)
+        self.peer_availability = valid_peers / total_peers if total_peers > 0 else 0.0
+
+        # Calculate overall health score
+        self._calculate_health_score()
+
+    def _calculate_health_score(self):
+        """Calculate overall network health score (0-100)."""
+        # Base score from current state
+        state_scores = {
+            NetworkState.ACTIVE_UDP: self.HEALTH_SCORE_ACTIVE_UDP,
+            NetworkState.ACTIVE_TCP: self.HEALTH_SCORE_ACTIVE_TCP,
+            NetworkState.VALIDATING: self.HEALTH_SCORE_VALIDATING,
+            NetworkState.INITIALIZING: self.HEALTH_SCORE_INITIALIZING,
+            NetworkState.ERROR: self.HEALTH_SCORE_ERROR_OFF,
+            NetworkState.OFF: self.HEALTH_SCORE_ERROR_OFF
+        }
+
+        state_score = state_scores.get(self.state, self.HEALTH_SCORE_ERROR_OFF)
+
+        # Component scores (weighted according to documented constants)
+        send_success_score = self.send_success_rate * self.HEALTH_WEIGHT_SEND_SUCCESS
+        tx_bytes_score = min(self.HEALTH_WEIGHT_TX_BYTES,
+                           (self.tx_bytes_ema / (self.bucket.rate_mbps * 125000)) * self.HEALTH_WEIGHT_TX_BYTES)
+        peer_availability_score = self.peer_availability * self.HEALTH_WEIGHT_PEER_AVAILABILITY
+        external_verification_score = self.HEALTH_WEIGHT_EXTERNAL_VERIFICATION if self.external_egress_verified else 0
+
+        # Calculate weighted score
+        component_score = (send_success_score + tx_bytes_score +
+                          peer_availability_score + external_verification_score)
+
+        # Final score is minimum of state score and component score
+        self.health_score = int(min(state_score, component_score))
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get comprehensive health status for monitoring."""
+        return {
+            'state': self.state.value,
+            'health_score': self.health_score,
+            'tx_bytes_ema_bps': int(self.tx_bytes_ema),
+            'target_bps': int(self.bucket.rate_mbps * 125000),
+            'external_egress_verified': self.external_egress_verified,
+            'send_success_rate': round(self.send_success_rate, 3),
+            'peer_availability': round(self.peer_availability, 3),
+            'validation_failures': self.validation_failures,
+            'time_in_state': round(time.monotonic() - self.state_start_time, 1),
+            'valid_peers': [addr for addr, info in self.peers.items()
+                          if info['state'] == PeerState.VALID],
+            'peer_reputation': {addr: round(info['reputation'], 1)
+                              for addr, info in self.peers.items()},
+            'state_history': self.state_transitions[-5:]  # Last 5 transitions
+        }
+
+    def update_rate(self, new_rate_mbps: float):
+        """Update target transmission rate."""
+        self.bucket.update_rate(new_rate_mbps)
 
     def stop(self):
         """Stop network generation and cleanup resources."""
+        self._transition_state(NetworkState.OFF, "stop() called")
+
         # Close UDP socket
         if self.socket:
             try:
@@ -3329,13 +4011,15 @@ class NetworkGenerator:
             self.socket = None
 
         # Close all TCP connections
-        for target, conn in list(self.tcp_connections.items()):
+        for peer, conn in list(self.tcp_connections.items()):
             try:
                 conn.close()
             except Exception:
                 pass
         self.tcp_connections.clear()
-        self.tcp_retry_delays.clear()  # Clear retry delays
+
+        # Reset state
+        self.peers.clear()
 
     def __enter__(self):
         """Context manager entry."""
@@ -3362,6 +4046,12 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
         paused_fn: Function returning True if operations should pause
         rate_mbit_val: Shared Value containing target network rate in Mbit/s
     """
+    global NET_MODE, NET_MIN_RATE, NET_MAX_RATE, NET_PROTOCOL, NET_TTL, NET_PACKET_SIZE, NET_PORT
+    global NET_REQUIRE_EXTERNAL, NET_VALIDATE_STARTUP, NET_STATE_DEBOUNCE_SEC, NET_STATE_MIN_ON_SEC
+    global NET_STATE_MIN_OFF_SEC, NET_PEERS, NET_BURST_SEC, NET_IDLE_SEC
+    global NET_VALIDATION_TIMEOUT_MS
+    global controller_state_lock, network_generator_status
+
     if NET_MODE != "client":
         return
 
@@ -3392,13 +4082,41 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
                     protocol=NET_PROTOCOL,
                     ttl=NET_TTL,
                     packet_size=NET_PACKET_SIZE,
-                    port=NET_PORT
+                    port=NET_PORT,
+                    require_external=NET_REQUIRE_EXTERNAL or is_e2_shape(),
+                    validate_startup=NET_VALIDATE_STARTUP
                 )
 
-                # Start generator with configured peers or RFC 2544 defaults
+                # Apply timing and validation configuration from ENV variables
+                generator.state_debounce_sec = NET_STATE_DEBOUNCE_SEC
+                generator.state_min_on_sec = NET_STATE_MIN_ON_SEC
+                generator.state_min_off_sec = NET_STATE_MIN_OFF_SEC
+                # Apply validation timeouts if configured
+                if NET_VALIDATION_TIMEOUT_MS > 0:
+                    generator.TCP_VALIDATION_TIMEOUT = NET_VALIDATION_TIMEOUT_MS / 1000.0
+
+                # Start generator with configured peers
                 generator.start(NET_PEERS if NET_PEERS else [])
                 last_rate = current_rate
                 logger.debug(f"Network generator started: {current_rate:.1f} Mbps, {NET_PROTOCOL.upper()}")
+
+                # Update shared network status
+                health_status = generator.get_health_status()
+                with controller_state_lock:
+                    external_count = sum(1 for addr, info in generator.peers.items()
+                                       if info.get('is_external', False) and
+                                       info['state'] == PeerState.VALID)
+                    internal_count = sum(1 for addr, info in generator.peers.items()
+                                       if not info.get('is_external', False) and
+                                       info['state'] == PeerState.VALID)
+                    network_generator_status.update({
+                        'state': health_status['state'],
+                        'protection_active': external_count > 0,
+                        'external_peers_count': external_count,
+                        'internal_peers_count': internal_count,
+                        'health_score': health_status['health_score'],
+                        'external_egress_verified': health_status['external_egress_verified']
+                    })
 
             elif generator:
                 # Just update rate if generator exists
@@ -3412,6 +4130,24 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
                     packets_sent = generator.send_burst(burst_duration)
                     if packets_sent > 0:
                         logger.debug(f"Sent {packets_sent} packets in {burst_duration}s burst")
+
+                    # Update shared network status after burst
+                    health_status = generator.get_health_status()
+                    with controller_state_lock:
+                        external_count = sum(1 for addr, info in generator.peers.items()
+                                           if info.get('is_external', False) and
+                                           info['state'] == PeerState.VALID)
+                        internal_count = sum(1 for addr, info in generator.peers.items()
+                                           if not info.get('is_external', False) and
+                                           info['state'] == PeerState.VALID)
+                        network_generator_status.update({
+                            'state': health_status['state'],
+                            'protection_active': external_count > 0,
+                            'external_peers_count': external_count,
+                            'internal_peers_count': internal_count,
+                            'health_score': health_status['health_score'],
+                            'external_egress_verified': health_status['external_egress_verified']
+                        })
                 except Exception as e:
                     logger.debug(f"Network burst error: {e}")
 
@@ -3877,16 +4613,59 @@ class NetworkFallbackState:
 
         return self.active
 
+    def get_ramped_target(self, base_target: float, fallback_target: float) -> float:
+        """
+        Calculate ramped network target during fallback activation.
+
+        Implements smooth rate transitions over NET_FALLBACK_RAMP_SEC seconds
+        from base_target to fallback_target when fallback activates.
+
+        Args:
+            base_target (float): Original network target percentage
+            fallback_target (float): Fallback network target percentage
+
+        Returns:
+            float: Ramped target percentage
+        """
+        if not self.active:
+            return base_target
+
+        # Calculate time since activation
+        now = time.time()
+        time_since_activation = now - self.last_activation
+
+        # If ramping period is complete or NET_FALLBACK_RAMP_SEC is None/0, return full fallback target
+        if NET_FALLBACK_RAMP_SEC is None or NET_FALLBACK_RAMP_SEC <= 0 or time_since_activation >= NET_FALLBACK_RAMP_SEC:
+            return fallback_target
+
+        # Calculate ramp progress (0.0 = start, 1.0 = end)
+        ramp_progress = time_since_activation / NET_FALLBACK_RAMP_SEC
+
+        # Linear interpolation from base_target to fallback_target
+        ramped_target = base_target + (fallback_target - base_target) * ramp_progress
+
+        return ramped_target
+
     def get_debug_info(self) -> Dict[str, Any]:
         """Get debug information about fallback state."""
         now = time.time()
+
+        # Calculate ramp progress if fallback is active
+        ramp_progress_pct = None
+        if self.active and self.last_activation > 0 and NET_FALLBACK_RAMP_SEC is not None and NET_FALLBACK_RAMP_SEC > 0:
+            time_since_activation = now - self.last_activation
+            ramp_progress = min(1.0, time_since_activation / NET_FALLBACK_RAMP_SEC)
+            ramp_progress_pct = ramp_progress * 100
+
         return {
             'active': self.active,
             'activation_count': self.activation_count,
             'seconds_since_change': now - self.last_change,
-            'in_debounce': (now - self.last_change) < NET_FALLBACK_DEBOUNCE_SEC,
+            'in_debounce': (now - self.last_change) < NET_FALLBACK_DEBOUNCE_SEC if NET_FALLBACK_DEBOUNCE_SEC is not None else False,
             'last_activation_ago': now - self.last_activation if self.last_activation > 0 else None,
-            'last_deactivation_ago': now - self.last_deactivation if self.last_deactivation > 0 else None
+            'last_deactivation_ago': now - self.last_deactivation if self.last_deactivation > 0 else None,
+            'ramp_progress_pct': ramp_progress_pct,
+            'ramp_complete': ramp_progress_pct is not None and ramp_progress_pct >= 100.0
         }
 
 def main():
@@ -3928,6 +4707,17 @@ def main():
     # Shared state for health endpoints with thread safety
     import threading
     controller_state_lock = threading.Lock()
+
+    # Network generator status (shared between threads)
+    network_generator_status = {
+        'state': 'OFF',
+        'protection_active': False,
+        'external_peers_count': 0,
+        'internal_peers_count': 0,
+        'health_score': 0,
+        'external_egress_verified': False
+    }
+
     controller_state = {
         'start_time': time.time(),
         'cpu_pct': 0.0,
@@ -3941,7 +4731,8 @@ def main():
         'net_rate': 0.0,
         'paused': 0.0,
         'mem_target': MEM_TARGET_PCT,
-        'net_target': NET_TARGET_PCT
+        'net_target': NET_TARGET_PCT,
+        'network_generator': network_generator_status
     }
 
     global paused
@@ -4107,8 +4898,10 @@ def main():
                     'net_target': net_target_now,
                     'network_fallback_active': fallback_debug['active'],
                     'network_fallback_count': fallback_debug['activation_count'],
+                    'network_fallback_reason': fallback_debug.get('activation_reason', ''),
                     'is_e2_shape': is_e2,
-                    'cpu_p95_7d': cpu_p95
+                    'cpu_p95_7d': cpu_p95,
+                    'network_generator': network_generator_status
                 })
 
             # Store metrics sample for 7-day analysis with corruption handling
@@ -4217,17 +5010,27 @@ def main():
                 # Integrate fallback with P95-driven control
                 fallback_active = network_fallback_state.should_activate(is_e2, cpu_p95, net_avg, mem_avg)
 
-                # Apply fallback to network target (override jittered target if needed)
+                # Apply fallback to network target with smooth ramping
                 effective_net_target = net_target_now
                 if fallback_active and net_target_now < NET_FALLBACK_START_PCT:
-                    effective_net_target = NET_FALLBACK_START_PCT
+                    # Use ramped target for smooth transitions over NET_FALLBACK_RAMP_SEC
+                    effective_net_target = network_fallback_state.get_ramped_target(
+                        net_target_now, NET_FALLBACK_START_PCT
+                    )
+
+                    # Calculate ramp progress for logging
+                    now = time.time()
+                    time_since_activation = now - network_fallback_state.last_activation
+                    ramp_progress = min(1.0, time_since_activation / NET_FALLBACK_RAMP_SEC) * 100
+
                     logger.info(f"Network fallback ACTIVE (E2={is_e2}, CPU_p95={cpu_p95:.1f}%, "
-                              f"Net={net_avg:.1f}%, Mem={mem_avg:.1f}%) -> target={effective_net_target:.1f}%")
+                              f"Net={net_avg:.1f}%, Mem={mem_avg:.1f}%) -> ramped target={effective_net_target:.1f}% "
+                              f"(ramp {ramp_progress:.1f}%)")
                 elif network_fallback_state.active and not fallback_active:
                     logger.info(f"Network fallback DEACTIVATED")
 
                 # Network control (only if network can run)
-                if net_can_run and NET_TARGET_PCT > 0 and net_avg is not None and NET_MODE == "client" and NET_PEERS:
+                if net_can_run and NET_TARGET_PCT > 0 and net_avg is not None and NET_MODE == "client":
                     err_net = effective_net_target - net_avg
                     new_rate = float(net_rate_mbit.value) + KP_NET * (err_net)
                     net_rate_mbit.value = max(NET_MIN_RATE, min(NET_MAX_RATE, new_rate))

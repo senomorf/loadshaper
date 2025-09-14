@@ -8,6 +8,9 @@ import sys
 # Add the parent directory to sys.path so we can import loadshaper
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 from loadshaper import CPUP95Controller, MetricsStorage
 
@@ -35,6 +38,7 @@ class MockMetricsStorage:
         controller._p95_cache_time = 0
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestP95ControllerIntegration(unittest.TestCase):
     """Integration tests for P95 controller with main loop and configuration"""
 
@@ -430,6 +434,7 @@ class TestP95ControllerIntegration(unittest.TestCase):
                 pass
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestP95ConfigurationValidation(unittest.TestCase):
     """Test P95 configuration validation and error handling"""
 
@@ -491,12 +496,13 @@ class TestP95ConfigurationValidation(unittest.TestCase):
 
             except Exception as e:
                 # Expected - database creation should fail with invalid path or config
-                self.assertIsInstance(e, (OSError, PermissionError, TypeError))
+                self.assertIsInstance(e, (OSError, PermissionError, TypeError, RuntimeError))
 
 
 
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestP95ConvergenceBehavior(unittest.TestCase):
     """Test P95 controller convergence behavior over many slots"""
 

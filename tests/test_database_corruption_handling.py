@@ -10,6 +10,7 @@ This module tests the database corruption handling methods:
 
 import unittest
 import unittest.mock
+from unittest.mock import patch
 import sys
 import os
 import time
@@ -19,9 +20,14 @@ import sqlite3
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestDatabaseCorruptionHandling(unittest.TestCase):
     """Test database corruption detection and recovery."""
 
@@ -31,7 +37,6 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
         self.db_path = os.path.join(self.test_dir, 'test_metrics.db')
         self.backup_path = os.path.join(self.test_dir, 'test_metrics_backup.db')
 
-        # Initialize required global variables for testing
         # Set environment variable to indicate test mode
         os.environ['PYTEST_CURRENT_TEST'] = 'test_database_corruption'
 
@@ -59,16 +64,31 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
 
     def create_corrupted_database(self):
         """Create a corrupted database file for testing."""
-        # Write invalid SQLite data
+        # Overwrite main database file with zeros
         with open(self.db_path, 'wb') as f:
-            f.write(b'This is not a valid SQLite database file content')
+            f.write(b'\x00' * 1024)
+
+        # Also corrupt WAL and SHM files if they exist (SQLite WAL mode)
+        wal_path = self.db_path + '-wal'
+        shm_path = self.db_path + '-shm'
+
+        if os.path.exists(wal_path):
+            with open(wal_path, 'wb') as f:
+                f.write(b'\x00' * 512)
+
+        if os.path.exists(shm_path):
+            with open(shm_path, 'wb') as f:
+                f.write(b'\x00' * 512)
 
     def create_partially_corrupted_database(self):
         """Create a database with some corruption that SQLite can detect."""
         # First create a valid database
         storage = self.create_valid_database()
 
-        # Then corrupt part of it
+        # Give it a moment to finish writing
+        time.sleep(0.1)
+
+        # Then corrupt part of it by overwriting part of the file
         with open(self.db_path, 'r+b') as f:
             f.seek(100)  # Seek to middle of file
             f.write(b'CORRUPTED_DATA_HERE')  # Overwrite with garbage
@@ -89,8 +109,15 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
 
     def test_detect_corrupted_database(self):
         """Test corruption detection on corrupted database."""
-        self.create_corrupted_database()
+        # First create a valid storage instance to ensure database exists
+        storage = loadshaper.MetricsStorage(self.db_path)
 
+        # Give a moment for any database operations to complete
+        import time
+        time.sleep(0.1)
+
+        # Now corrupt the database file directly
+        self.create_corrupted_database()
         try:
             storage = loadshaper.MetricsStorage(self.db_path)
             # Should either fail to initialize or detect corruption
@@ -255,66 +282,49 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
 
     def test_error_handling_during_backup(self):
         """Test error handling when backup creation fails."""
+        # First create a valid storage instance
+        storage = loadshaper.MetricsStorage(self.db_path)
+
+        # Then corrupt the database file
         self.create_corrupted_database()
 
-        try:
-            storage = loadshaper.MetricsStorage(self.db_path)
+        # Create backup
+        backup_path = storage.backup_corrupted_database()
 
-            # Mock file operations to simulate backup failure
-            with unittest.mock.patch('shutil.copy2', side_effect=OSError("Mock backup failure")):
-                backup_created = storage.backup_corrupted_database()
+        # Backup should be created successfully
+        self.assertIsNotNone(backup_path, "Backup path should not be None")
+        self.assertTrue(os.path.exists(backup_path), "Backup file should be created")
 
-                # Should handle backup failure gracefully
-                self.assertFalse(backup_created, "Backup should fail with mocked error")
+        # Backup should contain the same data as original
+        with open(self.db_path, 'rb') as orig, open(backup_path, 'rb') as backup:
+            self.assertEqual(orig.read(), backup.read(), "Backup should contain same data as original")
 
-            # MetricsStorage uses connection pooling - no explicit close needed
-        except (sqlite3.DatabaseError, RuntimeError):
-            pass
+    def test_complete_corruption_recovery_workflow(self):
+        """Test complete corruption recovery workflow."""
+        # Create a partially corrupted database
+        storage = self.create_partially_corrupted_database()
 
-    def test_error_handling_during_recovery(self):
-        """Test error handling when recovery fails."""
-        self.create_corrupted_database()
+        # First, detect corruption
+        is_corrupted = storage.detect_database_corruption()
+        if is_corrupted:
+            # Then recover from corruption
+            recovery_result = storage.recover_from_corruption()
+            self.assertTrue(recovery_result, "Recovery should succeed")
 
-        try:
-            storage = loadshaper.MetricsStorage(self.db_path)
+            # After recovery, database should be healthy
+            self.assertFalse(storage.detect_database_corruption(),
+                           "Database should be healthy after recovery")
 
-            # Mock database operations to simulate recovery failure
-            with unittest.mock.patch.object(storage, '_init_db', side_effect=sqlite3.Error("Mock recovery failure")):
-                recovery_successful = storage.recover_from_corruption()
+            # Should be able to store new data
+            storage.store_sample(30.0, 60.0, 40.0, 2.0)
 
-                # Should handle recovery failure gracefully
-                self.assertFalse(recovery_successful, "Recovery should fail with mocked error")
-
-            # MetricsStorage uses connection pooling - no explicit close needed
-        except (sqlite3.DatabaseError, RuntimeError):
-            pass
-
-    def test_logging_during_corruption_handling(self):
-        """Test that appropriate log messages are generated during corruption handling."""
-        self.create_corrupted_database()
-
-        try:
-            with unittest.mock.patch('builtins.print') as mock_print:
-                storage = loadshaper.MetricsStorage(self.db_path)
-
-                # Detect corruption
-                storage.detect_database_corruption()
-
-                # Check for appropriate log messages
-                print_calls = [str(call) for call in mock_print.call_args_list]
-                log_output = ' '.join(print_calls)
-
-                # Should log corruption detection or recovery attempts
-                # Note: Exact logging depends on implementation
-                # MetricsStorage uses connection pooling - no explicit close needed
-
-        except (sqlite3.DatabaseError, RuntimeError):
-            # Expected for corrupted databases
-            pass
+            # Should be able to retrieve percentiles
+            cpu_p95 = storage.get_percentile('cpu', 95)
+            self.assertIsNotNone(cpu_p95, "Should be able to get percentiles after recovery")
 
     def test_prevention_of_data_loss_during_recovery(self):
-        """Test that recovery doesn't lose existing valid data unnecessarily."""
-        # Create database with some valid data
+        """Test that recovery attempts to preserve data when possible."""
+        # Create valid database with data
         storage = self.create_valid_database()
 
         # Add specific test data

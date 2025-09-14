@@ -17,6 +17,9 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 # Import and set up configuration before importing loadshaper components
 import loadshaper
 
@@ -47,6 +50,7 @@ class MockMetricsStorage:
         return None
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestSafetyGating(unittest.TestCase):
     """Test safety gating mechanisms in CPUP95Controller."""
 
@@ -54,6 +58,11 @@ class TestSafetyGating(unittest.TestCase):
         """Set up test fixtures."""
         # Set test environment to ensure deterministic behavior
         os.environ['PYTEST_CURRENT_TEST'] = 'test_safety_gating'
+
+        # Ensure load checking is enabled for safety gating tests
+        loadshaper.LOAD_CHECK_ENABLED = True
+        loadshaper.LOAD_THRESHOLD = 0.6
+        loadshaper.LOAD_RESUME_THRESHOLD = 0.4
 
         self.storage = MockMetricsStorage()
         self.controller = CPUP95Controller(self.storage)
@@ -76,9 +85,18 @@ class TestSafetyGating(unittest.TestCase):
         # Simulate high load that should trigger safety by advancing time to trigger a new slot
         high_load = 0.8  # Above threshold (0.6)
 
-        # Advance time to trigger a new slot (60 seconds = slot duration)
-        with patch('time.monotonic', return_value=time.monotonic() + 65):
-            is_high_slot, target_intensity = self.controller.should_run_high_slot(high_load)
+        # Use direct manipulation of slot start to avoid time.monotonic issues in tests
+        original_start = self.controller.current_slot_start
+
+        # First call with normal time
+        self.controller.should_run_high_slot(high_load)
+
+        # Manually advance the slot start time to trigger rollover
+        # Set to more than slot duration (60s) ago to ensure rollover triggers
+        self.controller.current_slot_start = original_start - 70
+
+        # Now call again to trigger the safety check
+        is_high_slot, target_intensity = self.controller.should_run_high_slot(high_load)
 
         # Safety should override and force low slot
         self.assertFalse(is_high_slot)
@@ -108,7 +126,11 @@ class TestSafetyGating(unittest.TestCase):
         # Test that exactly at threshold doesn't trigger safety
         controller1 = CPUP95Controller(MockMetricsStorage())
         controller1.state = 'BUILDING'
-        with patch('time.monotonic', return_value=time.monotonic() + 65):
+        base_time = time.monotonic()
+        # Initialize slot first
+        with patch('time.monotonic', return_value=base_time):
+            controller1.should_run_high_slot(0.6)
+        with patch('time.monotonic', return_value=base_time + 65):
             is_high_slot, _ = controller1.should_run_high_slot(0.6)  # Exactly at threshold
         # Should not trigger safety since condition is > LOAD_THRESHOLD
         self.assertEqual(controller1.slots_skipped_safety, 0)
@@ -116,7 +138,10 @@ class TestSafetyGating(unittest.TestCase):
         # Test that above threshold triggers safety
         controller2 = CPUP95Controller(MockMetricsStorage())
         controller2.state = 'BUILDING'
-        with patch('time.monotonic', return_value=time.monotonic() + 65):
+        # Initialize slot first
+        with patch('time.monotonic', return_value=base_time):
+            controller2.should_run_high_slot(0.7)
+        with patch('time.monotonic', return_value=base_time + 65):
             is_high_slot, _ = controller2.should_run_high_slot(0.7)  # Above threshold
         # Should trigger safety
         self.assertGreater(controller2.slots_skipped_safety, 0)
@@ -155,11 +180,16 @@ class TestSafetyGating(unittest.TestCase):
 
         # Trigger safety multiple times
         high_load = 0.8
-        for _ in range(3):
-            # Create new slot each time to increment counter
-            with patch.object(self.controller, '_end_current_slot'):
-                with patch('time.monotonic', return_value=time.monotonic() + 65):
-                    self.controller.should_run_high_slot(high_load)
+        base_time = time.monotonic()
+
+        # Initialize first slot
+        with patch('time.monotonic', return_value=base_time):
+            self.controller.should_run_high_slot(high_load)
+
+        # Trigger safety by creating new slots
+        for i in range(1, 4):
+            with patch('time.monotonic', return_value=base_time + (i * 65)):
+                self.controller.should_run_high_slot(high_load)
 
         # Counter should have incremented
         self.assertGreater(self.controller.slots_skipped_safety, initial_count)
@@ -184,10 +214,21 @@ class TestSafetyGating(unittest.TestCase):
 
     def test_safety_status_in_telemetry(self):
         """Test that safety status is properly reported in get_status()."""
-        # Trigger safety
+        # Trigger safety by advancing time to force slot rollover
         high_load = 0.8
-        with patch('time.monotonic', return_value=time.monotonic() + 65):
-            self.controller.should_run_high_slot(high_load)
+
+        # Use direct manipulation of slot start to avoid time.monotonic issues in tests
+        original_start = self.controller.current_slot_start
+
+        # First call with normal time
+        self.controller.should_run_high_slot(high_load)
+
+        # Manually advance the slot start time to trigger rollover
+        # Set to more than slot duration (60s) ago to ensure rollover triggers
+        self.controller.current_slot_start = original_start - 70
+
+        # Now call again to trigger the safety check
+        self.controller.should_run_high_slot(high_load)
 
         status = self.controller.get_status()
 
@@ -218,8 +259,17 @@ class TestSafetyGating(unittest.TestCase):
                 initial_safety_count = fresh_controller.slots_skipped_safety
 
                 # Create fresh slot to test safety behavior
-                with patch('time.monotonic', return_value=time.monotonic() + 65):
-                    fresh_controller.should_run_high_slot(load_avg)
+                original_start = fresh_controller.current_slot_start
+
+                # First call to initialize slot
+                fresh_controller.should_run_high_slot(load_avg)
+
+                # Manually advance slot start to trigger rollover
+                # Set to more than slot duration (60s) ago to ensure rollover triggers
+                fresh_controller.current_slot_start = original_start - 70
+
+                # Second call to trigger rollover and safety check
+                fresh_controller.should_run_high_slot(load_avg)
 
                 safety_increments = fresh_controller.slots_skipped_safety - initial_safety_count
                 self.assertEqual(safety_increments, expected_safety_increments,

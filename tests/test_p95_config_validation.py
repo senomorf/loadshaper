@@ -2,15 +2,20 @@
 
 import unittest
 import unittest.mock
+from unittest.mock import patch
 import sys
 import os
 
 # Add the parent directory to the path so we can import loadshaper
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestP95ConfigurationValidation(unittest.TestCase):
     """Test P95 configuration variables are properly set and validated."""
 

@@ -10,6 +10,9 @@ import logging
 # Add the parent directory to sys.path so we can import loadshaper
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 from loadshaper import CPUP95Controller, MetricsStorage
 
@@ -37,6 +40,7 @@ class MockMetricsStorage:
         controller._p95_cache_time = 0
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestCPUP95Controller(unittest.TestCase):
     """Test suite for CPUP95Controller class"""
 
@@ -94,6 +98,7 @@ class TestCPUP95Controller(unittest.TestCase):
             self.assertEqual(controller.slot_history_size, expected_size)
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestP95Caching(unittest.TestCase):
     """Test P95 caching behavior"""
 
@@ -176,6 +181,7 @@ class TestP95Caching(unittest.TestCase):
         self.assertEqual(self.mock_storage.call_count, 1)
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestStateMachine(unittest.TestCase):
     """Test state machine behavior"""
 
@@ -275,6 +281,7 @@ class TestStateMachine(unittest.TestCase):
         self.assertEqual(self.controller.state, original_state)
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestIntensityCalculation(unittest.TestCase):
     """Test target intensity calculation"""
 
@@ -405,6 +412,7 @@ class TestIntensityCalculation(unittest.TestCase):
         self.assertAlmostEqual(intensity, expected, places=1)
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestExceedanceTargets(unittest.TestCase):
     """Test exceedance target calculation"""
 
@@ -497,6 +505,7 @@ class TestExceedanceTargets(unittest.TestCase):
         self.assertEqual(exceedance, expected)
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestSlotEngine(unittest.TestCase):
     """Test slot engine behavior"""
 
@@ -672,6 +681,7 @@ class TestSlotEngine(unittest.TestCase):
         self.assertFalse(recorded_as_high, "Slot should be recorded as low after override")
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestStatusReporting(unittest.TestCase):
     """Test status reporting and telemetry"""
 
@@ -728,6 +738,7 @@ class TestStatusReporting(unittest.TestCase):
             self.assertAlmostEqual(status['slot_remaining_sec'], 0.0, places=1)  # Should be 0, not negative
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestEdgeCases(unittest.TestCase):
     """Test edge cases and error conditions"""
 
@@ -859,6 +870,7 @@ class TestEdgeCases(unittest.TestCase):
             self.assertEqual(controller.slots_skipped_safety, original_safety_count)
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestAdditionalEdgeCases(unittest.TestCase):
     """Test additional edge cases and missing scenarios"""
 
@@ -1085,6 +1097,7 @@ class TestAdditionalEdgeCases(unittest.TestCase):
         self.assertAlmostEqual(target, 1.0, places=1)  # REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestHighLoadFallback(unittest.TestCase):
     """Test high-load fallback mechanism"""
 
@@ -1234,6 +1247,7 @@ class TestHighLoadFallback(unittest.TestCase):
                 self.fail("Controller should handle missing ring buffer file gracefully")
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestMissingCoverage(unittest.TestCase):
     """Test cases for previously untested code paths identified in code review."""
 

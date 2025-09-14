@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 
 
 class TestMountPointVerification(unittest.TestCase):
-    """Test mount point verification for issue #74 implementation"""
+    """Test mount point verification for persistent storage"""
 
     def setUp(self):
         """Set up test environment"""

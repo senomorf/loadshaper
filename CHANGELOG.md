@@ -9,53 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2025-01-15
 
-### ⚠️ BREAKING CHANGES - CRITICAL FIX
+### ⚠️ BREAKING CHANGES
 - **Persistent volume storage now REQUIRED** - Docker Compose deployments must include persistent volume or container will not start
-- **Container now runs as non-root user** (uid/gid 1000) for security
-- **No fallback to ephemeral storage** - LoadShaper requires persistent storage for Oracle compliance
+- **Network generation completely rewritten** - No backwards compatibility with previous implementation
+  - Default NET_PEERS changed from placeholder IPs (10.0.0.2, 10.0.0.3) to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
+  - Several new network configuration variables added for reliability and validation
+- **Container security hardened** - Now runs as non-root user (uid/gid 1000) with no fallback to ephemeral storage
 
 ### Fixed
-- **CRITICAL**: Added persistent volume storage for metrics database in Docker Compose ([#74](https://github.com/senomorf/loadshaper/issues/74))
-- **Metrics database persistence**: 7-day P95 history now preserved across container restarts
-- **Oracle compliance**: P95 calculations maintain complete history required for reclamation detection
-- **Container security**: Application now runs as non-root user (loadshaper:1000)
-- **Thread safety**: Ring buffer saves now use PID+thread temp files to prevent race conditions ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Portable mount detection**: Replaced non-portable `stat -c %d` with Python-based device detection for Alpine/busybox compatibility ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Code quality**: Fixed trailing comma inconsistency in network fallback validation list
-- **Code formatting**: Corrected comment alignment in network fallback configuration
+- **Critical network generation bug fixes**:
+  - **State machine initialization**: Fixed debounce blocking first transition from OFF→INITIALIZING, preventing network generation startup
+  - **CGNAT detection**: Fixed incomplete 100.64.0.0/10 range check (was only detecting 100.64.x.x, now properly detects entire 100.64.0.0-100.127.255.255)
+  - **Special-use IP ranges**: Added missing RFC 2544 (198.18.0.0/15), TEST-NETs, and other reserved ranges to external address validation
+  - **tx_bytes validation**: Fixed packet size mismatch in validation (now tracks actual bytes sent including DNS packet sizes)
+  - **External egress verification**: Fixed false positives by checking actual peer used instead of any valid peer
+- **Thread safety**: Ring buffer saves now use PID+thread temp files to prevent race conditions
+- **Portable mount detection**: Replaced non-portable `stat -c %d` with Python-based device detection for Alpine/busybox compatibility
+- **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors
+- **Network generation reliability**: Complete rewrite fixing silent failures and Oracle E2 compliance issues
+  - Detects failed network generation via tx_bytes monitoring
+  - Changed default peers from RFC2544 placeholder IPs to external addresses (8.8.8.8, 1.1.1.1, 9.9.9.9)
+  - Validates external addresses rejecting RFC1918, loopback, and link-local for Oracle E2 compliance
+  - Implements automatic protocol fallback: UDP → TCP → next peer
+  - Added debounce and min-on/min-off time controls to prevent network state oscillation
+- **Persistent volume storage**: Metrics database now properly persisted in Docker Compose
+  - 7-day P95 history preserved across container restarts
+  - P95 calculations maintain complete history required for Oracle reclamation detection
+  - Container runs as non-root user (loadshaper:1000) for security
 - **Database corruption**: Added detection and automatic recovery for SQLite corruption
-- **Configuration errors**: Enhanced validation prevents invalid parameter combinations
+- **Configuration validation**: Enhanced validation for CPU_P95_TARGET_MIN/MAX ordering and network fallback thresholds
 
 ### Added
-- **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
-- **Health endpoint enhancement**: Added `persistence_storage` status field (removed `database_path` for security)
-- **Clear error messages**: Detailed guidance when persistent volume configuration is missing
-- **Ring buffer batching**: Configurable batch size (`CPU_P95_RING_BUFFER_BATCH_SIZE`) reduces I/O overhead
-- **Memory usage monitoring**: Tracks P95 cache memory consumption with detailed logging
-- **Database size monitoring**: Monitors metrics database size with growth projections
-- **Configuration validation**: Comprehensive cross-parameter consistency checks at startup
-- **Database corruption handling**: Automatic backup and recovery for corrupted metrics database
-- **ENOSPC degraded mode tests**: Comprehensive test coverage for disk full scenarios and degraded mode behavior ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Network fallback documentation**: Enhanced state machine documentation with named timing constants and clear transitions ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Enhanced documentation**: Detailed P95 controller state machine documentation
-- **Migration guide**: Breaking changes philosophy and deployment requirements
-- **Network fallback examples**: Five detailed configuration examples for different use cases
+- **NetworkGenerator state machine**: Complete state-driven network generation with reliability features
+  - State progression: OFF → INITIALIZING → VALIDATING → ACTIVE_UDP → ACTIVE_TCP → ERROR
+  - Peer validation and reputation with EMA-based scoring system
+  - Runtime tx_bytes monitoring for actual traffic validation
+  - Network health scoring (0-100) based on state, reputation, and errors
+- **Persistent storage validation**: Enhanced container startup checks
+  - Entrypoint validation ensures persistent storage is properly mounted
+  - Health endpoint shows `persistence_storage` status
+  - Clear error messages guide volume configuration
+- **Performance optimizations**:
+  - Ring buffer batching with configurable `CPU_P95_RING_BUFFER_BATCH_SIZE`
+  - ENOSPC degraded mode for disk full scenarios
+  - Thread-safe operations with PID+thread temp files
+- **Monitoring enhancements**:
+  - Memory usage tracking for P95 cache consumption
+  - Database size monitoring with growth projections
+  - Comprehensive configuration validation at startup
+  - Automatic database corruption detection and recovery
+- **Documentation improvements**:
+  - Detailed P95 controller state machine documentation
+  - Network fallback configuration examples
+  - Migration guide for breaking changes
 
 ### Changed
-- **BREAKING**: Docker Compose now requires `loadshaper-metrics` named volume
-- **BREAKING**: Container exits if `/var/lib/loadshaper` is not writable
-- **BREAKING**: Removed all fallback logic to `/tmp` storage paths
-- **Configuration**: Default `NET_MIN_RATE_MBIT` changed from 0 to 1 Mbps to ensure minimum network activity
-- **Dockerfile**: Added non-root user setup and entrypoint script
-- **Health checks**: Now validate persistence status explicitly
+- **Configuration templates**: All templates updated to use public DNS servers as default peers
+- **Network configuration**: Default `NET_MIN_RATE_MBIT` changed from 0 to 1 Mbps to ensure minimum network activity
+- **Health monitoring**: Health checks now validate persistence status explicitly
+- **Network telemetry**: Enhanced to include state machine status, peer health, and validation metrics
 - **Performance**: Ring buffer state saves batched to reduce I/O frequency (60s → 600s default)
-- **Robustness**: Database corruption detection runs on startup and during operations
-- **Test patterns**: Updated ring buffer batching tests to handle new thread-safe temp file naming conventions ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Robustness**: Database corruption detection now runs on startup and during operations
+- **Test patterns**: Updated for thread-safe temp file naming conventions
 
 ### Migration Required
 Existing Docker Compose users must update their configuration:
 
+**Persistent Storage (Required):**
 ```yaml
 services:
   loadshaper:
@@ -68,7 +88,13 @@ volumes:
     driver: local
 ```
 
-## [3.0.0] - P95 CPU Control Implementation (#73)
+**Network Configuration (Breaking Change):**
+- **NET_PEERS default changed**: Old placeholder IPs (10.0.0.2, 10.0.0.3) now default to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
+- **New network variables**: Validation, fallback, and reliability settings added
+- **Configuration templates**: All shape-specific templates updated with new defaults
+- **No backwards compatibility**: Old network implementation completely removed
+
+## [3.0.0] - P95 CPU Control Implementation
 
 ### ⚠️ BREAKING CHANGES
 - **New P95-driven CPU control system** - replaces previous implementation completely
@@ -98,7 +124,7 @@ volumes:
 
 ### Fixed
 - **Critical Oracle compliance issue**: CPU control now uses 95th percentile matching Oracle's exact reclamation criteria
-- **Issue #73**: LoadShaper now uses P95 values for control decisions, not just telemetry display
+- **LoadShaper now uses P95 values for control decisions, not just telemetry display**
 - **Critical memory unpacking bug**: Fixed variable unpacking mismatch preventing runtime crashes
 - **P95 cache fallback logic**: Fixed fallback to return cached values when database reads fail
 - **Safety scaling efficiency**: Optimized method signatures to prevent redundant calculations
@@ -118,17 +144,17 @@ volumes:
 ## [2.2.0] - Previous Version
 
 ### Added
-- **Native Python network generator** (#71): Complete replacement of iperf3 with native socket-based implementation
+- **Native Python network generator**: Complete replacement of iperf3 with native socket-based implementation
   - RFC 2544 default addresses for serverless operation
   - Token bucket rate limiting with 5ms precision
   - IPv4/IPv6 support with TTL safety controls
   - Pre-allocated buffers for zero-copy packet generation
-- **Health monitoring endpoints** (#18): HTTP server with /health and /metrics endpoints
+- **Health monitoring endpoints**: HTTP server with /health and /metrics endpoints
   - Configurable via HEALTH_ENABLED, HEALTH_PORT, HEALTH_HOST
   - Docker health check integration ready
   - Security-first binding (defaults to localhost-only)
-- **Graceful shutdown** (partial #12): Signal handling for SIGTERM/SIGINT with clean resource cleanup
-- **Intelligent network fallback** (#26): Adaptive network generation based on Oracle reclamation rules
+- **Graceful shutdown** (partial): Signal handling for SIGTERM/SIGINT with clean resource cleanup
+- **Intelligent network fallback**: Adaptive network generation based on Oracle reclamation rules
   - Shape-aware logic (E2 vs A1 different criteria)
   - Hysteresis and debounce to prevent oscillation
   - NET_ACTIVATION modes: adaptive, always, off
@@ -169,7 +195,7 @@ volumes:
 - **Oracle criteria accuracy**: Fixed 95th percentile vs current utilization confusion
 - **TCP buffer handling**: Fixed partial send issues in TCP mode
 - **Token bucket dead zones**: Fixed issue where very low rates could prevent traffic generation
-- **NET_PEERS validation**: Now accepts hostnames via DNS resolution fallback
+- **NET_PEERS validation**: Now accepts hostnames via DNS resolution
 - **TCP connection timeout**: Added 0.5s send timeout to prevent blocking
 - **MTU validation**: Fixed large packet warnings and validation logic
 

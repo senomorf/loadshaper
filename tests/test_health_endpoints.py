@@ -5,12 +5,17 @@ import time
 import tempfile
 import threading
 import unittest.mock
+from unittest.mock import patch
 from http.client import HTTPConnection
 from pathlib import Path
 
 import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 from loadshaper import (
     MetricsStorage, HealthHandler, health_server_thread,
@@ -34,7 +39,7 @@ class MockHealthHandler(HealthHandler):
         self.controller_state = controller_state or {}
         self.controller_state_lock = threading.Lock()  # Add lock for thread safety
         self.metrics_storage = metrics_storage
-        self.cpu_p95_controller = cpu_p95_controller  # Add P95 controller for metrics endpoint
+        self.cpu_p95_controller = cpu_p95_controller
         self.response_code = None
         self.response_headers = {}
         self.response_body = None
@@ -53,6 +58,7 @@ class MockHealthHandler(HealthHandler):
         self.response_body = data
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestHealthEndpoints:
     @pytest.fixture(autouse=True)
     def setup_config(self):
@@ -415,6 +421,7 @@ class TestHealthEndpoints:
         assert before_time <= response_data['timestamp'] <= after_time
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestHealthServerThread:
     """Test the health server thread functionality."""
     

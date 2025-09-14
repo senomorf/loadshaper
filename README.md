@@ -139,6 +139,10 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 - Docker and Docker Compose installed
 - **Persistent storage required** - LoadShaper needs persistent volume for 7-day P95 metrics
 - **Single instance only** - Run only one LoadShaper process per system to avoid conflicts
+- **External network peers required** - For network protection, configure `NET_PEERS` with external servers you control
+
+⚠️ **Critical Network Requirement:**
+LoadShaper's network generation requires **external** (non-private) peers to protect VMs from reclamation. Private/internal network traffic does NOT count toward Oracle's 20% utilization threshold. Without valid external peers, network fallback protection will be inactive, relying only on CPU and memory metrics.
 - **Rootless container setup** - LoadShaper follows security best practices (non-root user)
 
 **1. Clone and setup:**
@@ -191,6 +195,24 @@ Key Kubernetes considerations:
 - **Security hardened** - Read-only root filesystem and non-root user configured
 - **Single replica only** - LoadShaper must not run multiple instances per node
 - **Multiple configurations** - Production, security-hardened, and shape-specific value files included
+- **Node affinity** recommended to ensure consistent VM assignment
+
+### Optional Security Hardening
+
+For security-conscious environments, you can add additional hardening to your Docker Compose deployment:
+
+```yaml
+services:
+  loadshaper:
+    # ... existing configuration ...
+    read_only: true                    # Read-only root filesystem
+    tmpfs:
+      - /tmp                          # Allow temporary files in memory
+    cap_drop:
+      - ALL                           # Drop all Linux capabilities
+    security_opt:
+      - no-new-privileges:true        # Prevent privilege escalation
+```
 
 ### Optional Security Hardening
 
@@ -387,7 +409,7 @@ NET_FALLBACK_MIN_ON_SEC=60           # Standard minimum on time
 NET_ACTIVATION=always
 NET_TARGET_PCT=25.0                  # Consistent 25% network utilization
 NET_MODE=client                      # Client mode for outbound traffic
-NET_PEERS=198.18.0.1,198.18.0.2    # RFC 2544 test addresses
+NET_PEERS=8.8.8.8,1.1.1.1          # Public DNS servers for external traffic
 ```
 **Use case:** Development environments, network performance testing, bandwidth validation.
 
@@ -507,6 +529,55 @@ The system uses a three-tier configuration priority:
 3. **Built-in Defaults** (conservative fallback)
 
 This means you can override any template value with environment variables while still benefiting from automatic shape-optimized defaults.
+
+### Persistent Storage Configuration
+
+**Critical**: LoadShaper requires persistent storage for 7-day P95 CPU calculations. The storage directory is configurable via the `PERSISTENCE_DIR` environment variable.
+
+**Default Configuration:**
+```bash
+PERSISTENCE_DIR="/var/lib/loadshaper"  # Default persistence directory
+```
+
+**Storage Contents:**
+- `metrics.db` - SQLite database with 7-day rolling metrics (10-20MB)
+- `p95_ring_buffer.json` - Ring buffer state for fast P95 calculations (few KB)
+
+**Custom Storage Examples:**
+
+For **Docker bind mounts**:
+```yaml
+# docker-compose.yml
+environment:
+  PERSISTENCE_DIR: "/app/data"
+volumes:
+  - /host/path/loadshaper:/app/data
+```
+
+For **Kubernetes PersistentVolumes**:
+```yaml
+# deployment.yaml
+env:
+  - name: PERSISTENCE_DIR
+    value: "/data/loadshaper"
+volumeMounts:
+  - name: loadshaper-storage
+    mountPath: /data/loadshaper
+```
+
+For **local development**:
+```bash
+# Create custom directory
+mkdir -p ~/loadshaper-data
+export PERSISTENCE_DIR="$HOME/loadshaper-data"
+python loadshaper.py
+```
+
+**Important Notes:**
+- Directory must be writable by UID 1000 (rootless container security)
+- Without persistent storage, container will fail to start (mandatory requirement)
+- Custom path must be absolute, not relative
+- Same `PERSISTENCE_DIR` value must be used consistently across container restarts
 
 ### Non-Oracle Environments
 
@@ -631,12 +702,24 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 |----------|---------|-------------|
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
-| `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
+| `NET_PEERS` | `8.8.8.8,1.1.1.1,9.9.9.9` | Comma-separated peer IP addresses (public DNS servers for reliability) |
 | `NET_PORT` | `15201` | TCP port for network communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
 | `NET_TTL` | `1` | IP TTL for generated packets |
-| `NET_PACKET_SIZE` | `8900` | Packet size (bytes) for UDP/TCP generator |
+| `NET_PACKET_SIZE` | `8900` | Packet size (bytes) optimized for Oracle Cloud MTU 9000 |
+
+### Network Validation & Reliability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NET_VALIDATE_STARTUP` | `true` | Validate peer connectivity at startup |
+| `NET_REQUIRE_EXTERNAL` | `true` | Require external (non-RFC1918) addresses for E2 shapes |
+| `NET_VALIDATION_TIMEOUT_MS` | `200` | Timeout for peer validation (milliseconds) |
+| `NET_STATE_DEBOUNCE_SEC` | `5.0` | State transition debounce time (seconds) |
+| `NET_STATE_MIN_ON_SEC` | `15.0` | Minimum time in active state (seconds) |
+| `NET_STATE_MIN_OFF_SEC` | `20.0` | Minimum time in inactive state (seconds) |
+| `NET_IPV6` | `auto` | IPv6 mode: `auto`, `on`, `off` |
 
 ### Network Interface Detection
 
@@ -720,6 +803,39 @@ The native network generator provides advanced performance features:
 - Packet generation: Pre-allocated buffers for zero-copy operation
 - Resource usage: Automatic cleanup with context manager support
 - Thread safety: Designed for single-threaded operation per generator
+
+### Network Generation Reliability
+
+The network generator includes a comprehensive reliability system to prevent silent failures and ensure Oracle-compliant external traffic generation:
+
+**State Machine Architecture:**
+- `OFF` → `INITIALIZING` → `VALIDATING` → `ACTIVE_UDP` → `ACTIVE_TCP` → `ERROR`
+- Automatic state transitions based on validation results and peer health
+- Hysteresis and debouncing prevent oscillation between states
+- Network is supplementary protection - system continues on CPU/memory even without network
+
+**Peer Validation & Reputation:**
+- **External address validation**: Automatically rejects RFC1918, loopback, and link-local addresses for E2 Oracle compliance
+- **EMA-based reputation scoring**: Tracks peer reliability over time (0-100 score)
+- **Runtime tx_bytes monitoring**: Validates actual network traffic generation via `/sys/class/net/*/statistics/tx_bytes`
+- **Automatic peer switching**: Detects failed peers and switches to healthy alternatives
+
+**Fallback Chain:**
+- **Primary**: UDP traffic to configured peers
+- **Secondary**: TCP traffic to same peers
+- **Tertiary**: DNS queries with EDNS0 padding to public DNS servers
+- **Final**: Local loopback generation (degraded mode)
+
+**Network Health Scoring (0-100):**
+- State health: 40% weight (ACTIVE states = 100, ERROR = 0)
+- Peer reputation: 30% weight (EMA of validation success rates)
+- Validation success: 20% weight (recent tx_bytes confirmation)
+- Error rates: 10% weight (inverse of recent failures)
+
+**Oracle E2 Compliance Features:**
+- Ensures all traffic targets external addresses (non-RFC1918)
+- Uses public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) as reliable default peers
+- Validates actual external traffic generation required for Oracle's 20% network threshold
 
 ### Shape-Specific Recommendations
 
@@ -1015,8 +1131,8 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 **Q: CPU load isn't reaching the target percentage**  
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
-**Q: Network traffic isn't being generated**  
-A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify peer instances are reachable and firewall rules allow traffic on `NET_PORT`.
+**Q: Network traffic isn't being generated**
+A: Check network state in telemetry output. The new network generator (v75+) uses external peers by default (`NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9`). Monitor network health scores and state transitions. If state shows ERROR, check connectivity to external addresses.
 
 **Q: Memory usage isn't increasing on A1.Flex**
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
@@ -1241,10 +1357,11 @@ docker volume inspect loadshaper-metrics       # Check volume details
 - Verify container has access to enough memory
 
 **Network traffic not generating:**
-- Confirm `NET_MODE=client` and `NET_PEERS` are set correctly
-- Verify peers are reachable on the specified port
-- Check firewall rules between instances
-- Try `NET_PROTOCOL=tcp` if UDP traffic is filtered
+- Check telemetry for network state (should show ACTIVE_UDP or ACTIVE_TCP)
+- Default `NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9` (public DNS servers) - no custom setup required
+- Monitor network health score (0-100) - low scores indicate connectivity issues
+- Network generator automatically falls back: UDP → TCP → DNS → local
+- For E2 shapes, ensure external internet access (not just internal VM connectivity)
 
 **Database storage issues:**
 ```shell
@@ -1275,10 +1392,10 @@ LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 docker compose up -d
 
 **DNS resolution failures:**
 ```shell
-# Check DNS resolution for benchmark addresses
-docker exec loadshaper nslookup 198.18.0.1
-# Or use alternative benchmark address
-NET_PEERS=203.0.113.1:15201 docker compose up -d --build
+# Check DNS resolution for default peers
+docker exec loadshaper nslookup 8.8.8.8
+# The default public DNS servers should always be reachable
+# If not, check your network connectivity or firewall rules
 ```
 
 **Network generation issues:**
@@ -1341,7 +1458,7 @@ echo "=== Recent Logs ==="
 docker logs --tail 50 loadshaper
 
 echo "=== Network Connectivity ==="
-docker exec loadshaper ping -c 3 198.18.0.1 2>/dev/null || echo "Benchmark address unreachable"
+docker exec loadshaper ping -c 3 8.8.8.8 2>/dev/null || echo "External DNS unreachable"
 
 echo "=== Resource Usage ==="
 docker stats --no-stream loadshaper
