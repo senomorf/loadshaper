@@ -492,6 +492,55 @@ The system uses a three-tier configuration priority:
 
 This means you can override any template value with environment variables while still benefiting from automatic shape-optimized defaults.
 
+### Persistent Storage Configuration
+
+**Critical**: LoadShaper requires persistent storage for 7-day P95 CPU calculations. The storage directory is configurable via the `PERSISTENCE_DIR` environment variable.
+
+**Default Configuration:**
+```bash
+PERSISTENCE_DIR="/var/lib/loadshaper"  # Default persistence directory
+```
+
+**Storage Contents:**
+- `metrics.db` - SQLite database with 7-day rolling metrics (10-20MB)
+- `p95_ring_buffer.json` - Ring buffer state for fast P95 calculations (few KB)
+
+**Custom Storage Examples:**
+
+For **Docker bind mounts**:
+```yaml
+# docker-compose.yml
+environment:
+  PERSISTENCE_DIR: "/app/data"
+volumes:
+  - /host/path/loadshaper:/app/data
+```
+
+For **Kubernetes PersistentVolumes**:
+```yaml
+# deployment.yaml
+env:
+  - name: PERSISTENCE_DIR
+    value: "/data/loadshaper"
+volumeMounts:
+  - name: loadshaper-storage
+    mountPath: /data/loadshaper
+```
+
+For **local development**:
+```bash
+# Create custom directory
+mkdir -p ~/loadshaper-data
+export PERSISTENCE_DIR="$HOME/loadshaper-data"
+python loadshaper.py
+```
+
+**Important Notes:**
+- Directory must be writable by UID 1000 (rootless container security)
+- Without persistent storage, container will fail to start (mandatory requirement)
+- Custom path must be absolute, not relative
+- Same `PERSISTENCE_DIR` value must be used consistently across container restarts
+
 ### Non-Oracle Environments
 
 For non-Oracle Cloud environments, `loadshaper` safely falls back to conservative E2.1.Micro-like defaults, making it safe to run anywhere.

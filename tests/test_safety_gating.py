@@ -55,6 +55,11 @@ class TestSafetyGating(unittest.TestCase):
         # Set test environment to ensure deterministic behavior
         os.environ['PYTEST_CURRENT_TEST'] = 'test_safety_gating'
 
+        # Ensure load checking is enabled for safety gating tests
+        loadshaper.LOAD_CHECK_ENABLED = True
+        loadshaper.LOAD_THRESHOLD = 0.6
+        loadshaper.LOAD_RESUME_THRESHOLD = 0.4
+
         self.storage = MockMetricsStorage()
         self.controller = CPUP95Controller(self.storage)
 
@@ -83,7 +88,8 @@ class TestSafetyGating(unittest.TestCase):
         self.controller.should_run_high_slot(high_load)
 
         # Manually advance the slot start time to trigger rollover
-        self.controller.current_slot_start = original_start - 65
+        # Set to more than slot duration (60s) ago to ensure rollover triggers
+        self.controller.current_slot_start = original_start - 70
 
         # Now call again to trigger the safety check
         is_high_slot, target_intensity = self.controller.should_run_high_slot(high_load)
@@ -214,7 +220,8 @@ class TestSafetyGating(unittest.TestCase):
         self.controller.should_run_high_slot(high_load)
 
         # Manually advance the slot start time to trigger rollover
-        self.controller.current_slot_start = original_start - 65
+        # Set to more than slot duration (60s) ago to ensure rollover triggers
+        self.controller.current_slot_start = original_start - 70
 
         # Now call again to trigger the safety check
         self.controller.should_run_high_slot(high_load)
@@ -254,7 +261,8 @@ class TestSafetyGating(unittest.TestCase):
                 fresh_controller.should_run_high_slot(load_avg)
 
                 # Manually advance slot start to trigger rollover
-                fresh_controller.current_slot_start = original_start - 65
+                # Set to more than slot duration (60s) ago to ensure rollover triggers
+                fresh_controller.current_slot_start = original_start - 70
 
                 # Second call to trigger rollover and safety check
                 fresh_controller.should_run_high_slot(load_avg)

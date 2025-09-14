@@ -147,6 +147,9 @@ class TestRingBufferBatching(unittest.TestCase):
             controller.current_slot_is_high = decision
             controller._end_current_slot()
 
+        # Force final save to ensure all decisions are persisted
+        controller._save_ring_buffer_state()
+
         # Verify saved state contains all decisions
         self.assertTrue(os.path.exists(self.ring_buffer_path))
 
