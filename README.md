@@ -40,17 +40,50 @@ volumeMounts:
 - Fallback to `/tmp` storage (completely removed)
 - Containers starting without writable `/var/lib/loadshaper`
 
-#### 🔧 **Troubleshooting Startup Failures**
-```bash
-# Check volume permissions
-ls -la /var/lib/loadshaper
+#### 🔧 **Volume Permission Setup (User Responsibility)**
 
-# Fix permissions if needed
+**LoadShaper requires proper volume permissions BEFORE starting** - no automatic fixes are provided for security reasons.
+
+**Error**: "Cannot write to /var/lib/loadshaper - check volume permissions"
+
+**REQUIRED: Pre-deployment Volume Setup**
+
+For **Docker named volumes** (recommended):
+```bash
+# One-time setup: Create volume with correct permissions
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+
+# Then start LoadShaper
+docker compose up -d
+```
+
+For **bind mounts**:
+```bash
+# Create and set permissions on host directory
+sudo mkdir -p /var/lib/loadshaper
 sudo chown -R 1000:1000 /var/lib/loadshaper
 sudo chmod -R 755 /var/lib/loadshaper
 
-# Verify container startup
+# Update compose.yaml to use bind mount
+volumes:
+  - /var/lib/loadshaper:/var/lib/loadshaper
+```
+
+For **Kubernetes/OpenShift**:
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000  # Ensures volume has correct group ownership
+```
+
+**Verification**:
+```bash
+# Check container logs - should show success
 docker logs loadshaper
+
+# Verify volume ownership
+docker run --rm -v loadshaper-metrics:/test alpine:latest ls -la /test
 ```
 
 #### **Why This Change?**
@@ -59,6 +92,21 @@ docker logs loadshaper
 - **Performance**: Eliminates temporary storage overhead and reliability issues
 
 **Next Breaking Changes:** Additional Oracle compliance improvements planned. Always check `CHANGELOG.md` before updating.
+
+### Rootless Container Philosophy
+
+LoadShaper follows **strict rootless container principles** for maximum security:
+
+- **Never runs as root** - Container always executes as user `loadshaper` (UID/GID 1000)
+- **No privilege escalation** - No automatic permission fixing or root operations
+- **User responsibility** - Volume permissions must be configured correctly before deployment
+- **Security first** - Prevents container breakout and follows container security best practices
+
+**Why Rootless?**
+- Eliminates container security vulnerabilities
+- Follows least-privilege principle
+- Compatible with security-conscious environments (Kubernetes, OpenShift)
+- Prevents accidental host system modifications
 
 **Modern native network generator implementation** - Uses Python sockets instead of external dependencies for maximum efficiency and control. Requires **Linux 3.14+ (March 2014)** with kernel MemAvailable support.
 
@@ -91,17 +139,28 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 - Docker and Docker Compose installed
 - **Persistent storage required** - LoadShaper needs persistent volume for 7-day P95 metrics
 - **Single instance only** - Run only one LoadShaper process per system to avoid conflicts
+- **Rootless container setup** - LoadShaper follows security best practices (non-root user)
 
-**1. Clone and deploy:**
+**1. Clone and setup:**
 ```bash
 git clone https://github.com/senomorf/loadshaper.git
 cd loadshaper
+```
+
+**2. REQUIRED: Setup volume permissions (one-time):**
+```bash
+# Create volume with correct permissions for rootless container
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+```
+
+**3. Deploy:**
+```bash
 docker compose up -d --build
 ```
 
-> **⚠️ Important**: The `compose.yaml` includes a persistent volume (`loadshaper-metrics`) that is **required** for LoadShaper to function. Without it, the container will exit with an error.
+> **⚠️ Important**: LoadShaper follows rootless container security principles. Volume permissions MUST be configured correctly before starting the container - no automatic fixes are provided.
 
-**2. Monitor activity:**
+**4. Monitor activity:**
 ```bash
 docker logs -f loadshaper
 ```

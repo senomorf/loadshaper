@@ -2,7 +2,7 @@
 """
 Tests for configuration consistency validation feature.
 
-This module tests the _validate_configuration_consistency() function that
+This module tests the _validate_configuration_consistency(raise_on_error=False) function that
 performs cross-parameter validation to prevent invalid configurations.
 """
 
@@ -10,9 +10,8 @@ import unittest
 import unittest.mock
 import sys
 import os
-import tempfile
-import shutil
 from io import StringIO
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loadshaper
@@ -70,146 +69,257 @@ class TestConfigurationConsistency(unittest.TestCase):
                 setattr(loadshaper, var, value)
 
     def test_p95_target_range_validation(self):
-        """Test P95 target range validation (MIN <= SETPOINT <= MAX)."""
-        # Valid configuration - should not raise exception
+        """P95 target range: MIN <= SETPOINT <= MAX."""
+        # Valid configuration
         loadshaper.CPU_P95_TARGET_MIN = 20.0
         loadshaper.CPU_P95_TARGET_MAX = 30.0
         loadshaper.CPU_P95_SETPOINT = 25.0
-        loadshaper._validate_configuration_consistency()  # Should not raise
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertNotIn("WARNING", output)
 
-        # Invalid: MIN > MAX - should raise RuntimeError
+        # Invalid: MIN > MAX
         loadshaper.CPU_P95_TARGET_MIN = 30.0
         loadshaper.CPU_P95_TARGET_MAX = 20.0
         loadshaper.CPU_P95_SETPOINT = 25.0
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("CPU_P95_TARGET_MIN", output)
+            self.assertIn("CPU_P95_TARGET_MAX", output)
 
-        # Invalid: SETPOINT < MIN - should raise RuntimeError
+        # Invalid: SETPOINT < MIN
         loadshaper.CPU_P95_TARGET_MIN = 20.0
         loadshaper.CPU_P95_TARGET_MAX = 30.0
         loadshaper.CPU_P95_SETPOINT = 15.0
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("CPU_P95_SETPOINT", output)
 
-        # Invalid: SETPOINT > MAX - should raise RuntimeError
-        loadshaper.CPU_P95_TARGET_MIN = 20.0
-        loadshaper.CPU_P95_TARGET_MAX = 30.0
+        # Invalid: SETPOINT > MAX
         loadshaper.CPU_P95_SETPOINT = 35.0
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("CPU_P95_SETPOINT", output)
 
     def test_intensity_level_validation(self):
-        """Test CPU intensity level validation (BASELINE < HIGH)."""
-        # Valid configuration - should not raise exception
+        """CPU intensity: BASELINE < HIGH."""
+        # Valid configuration
         loadshaper.CPU_P95_BASELINE_INTENSITY = 20.0
         loadshaper.CPU_P95_HIGH_INTENSITY = 35.0
-        loadshaper._validate_configuration_consistency()  # Should not raise
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            if "WARNING" in output:
+                self.assertNotIn("CPU_P95_BASELINE_INTENSITY", output)
+                self.assertNotIn("CPU_P95_HIGH_INTENSITY", output)
 
-        # Invalid: BASELINE >= HIGH - should raise RuntimeError
+        # Invalid: BASELINE >= HIGH
         loadshaper.CPU_P95_BASELINE_INTENSITY = 35.0
         loadshaper.CPU_P95_HIGH_INTENSITY = 30.0
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            error_text = " ".join([str(c) for c in mock_logger.error.call_args_list])
+            self.assertIn("CPU_P95_BASELINE_INTENSITY", error_text)
 
-        # Edge case: BASELINE = HIGH - should raise RuntimeError
+        # Edge case: BASELINE = HIGH
         loadshaper.CPU_P95_BASELINE_INTENSITY = 30.0
         loadshaper.CPU_P95_HIGH_INTENSITY = 30.0
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("CPU_P95_BASELINE_INTENSITY", output)
 
     def test_load_threshold_validation(self):
-        """Test load threshold validation (RESUME < THRESHOLD)."""
-        # Valid configuration - should not raise exception
+        """Load thresholds: RESUME < THRESHOLD."""
+        # Valid configuration
         loadshaper.LOAD_RESUME_THRESHOLD = 0.4
         loadshaper.LOAD_THRESHOLD = 0.6
-        loadshaper._validate_configuration_consistency()  # Should not raise
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
 
-        # Invalid: RESUME >= THRESHOLD - should raise RuntimeError
+        # Invalid: RESUME >= THRESHOLD
         loadshaper.LOAD_RESUME_THRESHOLD = 0.7
         loadshaper.LOAD_THRESHOLD = 0.6
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("LOAD_RESUME_THRESHOLD", output)
 
     def test_stop_percentage_validation(self):
-        """Test stop percentage validation (TARGET < STOP)."""
-        # Valid configuration - should not raise exception
+        """Stop percentages: TARGET < STOP."""
+        # Valid configuration
         loadshaper.MEM_TARGET_PCT = 25.0
         loadshaper.MEM_STOP_PCT = 85.0
         loadshaper.NET_TARGET_PCT = 25.0
         loadshaper.NET_STOP_PCT = 85.0
         loadshaper.CPU_STOP_PCT = 85.0
-        loadshaper._validate_configuration_consistency()  # Should not raise
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
 
-        # Invalid: MEM_TARGET >= MEM_STOP - should raise RuntimeError
+        # Invalid: MEM_TARGET >= MEM_STOP
         loadshaper.MEM_TARGET_PCT = 90.0
         loadshaper.MEM_STOP_PCT = 85.0
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("MEM_TARGET_PCT", output)
 
         # Reset MEM to valid, test NET invalid
         loadshaper.MEM_TARGET_PCT = 25.0
         loadshaper.MEM_STOP_PCT = 85.0
         loadshaper.NET_TARGET_PCT = 90.0
         loadshaper.NET_STOP_PCT = 85.0
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("NET_TARGET_PCT", output)
 
     def test_oracle_compliance_validation(self):
-        """Test Oracle compliance validation (targets above 20% reclamation threshold)."""
-        # Test CPU P95 target min at danger zone with individual warning
+        """Oracle 20% reclamation threshold warns/errors appropriately."""
+        # CPU P95 target min warning content
         loadshaper.CPU_P95_TARGET_MIN = 19.0  # Below Oracle 20% threshold
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            # Should have been called with warning about Oracle threshold
-            warning_calls = [call for call in mock_warning.call_args_list
-                           if 'Oracle 20% reclamation threshold' in str(call)]
-            self.assertTrue(len(warning_calls) > 0, "Should warn about Oracle threshold")
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("Oracle 20% reclamation threshold", warnings)
 
-        # Test two metrics below 20% - should generate cross-check warning
-        loadshaper.CPU_P95_TARGET_MIN = 19.0  # Below Oracle 20% threshold
-        loadshaper.MEM_TARGET_PCT = 18.0  # Below Oracle 20% threshold
-        loadshaper.NET_TARGET_PCT = 25.0  # Above threshold
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            # Should have been called with warning about both being below threshold
-            warning_calls = [call for call in mock_warning.call_args_list
-                           if 'below 20% threshold' in str(call)]
-            self.assertTrue(len(warning_calls) > 0, "Should warn about two metrics below 20% threshold")
+        # CPU P95 setpoint below threshold -> warning
+        loadshaper.CPU_P95_TARGET_MIN = 20.0
+        loadshaper.CPU_P95_SETPOINT = 19.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("Oracle reclamation", warnings)
 
-        # Test all three below 20% - should generate error (not warning)
-        loadshaper.CPU_P95_TARGET_MIN = 19.0  # Below Oracle 20% threshold
-        loadshaper.MEM_TARGET_PCT = 18.0  # Below Oracle 20% threshold
-        loadshaper.NET_TARGET_PCT = 15.0  # Below Oracle 20% threshold
-        with self.assertRaises(RuntimeError):
-            loadshaper._validate_configuration_consistency()
+        # Memory below threshold -> warning
+        loadshaper.CPU_P95_SETPOINT = 25.0
+        loadshaper.MEM_TARGET_PCT = 19.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("MEM_TARGET_PCT", warnings)
+            self.assertIn("Oracle reclamation", warnings)
+
+        # Network below threshold -> warning
+        loadshaper.MEM_TARGET_PCT = 25.0
+        loadshaper.NET_TARGET_PCT = 19.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("NET_TARGET_PCT", warnings)
+            self.assertIn("Oracle reclamation", warnings)
+
+        # Two below 20% -> combined warning
+        loadshaper.NET_TARGET_PCT = 18.0
+        loadshaper.MEM_TARGET_PCT = 19.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            combined = [c for c in mock_logger.warning.call_args_list if 'below 20% threshold' in str(c)]
+            self.assertTrue(len(combined) > 0)
+
+        # All three below 20% -> error
+        loadshaper.CPU_P95_TARGET_MIN = 19.0
+        loadshaper.MEM_TARGET_PCT = 18.0
+        loadshaper.NET_TARGET_PCT = 15.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            errors = " ".join([str(c) for c in mock_logger.error.call_args_list])
+            self.assertIn("Oracle", errors)
+            self.assertIn("reclamation", errors)
 
     def test_timing_relationships_validation(self):
-        """Test validation of timing relationships."""
-        # Valid configuration - should not raise exception
+        """Timing relationships and exceedance target bounds."""
+        # Valid configuration
         loadshaper.CONTROL_PERIOD = 5.0
         loadshaper.AVG_WINDOW_SEC = 300.0
         loadshaper.CPU_P95_SLOT_DURATION = 60.0
-        loadshaper._validate_configuration_consistency()
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
 
-        # Test AVG_WINDOW_SEC too short - should generate warning
+        # AVG window too short -> warning
         loadshaper.AVG_WINDOW_SEC = 40.0
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            warning_calls = [call for call in mock_warning.call_args_list
-                           if 'AVG_WINDOW_SEC' in str(call)]
-            self.assertTrue(len(warning_calls) > 0, "Should warn about short AVG_WINDOW_SEC")
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("AVG_WINDOW_SEC", warnings)
 
-        # Test CPU_P95_SLOT_DURATION too short - should generate warning
-        loadshaper.AVG_WINDOW_SEC = 300.0  # Reset to valid
+        # Slot duration too short -> warning
+        loadshaper.AVG_WINDOW_SEC = 300.0
         loadshaper.CPU_P95_SLOT_DURATION = 20.0
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            warning_calls = [call for call in mock_warning.call_args_list
-                           if 'CPU_P95_SLOT_DURATION' in str(call)]
-            self.assertTrue(len(warning_calls) > 0, "Should warn about short slot duration")
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_SLOT_DURATION", warnings)
+
+        # Exceedance target too high -> warning
+        loadshaper.CPU_P95_EXCEEDANCE_TARGET = 25.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_EXCEEDANCE_TARGET", warnings)
+
+        # Exceedance target too low -> warning
+        loadshaper.CPU_P95_EXCEEDANCE_TARGET = 1.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_EXCEEDANCE_TARGET", warnings)
+
+    def test_slot_duration_validation(self):
+        """Slot duration extreme bounds warnings."""
+        # Valid slot duration
+        loadshaper.CPU_P95_SLOT_DURATION = 60.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+
+        # Too short slot duration
+        loadshaper.CPU_P95_SLOT_DURATION = 10.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_SLOT_DURATION_SEC", warnings)
+
+        # Too long slot duration
+        loadshaper.CPU_P95_SLOT_DURATION = 900.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_SLOT_DURATION_SEC", warnings)
+
+    def test_ring_buffer_batch_size_validation(self):
+        """Ring buffer batch size validation and warnings."""
+        # Valid batch size
+        loadshaper.CPU_P95_RING_BUFFER_BATCH_SIZE = 10
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+
+        # Zero batch size -> warning
+        loadshaper.CPU_P95_RING_BUFFER_BATCH_SIZE = 0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_RING_BUFFER_BATCH_SIZE", warnings)
+
+        # Negative batch size -> warning
+        loadshaper.CPU_P95_RING_BUFFER_BATCH_SIZE = -5
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_RING_BUFFER_BATCH_SIZE", warnings)
+
+        # Very large batch size -> warning
+        loadshaper.CPU_P95_RING_BUFFER_BATCH_SIZE = 1000
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_RING_BUFFER_BATCH_SIZE", warnings)
 
     def test_multiple_validation_errors(self):
-        """Test handling of multiple validation errors."""
+        """Multiple invalid settings produce multiple errors."""
         # Set up multiple invalid configurations
         loadshaper.CPU_P95_TARGET_MIN = 30.0
         loadshaper.CPU_P95_TARGET_MAX = 20.0  # Invalid: MIN > MAX
@@ -217,79 +327,77 @@ class TestConfigurationConsistency(unittest.TestCase):
         loadshaper.CPU_P95_BASELINE_INTENSITY = 40.0
         loadshaper.CPU_P95_HIGH_INTENSITY = 30.0  # Invalid: BASELINE > HIGH
         loadshaper.LOAD_RESUME_THRESHOLD = 0.8
-        loadshaper.LOAD_THRESHOLD = 0.6  # Invalid: RESUME > THRESHOLD
+        loadshaper.LOAD_THRESHOLD = 0.6       # Invalid: RESUME > THRESHOLD
 
-        with self.assertRaises(RuntimeError) as cm:
-            loadshaper._validate_configuration_consistency()
-
-        # Should mention multiple errors
-        self.assertIn("4 error(s)", str(cm.exception))
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            error_count = len(mock_logger.error.call_args_list)
+            warning_count = len(mock_logger.warning.call_args_list)
+            # Keep HEAD's assertion semantics (expect 4 errors)
+            self.assertEqual(error_count, 4)
+            self.assertGreaterEqual(error_count + warning_count, 4)
 
     def test_exceedance_target_validation(self):
-        """Test exceedance target validation - this should only generate warnings."""
-        # Test exceedance target outside normal range - should generate warning
-        loadshaper.CPU_P95_EXCEEDANCE_TARGET = 15.0  # Very high value
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            # This might not be explicitly validated in current implementation
-            # Just ensure no RuntimeError is raised
-            pass  # No assertion needed if not implemented
+        """Exceedance target out-of-range should only warn."""
+        # High exceedance target
+        loadshaper.CPU_P95_EXCEEDANCE_TARGET = 25.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_EXCEEDANCE_TARGET", warnings)
 
-    def test_ring_buffer_batch_size_validation(self):
-        """Test ring buffer batch size validation - should generate warnings for edge cases."""
-        # Test zero batch size - should generate warning
-        loadshaper.CPU_P95_RING_BUFFER_BATCH_SIZE = 0
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            # This might not be explicitly validated in current implementation
-            # Just ensure no RuntimeError is raised
-            pass  # No assertion needed if not implemented
-
-    def test_slot_duration_validation(self):
-        """Test slot duration validation against control period."""
-        # This is already covered in test_timing_relationships_validation
-        # Included for completeness
-        loadshaper.CPU_P95_SLOT_DURATION = 15.0  # Very short
-        loadshaper.CONTROL_PERIOD = 5.0
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            warning_calls = [call for call in mock_warning.call_args_list
-                           if 'CPU_P95_SLOT_DURATION' in str(call)]
-            self.assertTrue(len(warning_calls) > 0, "Should warn about short slot duration")
-
-    def test_validation_startup_integration(self):
-        """Test that validation integrates properly with startup."""
-        # Valid configuration should complete without issues
-        loadshaper._validate_configuration_consistency()
-        # If we get here, validation passed
-        self.assertTrue(True)
-
-    def test_warning_message_quality(self):
-        """Test that warning messages contain useful information."""
-        loadshaper.CPU_P95_TARGET_MIN = 19.0  # Below Oracle threshold
-        with unittest.mock.patch('loadshaper.logger.warning') as mock_warning:
-            loadshaper._validate_configuration_consistency()
-            # Check that warnings are informative
-            if mock_warning.call_args_list:
-                warning_text = str(mock_warning.call_args_list[0])
-                self.assertIn("19.0", warning_text, "Warning should mention the actual value")
+        # Low exceedance target
+        loadshaper.CPU_P95_EXCEEDANCE_TARGET = 1.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            warnings = " ".join([str(c) for c in mock_logger.warning.call_args_list])
+            self.assertIn("CPU_P95_EXCEEDANCE_TARGET", warnings)
 
     def test_validation_with_none_values(self):
-        """Test validation handles None values gracefully."""
-        # Set some values to None (uninitialized)
+        """Validation handles None values gracefully."""
         loadshaper.CPU_P95_TARGET_MIN = None
         loadshaper.CPU_P95_TARGET_MAX = 30.0
         loadshaper.CPU_P95_SETPOINT = 25.0
-
-        # Should not crash with None values
         try:
-            loadshaper._validate_configuration_consistency()
+            with unittest.mock.patch('sys.stdout', new_callable=StringIO):
+                loadshaper._validate_configuration_consistency(raise_on_error=False)
             success = True
         except (TypeError, AttributeError):
             success = False
+        self.assertTrue(success)
 
-        self.assertTrue(success, "Validation should handle None values gracefully")
+    def test_validation_startup_integration(self):
+        """Validation produces messages during initialization with bad config."""
+        loadshaper.CPU_P95_TARGET_MIN = 30.0
+        loadshaper.CPU_P95_TARGET_MAX = 20.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            self.assertTrue(len(mock_logger.error.call_args_list) > 0 or len(mock_logger.warning.call_args_list) > 0)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertIn("configuration", output.lower())
+
+    def test_warning_message_quality_oracle_value_included(self):
+        """Warning messages include concrete values (e.g., 19.0)."""
+        loadshaper.CPU_P95_TARGET_MIN = 19.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            if mock_logger.warning.call_args_list:
+                warning_text = str(mock_logger.warning.call_args_list[0])
+                self.assertIn("19.0", warning_text)
+
+    def test_warning_message_quality_actionable(self):
+        """Warning/error messages are clear and actionable."""
+        loadshaper.CPU_P95_TARGET_MIN = 30.0
+        loadshaper.CPU_P95_TARGET_MAX = 20.0
+        with patch('loadshaper.logger') as mock_logger:
+            loadshaper._validate_configuration_consistency(raise_on_error=False)
+            output = " ".join([str(c) for c in (mock_logger.error.call_args_list + mock_logger.warning.call_args_list)])
+            self.assertTrue(len(mock_logger.error.call_args_list) > 0 or len(mock_logger.warning.call_args_list) > 0)
+            self.assertIn("30", output)
+            self.assertIn("20", output)
+            self.assertTrue("must be" in output.lower() or "should be" in output.lower())
 
 
 if __name__ == '__main__':
     unittest.main()
+

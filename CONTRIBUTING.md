@@ -47,9 +47,12 @@ This approach allows us to quickly iterate toward optimal Oracle Cloud VM protec
    # Test Docker build
    docker compose build
    
-   # Create persistent storage directory (required for local runs)
-   sudo mkdir -p /var/lib/loadshaper
+   # Create persistent storage directory (MANDATORY - no fallback to /tmp)
+   mkdir -p /var/lib/loadshaper
+   # For local development, use your user
    sudo chown $USER:$USER /var/lib/loadshaper
+   # For Docker, match container UID/GID
+   # sudo chown 1000:1000 /var/lib/loadshaper
 
    # Test runtime (requires Linux)
    python3 -u loadshaper.py  # or use Docker
@@ -82,6 +85,41 @@ This approach allows us to quickly iterate toward optimal Oracle Cloud VM protec
 - Edge case coverage
 
 ## Development Guidelines
+
+### Security and Rootless Container Requirements
+
+LoadShaper follows **strict rootless container principles** for maximum security:
+
+1. **Never run as root**: The container runs as UID/GID 1000 (non-root user)
+2. **No privilege escalation**: Never add `privileged: true` or `CAP_ADD` capabilities
+3. **User responsibility**: Volume permissions are the user's responsibility
+4. **Fail-fast validation**: Container exits immediately if persistent storage is not writable
+
+**Volume Permission Setup:**
+```bash
+# For bind mounts - set permissions before starting container
+mkdir -p /var/lib/loadshaper
+chown 1000:1000 /var/lib/loadshaper  # Match container's UID/GID
+
+# For named volumes - Docker manages permissions automatically
+docker volume create loadshaper-metrics
+
+# For custom paths - use PERSISTENCE_DIR environment variable
+export PERSISTENCE_DIR=/custom/path/to/storage
+mkdir -p "$PERSISTENCE_DIR"
+chown 1000:1000 "$PERSISTENCE_DIR"
+```
+
+**Testing Rootless Compliance:**
+```bash
+# Verify container runs as non-root
+docker run --rm loadshaper:latest id
+# Should output: uid=1000(loadshaper) gid=1000(loadshaper)
+
+# Test with read-only volume (should fail fast)
+docker run --rm -v /tmp/readonly:/var/lib/loadshaper:ro loadshaper:latest
+# Should exit with clear error about permissions
+```
 
 ### Code Style
 - **Language**: Python 3.8+

@@ -64,7 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: NetworkGenerator completely rewritten - no backwards compatibility
 - **BREAKING**: Default NET_PEERS changed from "10.0.0.2,10.0.0.3" to "8.8.8.8,1.1.1.1,9.9.9.9"
 - **BREAKING**: Network configuration expanded with validation and fallback variables
+- **BREAKING**: Container now runs as non-root user (uid/gid 1000) for security
 - **All configuration templates**: Updated to use public DNS servers as default peers
+- **Configuration**: Default `NET_MIN_RATE_MBIT` changed from 0 to 1 Mbps to ensure minimum network activity
 - **Dockerfile**: Added non-root user setup and entrypoint script
 - **Health checks**: Now validate persistence status explicitly
 - **Network telemetry**: Now includes state machine status, peer health, and validation metrics

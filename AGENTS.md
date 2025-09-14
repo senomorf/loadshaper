@@ -34,12 +34,47 @@
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
+### Security Architecture
+
+LoadShaper implements **strict rootless container security** throughout:
+
+#### Container Security Model
+- **Never runs as root**: Container executes as user `loadshaper` (UID/GID 1000)
+- **No privilege escalation**: Entrypoint validation fails immediately without attempting automatic fixes
+- **Volume permissions**: User responsibility to configure persistent storage permissions BEFORE deployment
+- **Least-privilege principle**: Minimal attack surface with no unnecessary capabilities
+
+#### Storage Security
+- **Configurable paths**: `PERSISTENCE_DIR` environment variable supports custom storage locations
+- **Permission validation**: Pre-flight checks ensure write access without granting it
+- **No fallback paths**: Eliminates `/tmp` fallback that could mask permission issues
+- **Fail-fast validation**: Container exits immediately if storage requirements not met
+
+#### Why Rootless?
+- **Container breakout prevention**: Non-root execution prevents privilege escalation attacks
+- **Host protection**: Cannot modify host system files or permissions
+- **Compliance ready**: Compatible with security-conscious environments (OpenShift, hardened Kubernetes)
+- **Audit friendly**: Clear security posture with no ambiguous privilege usage
+
+#### Required Setup
+```bash
+# Docker named volumes (recommended)
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+
+# Kubernetes security context
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+```
+
 ### Design Principles
 - **Unobtrusive**: Always yields to legitimate workloads (nice 19 priority)
 - **Adaptive**: Responds to system load and Oracle's reclamation criteria
 - **Resilient**: Handles storage failures, network issues, database corruption, and system restarts
 - **Observable**: Rich telemetry for monitoring and debugging
 - **Self-validating**: Comprehensive configuration validation prevents operational issues
+- **Security-first**: Rootless container execution with no privilege escalation or automatic permission fixes
 
 ### P95 CPU Controller Technical Details
 
@@ -138,6 +173,7 @@ The system automatically detects Oracle Cloud shapes via:
 - Tail logs: `docker logs -f loadshaper`
 - Local run (Linux only, needs /proc): `python -u loadshaper.py`
 - Override settings at launch, e.g.: `CPU_P95_SETPOINT=30 NET_PEERS=8.8.8.8,1.1.1.1 docker compose up -d`
+- Custom storage location: `PERSISTENCE_DIR=/custom/path docker compose up -d`
 - Run tests: `python -m pytest -q`
 
 **🔗 See also:** [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development setup and testing requirements.

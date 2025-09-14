@@ -31,6 +31,11 @@ class TestRingBufferBatching(unittest.TestCase):
 
         # Store original values
         self.original_batch_size = getattr(loadshaper, 'CPU_P95_RING_BUFFER_BATCH_SIZE', None)
+        self.original_ring_buffer_path = getattr(loadshaper, 'RING_BUFFER_PATH', None)
+        self.original_persistence_dir = os.environ.get('PERSISTENCE_DIR')
+
+        # Set PERSISTENCE_DIR for test to use test directory
+        os.environ['PERSISTENCE_DIR'] = self.test_dir
 
         # Initialize required global variables for testing
         loadshaper.CPU_P95_SLOT_DURATION = 60.0
@@ -42,16 +47,23 @@ class TestRingBufferBatching(unittest.TestCase):
         loadshaper.CPU_P95_EXCEEDANCE_TARGET = 6.5
         loadshaper.LOAD_CHECK_ENABLED = False  # Disable load checking for tests
 
-        # Mock the persistent storage path to use our test directory
-        self.original_persistent_path = loadshaper.CPUP95Controller.PERSISTENT_STORAGE_PATH
-        loadshaper.CPUP95Controller.PERSISTENT_STORAGE_PATH = self.test_dir
+        # Initialize all config to prevent None errors
+        loadshaper._initialize_config()
 
     def tearDown(self):
         """Clean up test environment."""
         # Restore original values
         if hasattr(loadshaper, 'CPU_P95_RING_BUFFER_BATCH_SIZE'):
             loadshaper.CPU_P95_RING_BUFFER_BATCH_SIZE = self.original_batch_size
-        loadshaper.CPUP95Controller.PERSISTENT_STORAGE_PATH = self.original_persistent_path
+
+        if self.original_ring_buffer_path is not None:
+            loadshaper.RING_BUFFER_PATH = self.original_ring_buffer_path
+
+        # Restore PERSISTENCE_DIR environment variable
+        if self.original_persistence_dir is not None:
+            os.environ['PERSISTENCE_DIR'] = self.original_persistence_dir
+        elif 'PERSISTENCE_DIR' in os.environ:
+            del os.environ['PERSISTENCE_DIR']
 
         # Clean up test directory
         if os.path.exists(self.test_dir):
@@ -76,10 +88,9 @@ class TestRingBufferBatching(unittest.TestCase):
 
         controller._save_ring_buffer_state = mock_save
 
-        # Simulate updating slots_since_last_save and calling maybe_save
+        # Simulate 12 slot completions (should trigger 2 saves with batch_size=5)
         for i in range(12):
-            controller.slots_since_last_save += 1
-            controller._maybe_save_ring_buffer_state()
+            controller._end_current_slot()
 
         # With batch_size=5, we should have 2 saves (at counts 5 and 10)
         expected_saves = 2
@@ -113,10 +124,9 @@ class TestRingBufferBatching(unittest.TestCase):
 
                 controller._save_ring_buffer_state = mock_save
 
-                # Simulate updates
+                # Simulate updates via slot completions
                 for i in range(updates):
-                    controller.slots_since_last_save += 1
-                    controller._maybe_save_ring_buffer_state()
+                    controller._end_current_slot()
 
                 self.assertEqual(save_count, expected_saves,
                                f"Batch size {batch_size} with {updates} updates should save {expected_saves} times, got {save_count}")
@@ -129,20 +139,27 @@ class TestRingBufferBatching(unittest.TestCase):
         metrics_storage = loadshaper.MetricsStorage(self.db_path)
         controller = loadshaper.CPUP95Controller(metrics_storage)
 
-        # Simulate some slot history changes
-        controller.slot_history[0] = True
-        controller.slot_history[1] = False
-        controller.slot_history[2] = True
-        controller.slot_history_index = 2
-        controller.slots_recorded = 3
+        # Enable test-mode persistence and add several decisions via slots
+        controller.test_mode = True
+        controller.ring_buffer_path = self.ring_buffer_path
+        decisions = [True, False, True, True, False, False, True]  # 7 decisions
+        for decision in decisions:
+            controller.current_slot_is_high = decision
+            controller._end_current_slot()
 
-        # Force a save by hitting the batch limit
-        controller.slots_since_last_save = 3
-        controller._maybe_save_ring_buffer_state()
+        # Verify saved state contains all decisions
+        self.assertTrue(os.path.exists(self.ring_buffer_path))
 
-        # Verify state was saved (check that the counter was reset)
-        self.assertEqual(controller.slots_since_last_save, 0,
-                        "slots_since_last_save should be reset after save")
+        with open(self.ring_buffer_path, 'r') as f:
+            saved_state = json.load(f)
+
+        # Count decisions in saved state
+        saved_decisions = [slot for slot in saved_state['slot_history'] if slot is not None]
+        expected_high_decisions = sum(decisions)
+        actual_high_decisions = sum(saved_decisions)
+
+        self.assertEqual(actual_high_decisions, expected_high_decisions,
+                        f"Expected {expected_high_decisions} high decisions, saved state has {actual_high_decisions}")
 
     def test_batch_counter_reset(self):
         """Test that the batch counter resets properly after saves."""
@@ -154,22 +171,22 @@ class TestRingBufferBatching(unittest.TestCase):
         # Initial state
         self.assertEqual(controller.slots_since_last_save, 0)
 
-        # Update counter without hitting batch limit
-        controller.slots_since_last_save = 2
-        controller._maybe_save_ring_buffer_state()
-        self.assertEqual(controller.slots_since_last_save, 2,
-                        "Counter should not reset before hitting batch size")
+        # Process exactly 4 slot completions (batch size is 5)
+        for i in range(4):
+            controller._end_current_slot()
 
-        # Update to hit batch limit
-        controller.slots_since_last_save = 5
-        controller._maybe_save_ring_buffer_state()
+        # Counter should be 4 before hitting batch limit
+        self.assertEqual(controller.slots_since_last_save, 4,
+                        "Counter should reflect 4 slots before save")
+
+        # Process one more to hit batch limit and trigger reset
+        controller._end_current_slot()
         self.assertEqual(controller.slots_since_last_save, 0,
                         "Counter should reset after hitting batch size")
 
-        # Update again
-        controller.slots_since_last_save += 1
-        controller.slots_since_last_save += 1
-        controller._maybe_save_ring_buffer_state()
+        # Process 2 more slot completions
+        for i in range(2):
+            controller._end_current_slot()
         self.assertEqual(controller.slots_since_last_save, 2,
                         "Batch counter should be 2 after 2 additional updates")
 
@@ -180,6 +197,10 @@ class TestRingBufferBatching(unittest.TestCase):
         metrics_storage = loadshaper.MetricsStorage(self.db_path)
         controller = loadshaper.CPUP95Controller(metrics_storage)
 
+        # Set test mode to use test directory for ring buffer
+        controller.test_mode = True
+        controller.ring_buffer_path = self.ring_buffer_path
+
         # Set some state and partial batch count
         controller.slot_history[0] = True
         controller.slots_since_last_save = 3  # Less than batch size
@@ -189,7 +210,7 @@ class TestRingBufferBatching(unittest.TestCase):
 
         # The important thing is that it doesn't crash - the state should be saved
         # regardless of batch counter status
-        self.assertTrue(os.path.exists(controller._get_ring_buffer_path()) or True,
+        self.assertTrue(os.path.exists(self.ring_buffer_path),
                        "Shutdown should save state regardless of batch size")
 
     def test_error_handling_during_batched_save(self):
@@ -207,8 +228,10 @@ class TestRingBufferBatching(unittest.TestCase):
             controller.slots_since_last_save = 2
             controller._maybe_save_ring_buffer_state()
 
-            # Controller should still be functional despite save failure
-            self.assertIsNotNone(controller.state, "Controller should remain functional after save error")
+            # Controller should continue functioning after failed save
+            controller.update_state(27.0)
+            # Verify controller is still functioning by checking its attributes
+            self.assertIsNotNone(controller.current_target_intensity)
         finally:
             # Restore directory permissions for cleanup
             os.chmod(self.test_dir, 0o755)

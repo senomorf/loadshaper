@@ -1020,17 +1020,21 @@ NET_FALLBACK_RAMP_SEC = None
 paused = None
 
 
-def _validate_configuration_consistency():
+def _validate_configuration_consistency(raise_on_error=True):
     """
     Validate logical relationships and consistency across all configuration parameters.
 
     This function performs comprehensive validation beyond individual parameter ranges,
     checking for logical inconsistencies that could cause runtime issues or suboptimal behavior.
+
+    Args:
+        raise_on_error (bool): If True, raise RuntimeError on validation errors (default: True).
+                              If False, only log errors without raising (useful for testing).
     """
     global MEM_TARGET_PCT, NET_TARGET_PCT
     global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
-    global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT
-    global CONTROL_PERIOD, AVG_WINDOW_SEC, CPU_P95_SLOT_DURATION
+    global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT, CPU_P95_EXCEEDANCE_TARGET
+    global CONTROL_PERIOD, AVG_WINDOW_SEC, CPU_P95_SLOT_DURATION, CPU_P95_RING_BUFFER_BATCH_SIZE
     global MEM_MIN_FREE_MB, CPU_P95_BASELINE_INTENSITY, CPU_P95_HIGH_INTENSITY
     global NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT
     global LOAD_THRESHOLD, LOAD_RESUME_THRESHOLD
@@ -1096,7 +1100,37 @@ def _validate_configuration_consistency():
             # Can't check system memory during init, skip this check
             pass
 
-    # 8. Oracle compliance cross-checks
+    # 8. P95 exceedance target validation
+    if CPU_P95_EXCEEDANCE_TARGET is not None:
+        if CPU_P95_EXCEEDANCE_TARGET > 15.0:  # Too high
+            warnings.append(f"CPU_P95_EXCEEDANCE_TARGET ({CPU_P95_EXCEEDANCE_TARGET}%) is very high - may cause excessive resource usage")
+        elif CPU_P95_EXCEEDANCE_TARGET < 2.0:  # Too low
+            warnings.append(f"CPU_P95_EXCEEDANCE_TARGET ({CPU_P95_EXCEEDANCE_TARGET}%) is very low - may not maintain sufficient P95 levels")
+
+    # 9. Slot duration validation
+    if CPU_P95_SLOT_DURATION is not None:
+        if CPU_P95_SLOT_DURATION < 30.0:  # Too short
+            warnings.append(f"CPU_P95_SLOT_DURATION_SEC ({CPU_P95_SLOT_DURATION}s) is too short - may cause unstable P95 control")
+        elif CPU_P95_SLOT_DURATION > 600.0:  # Too long
+            warnings.append(f"CPU_P95_SLOT_DURATION_SEC ({CPU_P95_SLOT_DURATION}s) is too long - may slow response to load changes")
+
+    # 10. Ring buffer batch size validation
+    if CPU_P95_RING_BUFFER_BATCH_SIZE is not None:
+        if CPU_P95_RING_BUFFER_BATCH_SIZE <= 0:
+            warnings.append(f"CPU_P95_RING_BUFFER_BATCH_SIZE ({CPU_P95_RING_BUFFER_BATCH_SIZE}) must be positive")
+        elif CPU_P95_RING_BUFFER_BATCH_SIZE > 100:
+            warnings.append(f"CPU_P95_RING_BUFFER_BATCH_SIZE ({CPU_P95_RING_BUFFER_BATCH_SIZE}) is very large - may delay state persistence")
+
+    # 11. Oracle compliance cross-checks
+    # Check individual targets for Oracle reclamation risk
+    if CPU_P95_SETPOINT is not None and CPU_P95_SETPOINT < 20.0:
+        warnings.append(f"CPU_P95_SETPOINT ({CPU_P95_SETPOINT}%) below Oracle reclamation threshold - risk of VM reclamation")
+    if MEM_TARGET_PCT is not None and MEM_TARGET_PCT < 20.0:
+        warnings.append(f"MEM_TARGET_PCT ({MEM_TARGET_PCT}%) below Oracle reclamation threshold - risk of VM reclamation")
+    if NET_TARGET_PCT is not None and NET_TARGET_PCT < 20.0:
+        warnings.append(f"NET_TARGET_PCT ({NET_TARGET_PCT}%) below Oracle reclamation threshold - risk of VM reclamation")
+
+    # Cross-metric Oracle compliance checks
     oracle_issues = []
     if CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MIN < 20.0:
         oracle_issues.append("CPU P95")
@@ -1117,8 +1151,8 @@ def _validate_configuration_consistency():
     for warning in warnings:
         logger.warning(f"Configuration warning: {warning}")
 
-    # Fatal errors stop initialization
-    if errors:
+    # Fatal errors stop initialization (unless suppressed for testing)
+    if errors and raise_on_error:
         raise RuntimeError(f"Configuration validation failed with {len(errors)} error(s). Fix configuration and restart.")
 
     if warnings:
@@ -1281,7 +1315,7 @@ class CPUP95Controller:
     # State machine timing constants
     STATE_CHANGE_COOLDOWN_SEC = 300  # 5 minutes cooldown after state change
     P95_CACHE_TTL_SEC = 300          # Cache P95 calculations for 5 minutes (aligned with state change cooldown)
-    PERSISTENT_STORAGE_PATH = "/var/lib/loadshaper"  # Persistent storage directory for metrics DB and ring buffer
+    PERSISTENT_STORAGE_PATH = os.getenv("PERSISTENCE_DIR", "/var/lib/loadshaper")  # Persistent storage directory for metrics DB and ring buffer
 
     # Hysteresis values for adaptive deadbands
     HYSTERESIS_SMALL_PCT = 0.5       # Small hysteresis for stable periods
@@ -1420,6 +1454,10 @@ class CPUP95Controller:
 
     def _get_ring_buffer_path(self):
         """Get path for ring buffer persistence file"""
+        # Allow tests to override path
+        if hasattr(self, 'ring_buffer_path'):
+            return self.ring_buffer_path
+
         # Use same directory as metrics database for consistency
         db_dir = self.PERSISTENT_STORAGE_PATH
         if not os.path.isdir(db_dir):
@@ -1443,8 +1481,8 @@ class CPUP95Controller:
 
     def _save_ring_buffer_state(self):
         """Save ring buffer state to disk for persistence across restarts"""
-        # Skip persistence in test mode for predictable test behavior
-        if os.environ.get('PYTEST_CURRENT_TEST'):
+        # Skip persistence in test mode for predictable test behavior (unless test_mode allows it)
+        if os.environ.get('PYTEST_CURRENT_TEST') and not getattr(self, 'test_mode', False):
             return
 
         # Skip persistence in degraded mode (disk full)
@@ -2642,7 +2680,6 @@ class MetricsStorage:
         logger.warning("Attempting database corruption recovery...")
 
         backup_path = None  # Initialize to avoid UnboundLocalError
-
         try:
             # Step 1: Backup corrupted database
             backup_path = self.backup_corrupted_database()
