@@ -77,16 +77,23 @@ class TestRingBufferBatching(unittest.TestCase):
         metrics_storage = loadshaper.MetricsStorage(self.db_path)
         controller = loadshaper.CPUP95Controller(metrics_storage)
 
-        # Mock the _save_ring_buffer_state method to count actual saves
-        save_count = 0
-        original_save = controller._save_ring_buffer_state
+        # Mock file operations to count ring buffer saves (including thread-safe temp files)
+        write_count = 0
+        original_open = open
 
-        def mock_save():
-            nonlocal save_count
-            save_count += 1
-            original_save()
+        def mock_open(*args, **kwargs):
+            nonlocal write_count
+            if len(args) > 0 and args[0] and 'w' in str(args[1:]):
+                # Check for ring buffer path or any temp file pattern
+                if (args[0] == self.ring_buffer_path or
+                    args[0] == self.ring_buffer_path + '.tmp' or
+                    (args[0].startswith(self.ring_buffer_path) and '.tmp' in args[0])):
+                    write_count += 1
+            return original_open(*args, **kwargs)
 
-        controller._save_ring_buffer_state = mock_save
+        # Apply the mock
+        import builtins
+        builtins.open = mock_open
 
         # Simulate 12 slot completions (should trigger 2 saves with batch_size=5)
         for i in range(12):
@@ -94,8 +101,12 @@ class TestRingBufferBatching(unittest.TestCase):
 
         # With batch_size=5, we should have 2 saves (at counts 5 and 10)
         expected_saves = 2
-        self.assertEqual(save_count, expected_saves,
-                        f"Expected {expected_saves} saves with batch_size=5 over 12 slot updates, got {save_count}")
+
+        # Restore original open function
+        builtins.open = original_open
+
+        self.assertEqual(write_count, expected_saves,
+                        f"Expected {expected_saves} saves with batch_size=5 over 12 slot updates, got {write_count}")
 
     def test_different_batch_sizes(self):
         """Test different batch sizes."""
@@ -113,23 +124,33 @@ class TestRingBufferBatching(unittest.TestCase):
                 metrics_storage = loadshaper.MetricsStorage(self.db_path)
                 controller = loadshaper.CPUP95Controller(metrics_storage)
 
-                # Mock the save method to count calls
-                save_count = 0
-                original_save = controller._save_ring_buffer_state
+                # Mock file operations to count ring buffer saves (including thread-safe temp files)
+                write_count = 0
+                original_open = open
 
-                def mock_save():
-                    nonlocal save_count
-                    save_count += 1
-                    original_save()
+                def mock_open(*args, **kwargs):
+                    nonlocal write_count
+                    if len(args) > 0 and args[0] and 'w' in str(args[1:]):
+                        # Check for ring buffer path or any temp file pattern
+                        if (args[0] == self.ring_buffer_path or
+                            args[0] == self.ring_buffer_path + '.tmp' or
+                            (args[0].startswith(self.ring_buffer_path) and '.tmp' in args[0])):
+                            write_count += 1
+                    return original_open(*args, **kwargs)
 
-                controller._save_ring_buffer_state = mock_save
+                # Apply the mock
+                import builtins
+                builtins.open = mock_open
 
                 # Simulate updates via slot completions
                 for i in range(updates):
                     controller._end_current_slot()
 
-                self.assertEqual(save_count, expected_saves,
-                               f"Batch size {batch_size} with {updates} updates should save {expected_saves} times, got {save_count}")
+                # Restore original open function
+                builtins.open = original_open
+
+                self.assertEqual(write_count, expected_saves,
+                               f"Batch size {batch_size} with {updates} updates should save {expected_saves} times, got {write_count}")
 
     def test_state_persistence_accuracy_with_batching(self):
         """Test that state is accurately persisted even with batching."""
