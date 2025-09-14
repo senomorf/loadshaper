@@ -13,28 +13,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Persistent volume storage now REQUIRED** - Docker Compose deployments must include persistent volume or container will not start
 - **Container now runs as non-root user** (uid/gid 1000) for security
 - **No fallback to ephemeral storage** - LoadShaper requires persistent storage for Oracle compliance
+- **Network generation completely rewritten** - No backwards compatibility with previous network implementation ([#75](https://github.com/senomorf/loadshaper/issues/75))
+- **Default NET_PEERS changed** - From placeholder IPs (10.0.0.2, 10.0.0.3) to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
+- **Network configuration variables** - Several new variables added for reliability and validation
 
 ### Fixed
 - **CRITICAL**: Added persistent volume storage for metrics database in Docker Compose ([#74](https://github.com/senomorf/loadshaper/issues/74))
 - **Metrics database persistence**: 7-day P95 history now preserved across container restarts
 - **Oracle compliance**: P95 calculations maintain complete history required for reclamation detection
 - **Container security**: Application now runs as non-root user (loadshaper:1000)
+- **CRITICAL**: Network generation reliability completely fixed ([#75](https://github.com/senomorf/loadshaper/issues/75))
+- **Silent network failures**: Now detects failed network generation via tx_bytes monitoring
+- **Unreachable default peers**: Changed from RFC2544 placeholder IPs to public DNS servers
+- **E2 external traffic requirement**: Validates external addresses and ensures Oracle-compliant external traffic
+- **Network fallback chain**: Automatic fallback UDP → TCP → next peer → DNS servers → local generation
 
 ### Added
 - **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
 - **Health endpoint enhancement**: Added `persistence_storage` status and `database_path` fields
 - **Clear error messages**: Detailed guidance when persistent volume configuration is missing
+- **NetworkGenerator state machine**: Complete state-driven network generation (OFF → INITIALIZING → VALIDATING → ACTIVE_UDP → ACTIVE_TCP → DEGRADED_LOCAL → ERROR)
+- **Peer validation and reputation**: EMA-based scoring system tracks peer reliability over time
+- **tx_bytes monitoring**: Runtime validation of actual network traffic generation via NIC statistics
+- **External address validation**: Rejects RFC1918, loopback, and link-local addresses for E2 Oracle compliance
+- **DNS packet generation**: EDNS0-padded DNS queries for reliable external traffic when UDP/TCP peers fail
+- **Network health scoring**: 0-100 score based on state, peer reputation, validation success, and error rates
+- **Automatic fallback chain**: UDP → TCP → next peer → DNS servers → local generation with hysteresis
+- **Runtime peer switching**: Detects failed peers and automatically switches to healthy alternatives
 
 ### Changed
 - **BREAKING**: Docker Compose now requires `loadshaper-metrics` named volume
 - **BREAKING**: Container exits if `/var/lib/loadshaper` is not writable
 - **BREAKING**: Removed all fallback logic to `/tmp` storage paths
+- **BREAKING**: NetworkGenerator completely rewritten - no backwards compatibility
+- **BREAKING**: Default NET_PEERS changed from "10.0.0.2,10.0.0.3" to "8.8.8.8,1.1.1.1,9.9.9.9"
+- **BREAKING**: Network configuration expanded with validation and fallback variables
+- **All configuration templates**: Updated to use public DNS servers as default peers
 - **Dockerfile**: Added non-root user setup and entrypoint script
 - **Health checks**: Now validate persistence status explicitly
+- **Network telemetry**: Now includes state machine status, peer health, and validation metrics
 
 ### Migration Required
 Existing Docker Compose users must update their configuration:
 
+**Persistent Storage (Required):**
 ```yaml
 services:
   loadshaper:
@@ -46,6 +68,12 @@ volumes:
   loadshaper-metrics:
     driver: local
 ```
+
+**Network Configuration (Breaking Change):**
+- **NET_PEERS default changed**: Old placeholder IPs (10.0.0.2, 10.0.0.3) now default to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
+- **New network variables**: Validation, fallback, and reliability settings added
+- **Configuration templates**: All shape-specific templates updated with new defaults
+- **No backwards compatibility**: Old network implementation completely removed
 
 ## [3.0.0] - P95 CPU Control Implementation (#73)
 

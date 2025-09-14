@@ -36,6 +36,17 @@
 - **Oracle compliance**: Aligns with cloud provider standards (AWS CloudWatch, Azure Monitor) and Oracle's likely implementation
 - **Memory occupation not stressing**: Goal is to maintain target utilization percentage, not stress test memory subsystem
 
+## Network Generation Reliability (Issue #75 Implementation)
+- **State machine architecture**: OFF → INITIALIZING → VALIDATING → ACTIVE_UDP → ACTIVE_TCP → DEGRADED_LOCAL → ERROR
+- **External address validation**: Automatically rejects RFC1918, loopback, and link-local addresses for E2 Oracle compliance
+- **tx_bytes monitoring**: Runtime validation of actual network traffic via `/sys/class/net/*/statistics/tx_bytes`
+- **Peer reputation system**: EMA-based scoring (0-100) tracks reliability over time
+- **Automatic fallback chain**: UDP → TCP → next peer → DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) → local generation
+- **DNS packet generation**: EDNS0-padded queries for reliable external traffic when peers fail
+- **Network health scoring**: Weighted composite score (state 40%, reputation 30%, validation 20%, errors 10%)
+- **Default peers changed**: From RFC2544 placeholders (10.0.0.2, 10.0.0.3) to public DNS servers for reliability
+- **Oracle E2 compliance**: Ensures external traffic generation required for 20% network threshold
+
 ## Key Configuration Variables
 - **P95 CPU control**: `CPU_P95_TARGET_MIN`, `CPU_P95_TARGET_MAX`, `CPU_P95_SETPOINT`, `CPU_P95_EXCEEDANCE_TARGET`
 - **P95 slot control**: `CPU_P95_SLOT_DURATION_SEC`, `CPU_P95_HIGH_INTENSITY`, `CPU_P95_BASELINE_INTENSITY`

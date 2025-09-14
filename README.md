@@ -383,7 +383,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 |----------|---------|-------------|
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
-| `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
+| `NET_PEERS` | `8.8.8.8,1.1.1.1,9.9.9.9` | Comma-separated peer IP addresses (public DNS servers for reliability) |
 | `NET_PORT` | `15201` | TCP port for network communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
@@ -469,6 +469,38 @@ The native network generator provides advanced performance features:
 - Packet generation: Pre-allocated buffers for zero-copy operation
 - Resource usage: Automatic cleanup with context manager support
 - Thread safety: Designed for single-threaded operation per generator
+
+### Network Generation Reliability (Issue #75 Fix)
+
+The network generator includes a comprehensive reliability system to prevent silent failures and ensure Oracle-compliant external traffic generation:
+
+**State Machine Architecture:**
+- `OFF` → `INITIALIZING` → `VALIDATING` → `ACTIVE_UDP` → `ACTIVE_TCP` → `DEGRADED_LOCAL` → `ERROR`
+- Automatic state transitions based on validation results and peer health
+- Hysteresis and debouncing prevent oscillation between states
+
+**Peer Validation & Reputation:**
+- **External address validation**: Automatically rejects RFC1918, loopback, and link-local addresses for E2 Oracle compliance
+- **EMA-based reputation scoring**: Tracks peer reliability over time (0-100 score)
+- **Runtime tx_bytes monitoring**: Validates actual network traffic generation via `/sys/class/net/*/statistics/tx_bytes`
+- **Automatic peer switching**: Detects failed peers and switches to healthy alternatives
+
+**Fallback Chain:**
+- **Primary**: UDP traffic to configured peers
+- **Secondary**: TCP traffic to same peers
+- **Tertiary**: DNS queries with EDNS0 padding to public DNS servers
+- **Final**: Local loopback generation (degraded mode)
+
+**Network Health Scoring (0-100):**
+- State health: 40% weight (ACTIVE states = 100, ERROR = 0)
+- Peer reputation: 30% weight (EMA of validation success rates)
+- Validation success: 20% weight (recent tx_bytes confirmation)
+- Error rates: 10% weight (inverse of recent failures)
+
+**Oracle E2 Compliance Features:**
+- Ensures all traffic targets external addresses (non-RFC1918)
+- Uses public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) as reliable default peers
+- Validates actual external traffic generation required for Oracle's 20% network threshold
 
 ### Shape-Specific Recommendations
 
@@ -746,8 +778,8 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 **Q: CPU load isn't reaching the target percentage**  
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
-**Q: Network traffic isn't being generated**  
-A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify peer instances are reachable and firewall rules allow traffic on `NET_PORT`.
+**Q: Network traffic isn't being generated**
+A: Check network state in telemetry output. The new network generator (v75+) uses public DNS servers by default (`NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9`). Monitor network health scores and state transitions. If state shows ERROR or DEGRADED_LOCAL, check connectivity to external addresses.
 
 **Q: Memory usage isn't increasing on A1.Flex**  
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
@@ -855,10 +887,11 @@ docker logs -f loadshaper | grep "nic("
 - Verify container has access to enough memory
 
 **Network traffic not generating:**
-- Confirm `NET_MODE=client` and `NET_PEERS` are set correctly
-- Verify peers are reachable on the specified port
-- Check firewall rules between instances
-- Try `NET_PROTOCOL=tcp` if UDP traffic is filtered
+- Check telemetry for network state (should show ACTIVE_UDP or ACTIVE_TCP)
+- Default `NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9` (public DNS servers) - no custom setup required
+- Monitor network health score (0-100) - low scores indicate connectivity issues
+- Network generator automatically falls back: UDP → TCP → DNS → local
+- For E2 shapes, ensure external internet access (not just internal VM connectivity)
 
 **Database storage issues:**
 ```shell
@@ -894,10 +927,10 @@ NET_IPV6_ENABLED=false docker compose up -d --build
 
 **DNS resolution failures:**
 ```shell
-# Check DNS resolution for benchmark addresses
-docker exec loadshaper nslookup 198.18.0.1
-# Or use alternative benchmark address
-NET_PEERS=203.0.113.1:15201 docker compose up -d --build
+# Check DNS resolution for default peers
+docker exec loadshaper nslookup 8.8.8.8
+# The default public DNS servers should always be reachable
+# If not, check your network connectivity or firewall rules
 ```
 
 **TCP connection pool issues:**
