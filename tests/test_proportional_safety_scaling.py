@@ -130,16 +130,16 @@ class TestProportionalSafetyScaling(unittest.TestCase):
 
         # At exactly SAFETY_SCALE_START (0.5) - should get normal intensity
         normal_intensity = self.controller.get_target_intensity()
-        scaled_intensity = self.controller._calculate_safety_scaled_intensity(0.5)
+        scaled_intensity = self.controller._calculate_safety_scaled_intensity(0.5, normal_intensity)
         self.assertEqual(scaled_intensity, normal_intensity)
 
         # At exactly SAFETY_SCALE_FULL (0.8) - should get baseline
-        scaled_intensity = self.controller._calculate_safety_scaled_intensity(0.8)
+        scaled_intensity = self.controller._calculate_safety_scaled_intensity(0.8, normal_intensity)
         self.assertEqual(scaled_intensity, self.baseline_intensity)
 
         # At 25% through range (0.575) - should be 25% scaled down
         quarter_load = 0.5 + (0.8 - 0.5) * 0.25  # 0.575
-        scaled_intensity = self.controller._calculate_safety_scaled_intensity(quarter_load)
+        scaled_intensity = self.controller._calculate_safety_scaled_intensity(quarter_load, normal_intensity)
 
         # Should be between normal and minimum scaled intensity
         min_scaled = normal_intensity * self.controller.SAFETY_MIN_INTENSITY_SCALE  # 70% of normal
@@ -154,7 +154,7 @@ class TestProportionalSafetyScaling(unittest.TestCase):
 
         # Even with very high load, should never go below baseline
         extreme_load = 10.0  # Unrealistic but tests the floor
-        scaled_intensity = self.controller._calculate_safety_scaled_intensity(extreme_load)
+        scaled_intensity = self.controller._calculate_safety_scaled_intensity(extreme_load, 35.0)
         self.assertEqual(scaled_intensity, self.baseline_intensity)
 
     def test_disabled_proportional_scaling_fallback(self):
@@ -165,7 +165,7 @@ class TestProportionalSafetyScaling(unittest.TestCase):
 
         try:
             # Any load above threshold should give baseline
-            scaled_intensity = self.controller._calculate_safety_scaled_intensity(0.65)
+            scaled_intensity = self.controller._calculate_safety_scaled_intensity(0.65, 35.0)
             self.assertEqual(scaled_intensity, self.baseline_intensity)
         finally:
             # Restore original setting
@@ -175,22 +175,26 @@ class TestProportionalSafetyScaling(unittest.TestCase):
         """Test proportional scaling works with different controller states."""
         # Test with BUILDING state (high normal intensity)
         self.controller.state = 'BUILDING'
-        building_intensity = self.controller._calculate_safety_scaled_intensity(0.65)
+        building_normal = self.controller.get_target_intensity()
+        building_intensity = self.controller._calculate_safety_scaled_intensity(0.65, building_normal)
 
         # Test with REDUCING state (lower normal intensity)
         self.controller.state = 'REDUCING'
-        reducing_intensity = self.controller._calculate_safety_scaled_intensity(0.65)
+        reducing_normal = self.controller.get_target_intensity()
+        reducing_intensity = self.controller._calculate_safety_scaled_intensity(0.65, reducing_normal)
 
         # Test with MAINTAINING state (setpoint-based intensity)
         self.controller.state = 'MAINTAINING'
-        maintaining_intensity = self.controller._calculate_safety_scaled_intensity(0.65)
+        maintaining_normal = self.controller.get_target_intensity()
+        maintaining_intensity = self.controller._calculate_safety_scaled_intensity(0.65, maintaining_normal)
 
         # All should be above baseline but scaled appropriately
         self.assertGreater(building_intensity, self.baseline_intensity)
         self.assertGreater(reducing_intensity, self.baseline_intensity)
         self.assertGreater(maintaining_intensity, self.baseline_intensity)
 
-        # Building should typically have highest scaled intensity
+        # Building should typically have highest normal intensity, thus highest scaled intensity
+        self.assertGreater(building_normal, maintaining_normal)
         self.assertGreater(building_intensity, maintaining_intensity)
 
     def test_gradual_load_increase_response(self):
@@ -201,7 +205,7 @@ class TestProportionalSafetyScaling(unittest.TestCase):
         intensities = []
 
         for load in loads:
-            intensity = self.controller._calculate_safety_scaled_intensity(load)
+            intensity = self.controller._calculate_safety_scaled_intensity(load, 35.0)
             intensities.append(intensity)
 
         # Intensities should generally decrease as load increases

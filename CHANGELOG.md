@@ -45,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Test failures**: Resolved P95 cache pollution issues in test suite causing incorrect exceedance target calculations
 - **Code documentation**: Added comprehensive docstrings and improved critical code comments for Oracle compliance logic
 
+## [3.0.2] - Critical Bug Fixes and Thread Safety
+
+### Fixed
+- **Critical memory unpacking bug**: Fixed variable unpacking mismatch where `read_meminfo()` returns 5 values but only 3 were unpacked, causing undefined variable errors
+- **P95 cache fallback logic**: Fixed fallback to return cached P95 value when database read fails instead of returning None
+- **Thread safety**: Added missing `with self._lock:` protection to `get_target_intensity()` and `get_exceedance_target()` methods
+- **Safety scaling efficiency**: Fixed `_calculate_safety_scaled_intensity()` method signature to accept `normal_intensity` parameter, preventing redundant calculations
+- **Configuration warning clarity**: Enhanced setpoint adjustment warning to show the actual adjusted value
+- **Logging level**: Changed P95 ring buffer initialization message from debug to info level for better visibility
+
+### Technical Improvements
+- **Reduced database queries**: Safety scaling now avoids calling `get_target_intensity()` twice when scaling is needed
+- **Better error recovery**: P95 controller now gracefully handles temporary database failures using cached values
+- **Consistent thread safety**: All P95 controller methods now use proper locking for concurrent access protection
+
 ## [3.0.1] - Bug Fixes and Test Coverage
 
 ### Fixed

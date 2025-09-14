@@ -756,10 +756,10 @@ def _validate_p95_config():
         max_valid = CPU_P95_TARGET_MAX - safety_margin
 
         if not (min_valid <= CPU_P95_SETPOINT <= max_valid):
+            new_setpoint = (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2.0
             logger.warning(f"CPU_P95_SETPOINT={CPU_P95_SETPOINT}% is outside safe range "
-                          f"[{min_valid:.1f}%-{max_valid:.1f}%]. Adjusting to center of range.")
-            CPU_P95_SETPOINT = (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2.0
-            logger.info(f"Adjusted CPU_P95_SETPOINT to {CPU_P95_SETPOINT:.1f}%")
+                          f"[{min_valid:.1f}%-{max_valid:.1f}%]. Adjusting to {new_setpoint:.1f}%.")
+            CPU_P95_SETPOINT = new_setpoint
 
     # Validate that slot duration is reasonable relative to control period
     if CPU_P95_SLOT_DURATION is not None and CONTROL_PERIOD is not None:
@@ -1124,9 +1124,16 @@ class CPUP95Controller:
             if p95 is not None:
                 self._p95_cache = p95
                 self._p95_cache_time = now
-            # Note: If p95 is None, we keep the existing cached value (if any) as a fallback
+                return p95
 
-            return p95
+            # Fallback: If DB returns None but we have a cached value, use it
+            # This prevents controller from losing P95 input during temporary DB issues
+            if self._p95_cache is not None:
+                logger.debug("P95 controller: Using cached P95 value due to database read failure")
+                return self._p95_cache
+
+            # Last resort: No data available
+            return None
 
     def _get_ring_buffer_path(self):
         """Get path for ring buffer persistence file"""
@@ -1178,7 +1185,7 @@ class CPUP95Controller:
             ring_buffer_path = self._get_ring_buffer_path()
 
             if not os.path.exists(ring_buffer_path):
-                logger.debug("No persisted P95 ring buffer state found")
+                logger.info("No persisted P95 ring buffer state found, starting fresh")
                 return
 
             with open(ring_buffer_path, 'r') as f:
@@ -1246,76 +1253,77 @@ class CPUP95Controller:
 
     def get_target_intensity(self):
         """Get target CPU intensity based on current state and distance from target"""
-        cpu_p95 = self.get_cpu_p95()
+        with self._lock:
+            cpu_p95 = self.get_cpu_p95()
 
-        if self.state == 'BUILDING':
-            # More aggressive if further from target
-            if cpu_p95 is not None and cpu_p95 < (CPU_P95_TARGET_MIN - self.DISTANCE_THRESHOLD_LARGE):
-                computed = CPU_P95_HIGH_INTENSITY + self.BUILD_AGGRESSIVE_INTENSITY_BOOST  # Very aggressive catch-up
-            else:
-                computed = CPU_P95_HIGH_INTENSITY + self.BUILD_NORMAL_INTENSITY_BOOST  # Normal catch-up
-        elif self.state == 'REDUCING':
-            # More conservative if way above target, but keep high slots truly high
-            # Reduction comes from lower exceedance frequency, not making high slots low
-            if cpu_p95 is not None and cpu_p95 > (CPU_P95_TARGET_MAX + self.DISTANCE_THRESHOLD_XLARGE):
-                computed = CPU_P95_HIGH_INTENSITY - self.REDUCE_AGGRESSIVE_INTENSITY_CUT  # Conservative high intensity
-            else:
-                computed = CPU_P95_HIGH_INTENSITY - self.REDUCE_MODERATE_INTENSITY_CUT  # Moderate reduction
-        else:  # MAINTAINING
-            # CRITICAL FIX: Tie high intensity to setpoint for accurate P95 targeting
-            # When exceedance > 5%, P95 collapses to high intensity value, so we want
-            # high intensity to equal our target setpoint to achieve precise control
-            setpoint = CPU_P95_SETPOINT if CPU_P95_SETPOINT is not None else (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2
-            if cpu_p95 is not None:
-                # Use setpoint as the base, with small adjustments based on current P95
-                error = cpu_p95 - setpoint
-                # Small proportional adjustment: if we're below setpoint, increase intensity slightly
-                adjustment = -error * self.MAINTAIN_PROPORTIONAL_GAIN  # Negative because we want inverse relationship
-                computed = setpoint + adjustment
-                # Clamp to reasonable bounds around setpoint
-                computed = max(CPU_P95_TARGET_MIN + self.SETPOINT_SAFETY_MARGIN,
-                              min(CPU_P95_TARGET_MAX - self.SETPOINT_SAFETY_MARGIN, computed))
-            else:
-                computed = setpoint  # Default to setpoint when no P95 data
+            if self.state == 'BUILDING':
+                # More aggressive if further from target
+                if cpu_p95 is not None and cpu_p95 < (CPU_P95_TARGET_MIN - self.DISTANCE_THRESHOLD_LARGE):
+                    computed = CPU_P95_HIGH_INTENSITY + self.BUILD_AGGRESSIVE_INTENSITY_BOOST  # Very aggressive catch-up
+                else:
+                    computed = CPU_P95_HIGH_INTENSITY + self.BUILD_NORMAL_INTENSITY_BOOST  # Normal catch-up
+            elif self.state == 'REDUCING':
+                # More conservative if way above target, but keep high slots truly high
+                # Reduction comes from lower exceedance frequency, not making high slots low
+                if cpu_p95 is not None and cpu_p95 > (CPU_P95_TARGET_MAX + self.DISTANCE_THRESHOLD_XLARGE):
+                    computed = CPU_P95_HIGH_INTENSITY - self.REDUCE_AGGRESSIVE_INTENSITY_CUT  # Conservative high intensity
+                else:
+                    computed = CPU_P95_HIGH_INTENSITY - self.REDUCE_MODERATE_INTENSITY_CUT  # Moderate reduction
+            else:  # MAINTAINING
+                # CRITICAL FIX: Tie high intensity to setpoint for accurate P95 targeting
+                # When exceedance > 5%, P95 collapses to high intensity value, so we want
+                # high intensity to equal our target setpoint to achieve precise control
+                setpoint = CPU_P95_SETPOINT if CPU_P95_SETPOINT is not None else (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2
+                if cpu_p95 is not None:
+                    # Use setpoint as the base, with small adjustments based on current P95
+                    error = cpu_p95 - setpoint
+                    # Small proportional adjustment: if we're below setpoint, increase intensity slightly
+                    adjustment = -error * self.MAINTAIN_PROPORTIONAL_GAIN  # Negative because we want inverse relationship
+                    computed = setpoint + adjustment
+                    # Clamp to reasonable bounds around setpoint
+                    computed = max(CPU_P95_TARGET_MIN + self.SETPOINT_SAFETY_MARGIN,
+                                  min(CPU_P95_TARGET_MAX - self.SETPOINT_SAFETY_MARGIN, computed))
+                else:
+                    computed = setpoint  # Default to setpoint when no P95 data
 
-        # CRITICAL: Ensure high intensity is always >= baseline (never below baseline)
-        base_intensity = max(CPU_P95_BASELINE_INTENSITY, computed)
+            # CRITICAL: Ensure high intensity is always >= baseline (never below baseline)
+            base_intensity = max(CPU_P95_BASELINE_INTENSITY, computed)
 
-        # Add small dithering to break up step behavior (±1% random variation)
-        # This creates micro-variations in high slots that help achieve mid-range P95 targets
-        # Skip dithering during tests (deterministic behavior for tests)
-        import os
-        if os.environ.get('PYTEST_CURRENT_TEST'):
-            # In test mode - return exact values for predictable tests
-            return base_intensity
-        else:
-            # In production mode - add dithering for better P95 control
-            dither = random.uniform(-self.DITHER_RANGE_PCT, self.DITHER_RANGE_PCT)
-            dithered_intensity = base_intensity + dither
-            # Ensure we stay within reasonable bounds after dithering
-            return max(CPU_P95_BASELINE_INTENSITY, min(100.0, dithered_intensity))
+            # Add small dithering to break up step behavior (±1% random variation)
+            # This creates micro-variations in high slots that help achieve mid-range P95 targets
+            # Skip dithering during tests (deterministic behavior for tests)
+            if os.environ.get('PYTEST_CURRENT_TEST'):
+                # In test mode - return exact values for predictable tests
+                return base_intensity
+            else:
+                # In production mode - add dithering for better P95 control
+                dither = random.uniform(-self.DITHER_RANGE_PCT, self.DITHER_RANGE_PCT)
+                dithered_intensity = base_intensity + dither
+                # Ensure we stay within reasonable bounds after dithering
+                return max(CPU_P95_BASELINE_INTENSITY, min(100.0, dithered_intensity))
 
     def get_exceedance_target(self):
         """Get adaptive exceedance target based on state and P95 distance from target"""
-        cpu_p95 = self.get_cpu_p95()
-        base_target = CPU_P95_EXCEEDANCE_TARGET
+        with self._lock:
+            cpu_p95 = self.get_cpu_p95()
+            base_target = CPU_P95_EXCEEDANCE_TARGET
 
-        if self.state == 'BUILDING':
-            # Higher exceedance if we're far below target
-            if cpu_p95 is not None and cpu_p95 < (CPU_P95_TARGET_MIN - self.DISTANCE_THRESHOLD_LARGE):
-                return min(self.EXCEEDANCE_SAFETY_CAP, base_target + self.BUILD_AGGRESSIVE_EXCEEDANCE_BOOST)  # Cap for safety
-            else:
-                return base_target + self.BUILD_NORMAL_EXCEEDANCE_BOOST  # Slightly higher for building
-        elif self.state == 'REDUCING':
-            # Lower exceedance, more aggressive if way above target
-            if cpu_p95 is not None and cpu_p95 > (CPU_P95_TARGET_MAX + self.DISTANCE_THRESHOLD_XLARGE):
-                return self.REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET  # Very low for fast reduction
-            else:
-                return self.REDUCE_MODERATE_EXCEEDANCE_TARGET  # Moderate reduction
-        else:  # MAINTAINING
-            # Keep exceedance stable - only adjust intensity for control in MAINTAINING state
-            # This prevents dual-variable control which can cause instability
-            return base_target
+            if self.state == 'BUILDING':
+                # Higher exceedance if we're far below target
+                if cpu_p95 is not None and cpu_p95 < (CPU_P95_TARGET_MIN - self.DISTANCE_THRESHOLD_LARGE):
+                    return min(self.EXCEEDANCE_SAFETY_CAP, base_target + self.BUILD_AGGRESSIVE_EXCEEDANCE_BOOST)  # Cap for safety
+                else:
+                    return base_target + self.BUILD_NORMAL_EXCEEDANCE_BOOST  # Slightly higher for building
+            elif self.state == 'REDUCING':
+                # Lower exceedance, more aggressive if way above target
+                if cpu_p95 is not None and cpu_p95 > (CPU_P95_TARGET_MAX + self.DISTANCE_THRESHOLD_XLARGE):
+                    return self.REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET  # Very low for fast reduction
+                else:
+                    return self.REDUCE_MODERATE_EXCEEDANCE_TARGET  # Moderate reduction
+            else:  # MAINTAINING
+                # Keep exceedance stable - only adjust intensity for control in MAINTAINING state
+                # This prevents dual-variable control which can cause instability
+                return base_target
 
     def should_run_high_slot(self, current_load_avg):
         """Determine if this slot should be high intensity (slot-based control)"""
@@ -1361,7 +1369,8 @@ class CPUP95Controller:
             self.slots_skipped_safety += 1
             self.consecutive_skipped_slots += 1
             self.current_slot_is_high = False
-            self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg)
+            normal_intensity = self.get_target_intensity()
+            self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg, normal_intensity)
             logger.debug(f"P95 controller: skipped slot due to load (consecutive={self.consecutive_skipped_slots}, time_since_high={time_since_high_slot:.0f}s)")
             return
 
@@ -1380,14 +1389,14 @@ class CPUP95Controller:
         # But force high slots when necessary to prevent P95 collapse during sustained load
         if force_high_slot:
             self.current_slot_is_high = True
-            self.current_target_intensity = self.get_target_intensity()
+            normal_intensity = self.get_target_intensity()
+            self.current_target_intensity = normal_intensity
             # Use reduced intensity for forced slots to minimize system impact
             if current_load_avg is not None and current_load_avg > LOAD_THRESHOLD:
-                original_intensity = self.current_target_intensity
-                self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg)
+                self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg, normal_intensity)
                 # Log when forced high slot gets intensity reduced for visibility
-                if self.current_target_intensity < original_intensity:
-                    logger.debug(f"P95 controller: forced high slot intensity scaled down from {original_intensity:.1f}% to {self.current_target_intensity:.1f}% due to load {current_load_avg:.2f}")
+                if self.current_target_intensity < normal_intensity:
+                    logger.debug(f"P95 controller: forced high slot intensity scaled down from {normal_intensity:.1f}% to {self.current_target_intensity:.1f}% due to load {current_load_avg:.2f}")
             logger.info(f"P95 controller: forced high slot (consecutive_skipped={self.consecutive_skipped_slots}, hours_since_high={time_since_high_slot/3600:.1f})")
         elif current_exceedance < exceedance_target:
             self.current_slot_is_high = True
@@ -1408,10 +1417,11 @@ class CPUP95Controller:
         Returns:
             float: Exceedance ratio (0.0 = 0%, 1.0 = 100%)
         """
-        if self.slots_recorded == 0:
-            return 0.0
-        high_slots = sum(self.slot_history[:self.slots_recorded])
-        return high_slots / self.slots_recorded
+        with self._lock:
+            if self.slots_recorded == 0:
+                return 0.0
+            high_slots = sum(self.slot_history[:self.slots_recorded])
+            return high_slots / self.slots_recorded
 
     def get_current_exceedance(self):
         """Get current exceedance percentage from slot history"""
@@ -1461,7 +1471,7 @@ class CPUP95Controller:
                 self.current_slot_is_high = False
                 self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
 
-    def _calculate_safety_scaled_intensity(self, current_load_avg):
+    def _calculate_safety_scaled_intensity(self, current_load_avg, normal_intensity):
         """
         Calculate proportionally scaled intensity based on system load level.
 
@@ -1475,9 +1485,6 @@ class CPUP95Controller:
         if not self.SAFETY_PROPORTIONAL_ENABLED:
             # Fall back to binary baseline behavior
             return CPU_P95_BASELINE_INTENSITY
-
-        # Calculate what the normal intensity would be
-        normal_intensity = self.get_target_intensity()
 
         if current_load_avg <= self.SAFETY_SCALE_START:
             # Low load - no safety scaling needed
@@ -1553,10 +1560,12 @@ def read_meminfo() -> Tuple[int, float, int]:
     AWS CloudWatch, Azure Monitor, and Oracle's VM reclamation criteria.
 
     Returns:
-        tuple: (total_bytes, used_pct, used_bytes)
+        tuple: (total_bytes, free_bytes, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
                - total_bytes: Total system memory in bytes
-               - used_pct: Memory usage percentage excluding cache/buffers
-               - used_bytes: Memory usage in bytes excluding cache/buffers
+               - free_bytes: Free memory in bytes
+               - used_pct_excl_cache: Memory utilization percentage excluding cache/buffers
+               - used_bytes_excl_cache: Used memory in bytes excluding cache/buffers
+               - used_pct_incl_cache: Memory utilization percentage including cache/buffers
 
     Raises:
         RuntimeError: If /proc/meminfo is not readable, MemAvailable is missing,
@@ -3168,8 +3177,8 @@ def main():
             cpu_avg = ema.cpu.update(cpu_pct)
 
             # MEM% (EXCLUDING cache/buffers for Oracle compliance)
-            total_b, mem_used_pct, used_b = read_meminfo()
-            mem_avg = ema.mem.update(mem_used_pct)
+            total_b, free_b, mem_used_no_cache_pct, used_bytes_no_cache, mem_used_incl_cache_pct = read_meminfo()
+            mem_avg = ema.mem.update(mem_used_no_cache_pct)
 
             # NIC utilization
             if NET_SENSE_MODE == "host":
@@ -3294,7 +3303,7 @@ def main():
                 # Memory control (only if memory can run)
                 if mem_can_run and MEM_TARGET_PCT > 0:
                     desired_used_b = int(total_b * (mem_target_now / 100.0))
-                    need_delta_b = desired_used_b - used_no_cache_b
+                    need_delta_b = desired_used_b - used_bytes_no_cache
                     # Keep some real free memory
                     min_free_b = MEM_MIN_FREE_MB * 1024 * 1024
                     if need_delta_b > 0 and (free_b - need_delta_b) < min_free_b:
