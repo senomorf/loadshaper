@@ -19,11 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metrics database persistence**: 7-day P95 history now preserved across container restarts
 - **Oracle compliance**: P95 calculations maintain complete history required for reclamation detection
 - **Container security**: Application now runs as non-root user (loadshaper:1000)
+- **Code quality**: Fixed trailing comma inconsistency in network fallback validation list
+- **Code formatting**: Corrected comment alignment in network fallback configuration
+- **Database corruption**: Added detection and automatic recovery for SQLite corruption
+- **Configuration errors**: Enhanced validation prevents invalid parameter combinations
 
 ### Added
 - **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
 - **Health endpoint enhancement**: Added `persistence_storage` status and `database_path` fields
 - **Clear error messages**: Detailed guidance when persistent volume configuration is missing
+- **Ring buffer batching**: Configurable batch size (`CPU_P95_RING_BUFFER_BATCH_SIZE`) reduces I/O overhead
+- **Memory usage monitoring**: Tracks P95 cache memory consumption with detailed logging
+- **Database size monitoring**: Monitors metrics database size with growth projections
+- **Configuration validation**: Comprehensive cross-parameter consistency checks at startup
+- **Database corruption handling**: Automatic backup and recovery for corrupted metrics database
+- **Enhanced documentation**: Detailed P95 controller state machine documentation
+- **Migration guide**: Breaking changes philosophy and deployment requirements
+- **Network fallback examples**: Five detailed configuration examples for different use cases
 
 ### Changed
 - **BREAKING**: Docker Compose now requires `loadshaper-metrics` named volume
@@ -31,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Removed all fallback logic to `/tmp` storage paths
 - **Dockerfile**: Added non-root user setup and entrypoint script
 - **Health checks**: Now validate persistence status explicitly
+- **Performance**: Ring buffer state saves batched to reduce I/O frequency (60s → 600s default)
+- **Robustness**: Database corruption detection runs on startup and during operations
 
 ### Migration Required
 Existing Docker Compose users must update their configuration:

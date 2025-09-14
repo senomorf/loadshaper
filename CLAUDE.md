@@ -27,9 +27,10 @@
 - **Slot-based control**: 60-second slots with high (35%) or baseline (20%) CPU intensity
 - **Adaptive hysteresis**: Prevents oscillation with state-dependent deadbands
 - **Safety scaling**: Proportional intensity reduction based on system load
-- **Cold start protection**: Ring buffer state persistence prevents P95 spikes after restarts
+- **Cold start protection**: Ring buffer state persistence prevents P95 spikes after restarts with batched I/O for performance
 - **High-load fallback**: Forces minimum high slots during sustained load to prevent P95 collapse
 - **Oracle compliance**: Targets 22-28% P95 range (safe buffer above 20% reclamation threshold)
+- **Database corruption recovery**: Automatic detection via PRAGMA quick_check with backup and recovery
 
 ## Memory Calculation Principles
 - **Excludes cache/buffers**: Uses industry-standard calculation that excludes Linux cache/buffers for accurate utilization measurement
@@ -40,6 +41,7 @@
 ## Key Configuration Variables
 - **P95 CPU control**: `CPU_P95_TARGET_MIN`, `CPU_P95_TARGET_MAX`, `CPU_P95_SETPOINT`, `CPU_P95_EXCEEDANCE_TARGET`
 - **P95 slot control**: `CPU_P95_SLOT_DURATION_SEC`, `CPU_P95_HIGH_INTENSITY`, `CPU_P95_BASELINE_INTENSITY`
+- **P95 performance**: `CPU_P95_RING_BUFFER_BATCH_SIZE` - saves ring buffer state every N slots to reduce I/O (default: 10)
 - **Memory/Network targets**: `MEM_TARGET_PCT`, `NET_TARGET_PCT`
 - **Safety limits**: `CPU_STOP_PCT`, `MEM_STOP_PCT`, `NET_STOP_PCT`
 - **Load monitoring**: `LOAD_THRESHOLD`, `LOAD_RESUME_THRESHOLD`, `LOAD_CHECK_ENABLED`
@@ -52,12 +54,16 @@
 
 ## Development Standards
 - **Testing**: Always use venv; run `pytest -q` (all tests must pass); install dev dependencies with `pip install -r requirements-dev.txt`
+- **Test Requirements**: Tests need proper global variable initialization; use `python -m pytest` instead of direct execution
 - **Code style**: Python 3.8+, PEP 8, 4-space indentation, minimal dependencies (stdlib only - native network generation)
 - **Documentation sync**: Keep `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CHANGELOG.md`, and this file synchronized
 - **Architecture**: Single-process design with clear component separation (sensors → controller → workers)
 
 ## Testing Guidelines
 **P95 CPU Control**: Validate state machine and exceedance budget; run `tests/test_cpu_p95_controller.py`, `tests/test_p95_integration.py`
+**Ring Buffer Batching**: Test I/O optimization with different batch sizes; see `tests/test_ring_buffer_batching.py`
+**Configuration Validation**: Test cross-parameter consistency checks; see `tests/test_configuration_consistency.py`
+**Database Corruption**: Test detection and recovery mechanisms; see `tests/test_database_corruption_handling.py`
 **Memory Management**: Enable `DEBUG_MEM_METRICS=true` and compare excl/incl cache; see `tests/test_memory_occupation.py`
 **Load Average Safety**: Verify pause/resume thresholds; see `tests/test_loadavg.py`, `tests/test_safety_gating.py`
 **Network Fallback**: Validate activation logic for E2 vs A1; see `tests/test_network_fallback.py`, `tests/test_network_fallback_state.py`

@@ -37,8 +37,9 @@
 ### Design Principles
 - **Unobtrusive**: Always yields to legitimate workloads (nice 19 priority)
 - **Adaptive**: Responds to system load and Oracle's reclamation criteria
-- **Resilient**: Handles storage failures, network issues, and system restarts
+- **Resilient**: Handles storage failures, network issues, database corruption, and system restarts
 - **Observable**: Rich telemetry for monitoring and debugging
+- **Self-validating**: Comprehensive configuration validation prevents operational issues
 
 ### P95 CPU Controller Technical Details
 
@@ -69,7 +70,17 @@ else:
     intensity_decision = 0  # Normal intensity slot
 ```
 
-This approach ensures precise P95 positioning while maintaining Oracle compliance and system stability.
+#### Performance Optimizations
+- **Ring buffer batching**: `CPU_P95_RING_BUFFER_BATCH_SIZE` (default: 10) batches state saves to reduce I/O frequency
+- **Memory monitoring**: Tracks P95 cache memory usage with detailed logging for optimization
+- **Database monitoring**: Monitors SQLite database size and growth patterns for capacity planning
+
+#### Reliability Features
+- **Configuration validation**: Cross-parameter consistency checks prevent invalid configurations
+- **Database corruption detection**: PRAGMA quick_check with automatic backup and recovery
+- **Graceful shutdown**: Ring buffer state saved on shutdown to prevent data loss
+
+This approach ensures precise P95 positioning while maintaining Oracle compliance, system stability, and operational reliability.
 
 ### Network Fallback Controller Technical Details
 
@@ -143,6 +154,22 @@ The system automatically detects Oracle Cloud shapes via:
 - Run unit tests with `python -m pytest -q`.
 - Add tests for any new utility functions or control logic.
 - Test edge cases (negative values, missing files, network failures).
+
+### Performance Feature Testing
+**Ring Buffer Batching**: Test I/O optimization with different `CPU_P95_RING_BUFFER_BATCH_SIZE` values:
+- Verify batched saves reduce file I/O frequency
+- Test performance impact of different batch sizes (1, 10, 100)
+- Validate state persistence accuracy with batching
+
+**Configuration Validation**: Test cross-parameter consistency checks:
+- Verify invalid combinations are detected (e.g., CPU_P95_TARGET_MIN > CPU_P95_TARGET_MAX)
+- Test warning messages for suboptimal configurations
+- Validate Oracle shape-specific configuration constraints
+
+**Database Corruption Handling**: Test detection and recovery mechanisms:
+- Simulate database corruption and verify detection
+- Test automatic backup creation before recovery attempts
+- Validate successful recovery from backup files
 
 ### Integration Testing
 - Validate behavior by running the stack and observing `[loadshaper]` telemetry.
