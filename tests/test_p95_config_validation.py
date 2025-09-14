@@ -24,7 +24,7 @@ class TestP95ConfigurationValidation(unittest.TestCase):
             'CPU_P95_EXCEEDANCE_TARGET': getattr(loadshaper, 'CPU_P95_EXCEEDANCE_TARGET', 6.5),
             'CPU_P95_BASELINE_INTENSITY': getattr(loadshaper, 'CPU_P95_BASELINE_INTENSITY', 20.0),
             'CPU_P95_HIGH_INTENSITY': getattr(loadshaper, 'CPU_P95_HIGH_INTENSITY', 35.0),
-            'CPU_P95_SLOT_DURATION': getattr(loadshaper, 'CPU_P95_SLOT_DURATION', 5.0),
+            'CPU_P95_SLOT_DURATION': getattr(loadshaper, 'CPU_P95_SLOT_DURATION', 60.0),
         }
 
     def tearDown(self):
@@ -158,6 +158,34 @@ class TestP95ConfigurationValidation(unittest.TestCase):
             setattr(loadshaper, key, value)
             self.assertGreater(getattr(loadshaper, key), 20.0,
                               f"A1 {key} must be above Oracle's 20% threshold")
+
+    def test_cpu_p95_slot_duration_validation(self):
+        """Test CPU_P95_SLOT_DURATION_SEC validation prevents division by zero."""
+        # Test that _validate_config_value correctly validates CPU_P95_SLOT_DURATION_SEC
+
+        # Valid values should not raise
+        try:
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', '60.0')
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', '10.0')
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', '3600.0')
+        except ValueError:
+            self.fail("Valid CPU_P95_SLOT_DURATION_SEC values should not raise ValueError")
+
+        # Invalid values should raise ValueError
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', '0')
+
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', '-1.0')
+
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', '5.0')  # Below minimum 10.0
+
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', '7200.0')  # Above maximum 3600.0
+
+        with self.assertRaises(ValueError):
+            loadshaper._validate_config_value('CPU_P95_SLOT_DURATION_SEC', 'not_a_number')
 
     def test_p95_cache_ttl_constant_exists(self):
         """Test that P95_CACHE_TTL_SEC constant is properly defined."""

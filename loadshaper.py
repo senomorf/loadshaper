@@ -345,7 +345,7 @@ def _validate_config_value(key, value):
         ValueError: If value is invalid for the given key
     """
     # Validate percentage values (0-100)
-    if key.endswith('_PCT') or key.startswith('CPU_P95_'):
+    if key.endswith('_PCT') or (key.startswith('CPU_P95_') and not key.endswith('_SEC')):
         try:
             pct = float(value)
             if not 0 <= pct <= 100:
@@ -356,10 +356,10 @@ def _validate_config_value(key, value):
             raise ValueError(f"{key}={value} must be a valid number (percentage)")
     
     # Validate positive numeric values with bounds checking
-    elif key in ['CONTROL_PERIOD_SEC', 'AVG_WINDOW_SEC', 'MEM_MIN_FREE_MB', 
+    elif key in ['CONTROL_PERIOD_SEC', 'AVG_WINDOW_SEC', 'MEM_MIN_FREE_MB',
                  'MEM_STEP_MB', 'MEM_TOUCH_INTERVAL_SEC', 'NET_PORT', 'NET_BURST_SEC', 'NET_IDLE_SEC',
                  'NET_LINK_MBIT', 'NET_MIN_RATE_MBIT', 'NET_MAX_RATE_MBIT',
-                 'JITTER_PERIOD_SEC']:
+                 'JITTER_PERIOD_SEC', 'CPU_P95_SLOT_DURATION_SEC']:
         try:
             num = float(value)
             if num <= 0:
@@ -379,6 +379,7 @@ def _validate_config_value(key, value):
                 'NET_MIN_RATE_MBIT': (0.1, 10000.0),      # 0.1 Mbps to 10 Gbps
                 'NET_MAX_RATE_MBIT': (1.0, 10000.0),      # 1 Mbps to 10 Gbps
                 'JITTER_PERIOD_SEC': (1.0, 3600.0),       # 1 second to 1 hour
+                'CPU_P95_SLOT_DURATION_SEC': (10.0, 3600.0),  # 10 seconds to 1 hour
             }
             
             if key in bounds:
@@ -735,6 +736,39 @@ def _validate_network_fallback_config():
             global_vars["NET_ACTIVATION"] = 'adaptive'
 
 
+def _validate_p95_config():
+    """
+    Validate P95 CPU controller configuration values.
+
+    Ensures CPU_P95_SETPOINT falls within the target range and provides
+    front-loaded validation with clear error messages for configuration issues.
+    """
+    global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT
+    global CPU_P95_SLOT_DURATION, CONTROL_PERIOD
+
+    # Validate that setpoint falls within target range
+    if CPU_P95_SETPOINT is not None and CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MAX is not None:
+        # Add safety margin to avoid edge cases
+        safety_margin = 1.0
+        min_valid = CPU_P95_TARGET_MIN + safety_margin
+        max_valid = CPU_P95_TARGET_MAX - safety_margin
+
+        if not (min_valid <= CPU_P95_SETPOINT <= max_valid):
+            logger.warning(f"CPU_P95_SETPOINT={CPU_P95_SETPOINT}% is outside safe range "
+                          f"[{min_valid:.1f}%-{max_valid:.1f}%]. Adjusting to center of range.")
+            CPU_P95_SETPOINT = (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2.0
+            logger.info(f"Adjusted CPU_P95_SETPOINT to {CPU_P95_SETPOINT:.1f}%")
+
+    # Validate that slot duration is reasonable relative to control period
+    if CPU_P95_SLOT_DURATION is not None and CONTROL_PERIOD is not None:
+        # Slot duration should be at least 6x the control period for reasonable slot management
+        min_slot_ratio = 6
+        if CPU_P95_SLOT_DURATION < (CONTROL_PERIOD * min_slot_ratio):
+            logger.warning(f"CPU_P95_SLOT_DURATION_SEC={CPU_P95_SLOT_DURATION}s is very short relative to "
+                          f"CONTROL_PERIOD_SEC={CONTROL_PERIOD}s. Consider using at least "
+                          f"{CONTROL_PERIOD * min_slot_ratio}s for stable slot management.")
+
+
 # ---------------------------
 # Env / config
 # ---------------------------
@@ -930,6 +964,7 @@ def _initialize_config():
     # Validate final configuration values (including environment overrides)
     _validate_final_config()
     _validate_network_fallback_config()
+    _validate_p95_config()
     
     _config_initialized = True
 
@@ -1025,6 +1060,7 @@ class CPUP95Controller:
         for fast exceedance budget control based on Oracle compliance requirements.
         """
         self.metrics_storage = metrics_storage
+        self._lock = threading.RLock()  # Thread-safe access to shared state
         self.state = 'MAINTAINING'
         self.last_state_change = time.monotonic()
         self.current_slot_start = time.monotonic()
@@ -1052,6 +1088,9 @@ class CPUP95Controller:
         self._p95_cache_time = 0
         self._p95_cache_ttl_sec = self.P95_CACHE_TTL_SEC
 
+        # Ring buffer persistence optimization (reduce disk I/O)
+        self.slots_since_last_save = 0
+
         # Try to load persisted ring buffer state to solve cold start problem
         self._load_ring_buffer_state()
 
@@ -1060,21 +1099,23 @@ class CPUP95Controller:
 
     def get_cpu_p95(self):
         """Get 7-day CPU P95 from metrics storage with caching"""
-        now = time.monotonic()
+        with self._lock:
+            now = time.monotonic()
 
-        # Return cached value if still valid
-        if self._p95_cache is not None and (now - self._p95_cache_time) < self._p95_cache_ttl_sec:
-            return self._p95_cache
+            # Return cached value if still valid
+            if self._p95_cache is not None and (now - self._p95_cache_time) < self._p95_cache_ttl_sec:
+                return self._p95_cache
 
-        # Query database for fresh P95 value
-        p95 = self.metrics_storage.get_percentile('cpu', percentile=95)
+            # Query database for fresh P95 value
+            p95 = self.metrics_storage.get_percentile('cpu', percentile=95)
 
-        # Only update cache if a valid value is returned
-        if p95 is not None:
-            self._p95_cache = p95
-            self._p95_cache_time = now
+            # Only update cache if a valid value is returned
+            if p95 is not None:
+                self._p95_cache = p95
+                self._p95_cache_time = now
+            # Note: If p95 is None, we keep the existing cached value (if any) as a fallback
 
-        return p95
+            return p95
 
     def _get_ring_buffer_path(self):
         """Get path for ring buffer persistence file in persistent storage"""
@@ -1093,8 +1134,7 @@ class CPUP95Controller:
                 'slot_history_index': self.slot_history_index,
                 'slots_recorded': self.slots_recorded,
                 'slot_history_size': self.slot_history_size,
-                'timestamp': time.time(),  # Use wall clock time for persistence
-                'current_slot_is_high': self.current_slot_is_high
+                'timestamp': time.time()  # Use wall clock time for persistence
             }
 
             with open(ring_buffer_path, 'w') as f:
@@ -1151,36 +1191,37 @@ class CPUP95Controller:
 
     def update_state(self, cpu_p95):
         """Update state machine with adaptive thresholds based on current CPU P95"""
-        if cpu_p95 is None:
-            return  # No P95 data yet
+        with self._lock:
+            if cpu_p95 is None:
+                return  # No P95 data yet
 
-        old_state = self.state
-        now = time.monotonic()
+            old_state = self.state
+            now = time.monotonic()
 
-        # Adaptive hysteresis based on recent state changes (prevents oscillation)
-        time_since_change = now - self.last_state_change
-        if time_since_change < self.STATE_CHANGE_COOLDOWN_SEC:  # Recent change - larger deadband
-            hysteresis = self.HYSTERESIS_XLARGE_PCT
-            maintain_buffer = self.MAINTAIN_BUFFER_LARGE
-        else:  # Stable - smaller deadband for faster response
-            hysteresis = self.HYSTERESIS_MEDIUM_PCT
-            maintain_buffer = self.MAINTAIN_BUFFER_SMALL
+            # Adaptive hysteresis based on recent state changes (prevents oscillation)
+            time_since_change = now - self.last_state_change
+            if time_since_change < self.STATE_CHANGE_COOLDOWN_SEC:  # Recent change - larger deadband
+                hysteresis = self.HYSTERESIS_XLARGE_PCT
+                maintain_buffer = self.MAINTAIN_BUFFER_LARGE
+            else:  # Stable - smaller deadband for faster response
+                hysteresis = self.HYSTERESIS_MEDIUM_PCT
+                maintain_buffer = self.MAINTAIN_BUFFER_SMALL
 
-        # State transitions with adaptive hysteresis
-        if cpu_p95 < (CPU_P95_TARGET_MIN - hysteresis):
-            self.state = 'BUILDING'
-        elif cpu_p95 > (CPU_P95_TARGET_MAX + hysteresis):
-            self.state = 'REDUCING'
-        elif CPU_P95_TARGET_MIN <= cpu_p95 <= CPU_P95_TARGET_MAX:
-            # Only transition to MAINTAINING if we're in the target range
-            if self.state in ['BUILDING', 'REDUCING']:
-                # Add adaptive hysteresis - need to be well within range to transition
-                if (CPU_P95_TARGET_MIN + maintain_buffer) <= cpu_p95 <= (CPU_P95_TARGET_MAX - maintain_buffer):
-                    self.state = 'MAINTAINING'
+            # State transitions with adaptive hysteresis
+            if cpu_p95 < (CPU_P95_TARGET_MIN - hysteresis):
+                self.state = 'BUILDING'
+            elif cpu_p95 > (CPU_P95_TARGET_MAX + hysteresis):
+                self.state = 'REDUCING'
+            elif CPU_P95_TARGET_MIN <= cpu_p95 <= CPU_P95_TARGET_MAX:
+                # Only transition to MAINTAINING if we're in the target range
+                if self.state in ['BUILDING', 'REDUCING']:
+                    # Add adaptive hysteresis - need to be well within range to transition
+                    if (CPU_P95_TARGET_MIN + maintain_buffer) <= cpu_p95 <= (CPU_P95_TARGET_MAX - maintain_buffer):
+                        self.state = 'MAINTAINING'
 
-        if old_state != self.state:
-            self.last_state_change = now
-            logger.info(f"CPU P95 controller state: {old_state} → {self.state} (P95={cpu_p95:.1f}%, hysteresis={hysteresis:.1f}%)")
+            if old_state != self.state:
+                self.last_state_change = now
+                logger.info(f"CPU P95 controller state: {old_state} → {self.state} (P95={cpu_p95:.1f}%, hysteresis={hysteresis:.1f}%)")
 
     def get_target_intensity(self):
         """Get target CPU intensity based on current state and distance from target"""
@@ -1228,7 +1269,6 @@ class CPUP95Controller:
             return base_intensity
         else:
             # In production mode - add dithering for better P95 control
-            import random
             dither = random.uniform(-self.DITHER_RANGE_PCT, self.DITHER_RANGE_PCT)
             dithered_intensity = base_intensity + dither
             # Ensure we stay within reasonable bounds after dithering
@@ -1258,14 +1298,15 @@ class CPUP95Controller:
 
     def should_run_high_slot(self, current_load_avg):
         """Determine if this slot should be high intensity (slot-based control)"""
-        now = time.monotonic()
+        with self._lock:
+            now = time.monotonic()
 
-        # Handle multiple slot rollovers if process stalled
-        while now >= (self.current_slot_start + CPU_P95_SLOT_DURATION):
-            self._end_current_slot()
-            self._start_new_slot(current_load_avg)
+            # Handle multiple slot rollovers if process stalled
+            while now >= (self.current_slot_start + CPU_P95_SLOT_DURATION):
+                self._end_current_slot()
+                self._start_new_slot(current_load_avg)
 
-        return self.current_slot_is_high, self.current_target_intensity
+            return self.current_slot_is_high, self.current_target_intensity
 
     def _end_current_slot(self):
         """End current slot and record its type in history"""
@@ -1276,8 +1317,11 @@ class CPUP95Controller:
         if self.slots_recorded < self.slot_history_size:
             self.slots_recorded += 1  # Don't exceed buffer size
 
-        # Persist ring buffer state for cold start protection
-        self._save_ring_buffer_state()
+        # Persist ring buffer state periodically for cold start protection (reduce disk I/O)
+        self.slots_since_last_save += 1
+        if self.slots_since_last_save >= 10:
+            self._save_ring_buffer_state()
+            self.slots_since_last_save = 0
 
     def _start_new_slot(self, current_load_avg):
         """Start new slot and determine its type"""
@@ -1318,7 +1362,11 @@ class CPUP95Controller:
             self.current_target_intensity = self.get_target_intensity()
             # Use reduced intensity for forced slots to minimize system impact
             if current_load_avg is not None and current_load_avg > LOAD_THRESHOLD:
+                original_intensity = self.current_target_intensity
                 self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg)
+                # Log when forced high slot gets intensity reduced for visibility
+                if self.current_target_intensity < original_intensity:
+                    logger.debug(f"P95 controller: forced high slot intensity scaled down from {original_intensity:.1f}% to {self.current_target_intensity:.1f}% due to load {current_load_avg:.2f}")
             logger.info(f"P95 controller: forced high slot (consecutive_skipped={self.consecutive_skipped_slots}, hours_since_high={time_since_high_slot/3600:.1f})")
         elif current_exceedance < exceedance_target:
             self.current_slot_is_high = True
@@ -1350,19 +1398,20 @@ class CPUP95Controller:
 
     def get_status(self):
         """Get controller status for telemetry"""
-        cpu_p95 = self.get_cpu_p95()
-        current_exceedance = self.get_current_exceedance()
+        with self._lock:
+            cpu_p95 = self.get_cpu_p95()  # get_cpu_p95() will acquire lock too (re-entrant)
+            current_exceedance = self.get_current_exceedance()
 
-        # Current slot status
-        time_in_slot = time.monotonic() - self.current_slot_start if self.current_slot_start else 0
-        slot_remaining = max(0, CPU_P95_SLOT_DURATION - time_in_slot)
+            # Current slot status
+            time_in_slot = time.monotonic() - self.current_slot_start if self.current_slot_start else 0
+            slot_remaining = max(0, CPU_P95_SLOT_DURATION - time_in_slot)
 
-        # High-load fallback status
-        time_since_high_slot = time.monotonic() - self.last_high_slot_time
-        fallback_risk = (self.consecutive_skipped_slots >= self.MAX_CONSECUTIVE_SKIPPED_SLOTS or
-                        time_since_high_slot >= self.MIN_HIGH_SLOT_INTERVAL_SEC)
+            # High-load fallback status
+            time_since_high_slot = time.monotonic() - self.last_high_slot_time
+            fallback_risk = (self.consecutive_skipped_slots >= self.MAX_CONSECUTIVE_SKIPPED_SLOTS or
+                            time_since_high_slot >= self.MIN_HIGH_SLOT_INTERVAL_SEC)
 
-        return {
+            return {
             'state': self.state,
             'cpu_p95': cpu_p95,
             'target_range': f"{CPU_P95_TARGET_MIN:.1f}-{CPU_P95_TARGET_MAX:.1f}%",
@@ -1386,9 +1435,10 @@ class CPUP95Controller:
         decision to run a high slot (e.g., due to global load safety constraints).
         It ensures that slot history accurately reflects what was actually executed.
         """
-        if self.current_slot_is_high:
-            self.current_slot_is_high = False
-            self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
+        with self._lock:
+            if self.current_slot_is_high:
+                self.current_slot_is_high = False
+                self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
 
     def _calculate_safety_scaled_intensity(self, current_load_avg):
         """
@@ -1427,8 +1477,8 @@ class CPUP95Controller:
             intensity_range = normal_intensity - (normal_intensity * self.SAFETY_MIN_INTENSITY_SCALE)
             scaled_intensity = normal_intensity - (intensity_range * scale_progress)
 
-            # Ensure we never go below baseline
-            return max(CPU_P95_BASELINE_INTENSITY, scaled_intensity)
+            # Ensure we never go below baseline or above high intensity
+            return max(CPU_P95_BASELINE_INTENSITY, min(CPU_P95_HIGH_INTENSITY, scaled_intensity))
 
 # ---------------------------
 # Helpers: CPU & memory read

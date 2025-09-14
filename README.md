@@ -411,7 +411,7 @@ The P95 controller uses an "exceedance budget" approach:
 | `CPU_P95_EXCEEDANCE_TARGET` | `6.5` | Target percentage of high-intensity slots (0-100%) |
 
 **How it works:**
-- **6.5% exceedance** means ~6.5% of 5-second time slots run above the setpoint
+- **6.5% exceedance** means ~6.5% of configurable time slots (default 60s) run above the setpoint
 - **93.5% of slots** run at or below the setpoint, achieving the target P95
 - **Dynamic scaling**: High system load reduces intensity proportionally
 - **Automatic adaptation**: Controller adjusts to maintain the exceedance budget
@@ -926,8 +926,8 @@ NET_INTERFACE=eth0 docker compose up -d --build
 
 **For resource-constrained VMs (1 vCPU/1GB):**
 ```shell
-# Optimize for minimal overhead
-CPU_TARGET_PCT=22
+# Optimize for minimal overhead with P95 control
+CPU_P95_SETPOINT=22.0
 MEM_TARGET_PCT=0
 NET_TARGET_PCT=22
 LOAD_THRESHOLD=0.4

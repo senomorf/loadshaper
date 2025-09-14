@@ -123,7 +123,7 @@ class TestSignalHandling(unittest.TestCase):
                     break
                 time.sleep(0.001)
 
-        thread = threading.Thread(target=worker_thread)
+        thread = threading.Thread(target=worker_thread, daemon=True)
         thread.start()
 
         # Simulate signal

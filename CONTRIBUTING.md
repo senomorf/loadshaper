@@ -113,6 +113,31 @@ This approach allows us to quickly iterate toward optimal Oracle Cloud VM protec
    NET_PEERS=8.8.8.8:53 NET_PROTOCOL=udp docker compose up -d --build
    ```
 
+**P95 CPU Controller Testing:**
+   ```bash
+   # Test P95 controller state machine and exceedance budget
+   docker compose up -d --build
+   docker logs -f loadshaper | grep "P95"
+
+   # Look for controller state changes (BUILDING/MAINTAINING/REDUCING)
+   # Verify exceedance percentage near target (6.5%)
+   # Check CPU P95 stays above 20% (Oracle compliance)
+
+   # Query P95 directly from database (requires direct container access)
+   docker exec -it loadshaper python3 -c "
+   import sys; sys.path.append('/app')
+   import loadshaper
+   storage = loadshaper.MetricsStorage()
+   p95 = storage.get_percentile('cpu', 95)
+   print(f'Current CPU P95: {p95:.1f}%')
+   print('Status: OK' if p95 and p95 > 20 else 'RISK: Below Oracle 20% threshold')
+   "
+
+   # Test different P95 targets
+   CPU_P95_SETPOINT=30.0 docker compose up -d --build
+   CPU_P95_EXCEEDANCE_TARGET=10.0 docker compose up -d --build
+   ```
+
 3. **Safety verification:**
    ```bash
    # Test that load workers pause under system stress

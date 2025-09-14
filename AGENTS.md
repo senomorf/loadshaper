@@ -50,10 +50,10 @@ The **CPUP95Controller** implements advanced 95th percentile targeting using a s
 - **REDUCING**: Backs off when P95 exceeds target or system load is high
 
 #### Exceedance Budget Management
-- **Slot-based tracking**: 24-hour ring buffer of 5-second intensity decisions
+- **Slot-based tracking**: 24-hour ring buffer of configurable slot-based decisions (default 60s)
 - **Exceedance ratio**: `CPU_P95_EXCEEDANCE_TARGET` (default 6.5%) controls high-intensity slots
 - **Adaptive scaling**: Load-based intensity reduction maintains system responsiveness
-- **Cache optimization**: 180-second TTL for P95 calculations reduces database load
+- **Cache optimization**: 300-second TTL for P95 calculations reduces database load
 
 #### Technical Implementation
 ```python
