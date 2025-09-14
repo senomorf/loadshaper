@@ -1155,7 +1155,7 @@ class CPUP95Controller:
 
             logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
 
-        except (OSError, PermissionError, json.JSONEncodeError) as e:
+        except (OSError, PermissionError, ValueError, TypeError) as e:
             logger.warning(f"Failed to save P95 ring buffer state: {e}")
             # Non-fatal error - continue operation without persistence
 
