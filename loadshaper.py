@@ -746,6 +746,7 @@ def _validate_p95_config():
     """
     global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT
     global CPU_P95_SLOT_DURATION, CONTROL_PERIOD
+    global CPU_P95_BASELINE_INTENSITY, CPU_P95_HIGH_INTENSITY
 
     # Validate that setpoint falls within target range
     if CPU_P95_SETPOINT is not None and CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MAX is not None:
@@ -768,6 +769,14 @@ def _validate_p95_config():
             logger.warning(f"CPU_P95_SLOT_DURATION_SEC={CPU_P95_SLOT_DURATION}s is very short relative to "
                           f"CONTROL_PERIOD_SEC={CONTROL_PERIOD}s. Consider using at least "
                           f"{CONTROL_PERIOD * min_slot_ratio}s for stable slot management.")
+
+    # Validate that baseline intensity is less than high intensity
+    if CPU_P95_BASELINE_INTENSITY is not None and CPU_P95_HIGH_INTENSITY is not None:
+        if CPU_P95_BASELINE_INTENSITY >= CPU_P95_HIGH_INTENSITY:
+            logger.warning(f"CPU_P95_BASELINE_INTENSITY={CPU_P95_BASELINE_INTENSITY}% must be less than "
+                          f"CPU_P95_HIGH_INTENSITY={CPU_P95_HIGH_INTENSITY}%. Adjusting high intensity.")
+            CPU_P95_HIGH_INTENSITY = max(CPU_P95_HIGH_INTENSITY, CPU_P95_BASELINE_INTENSITY + 1.0)
+            logger.info(f"Adjusted CPU_P95_HIGH_INTENSITY to {CPU_P95_HIGH_INTENSITY:.1f}%")
 
 
 # ---------------------------
@@ -1154,7 +1163,7 @@ class CPUP95Controller:
 
             logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
 
-        except (OSError, PermissionError, json.JSONEncodeError) as e:
+        except (OSError, PermissionError, TypeError, ValueError) as e:
             logger.debug(f"Failed to save P95 ring buffer state: {e}")
             # Non-fatal error - continue operation without persistence
 
@@ -3185,7 +3194,7 @@ def main():
 
             # Calculate network fallback status for health endpoints
             is_e2 = is_e2_shape()
-            cpu_p95 = metrics_storage.get_percentile('cpu') if metrics_storage else None
+            cpu_p95 = cpu_p95_controller.get_cpu_p95() if cpu_p95_controller else None
             fallback_debug = network_fallback_state.get_debug_info()
 
             # Update controller state for health endpoints (thread-safe)

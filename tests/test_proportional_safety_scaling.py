@@ -13,21 +13,8 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import and set up configuration before importing loadshaper components
+# Import loadshaper components
 import loadshaper
-
-# Initialize required global configuration variables for tests
-loadshaper.CPU_P95_SLOT_DURATION = 60.0
-loadshaper.CPU_P95_BASELINE_INTENSITY = 20.0
-loadshaper.CPU_P95_TARGET_MIN = 22.0
-loadshaper.CPU_P95_TARGET_MAX = 28.0
-loadshaper.CPU_P95_SETPOINT = 25.0
-loadshaper.CPU_P95_EXCEEDANCE_TARGET = 6.5
-loadshaper.CPU_P95_HIGH_INTENSITY = 35.0
-loadshaper.LOAD_THRESHOLD = 0.6
-loadshaper.LOAD_RESUME_THRESHOLD = 0.4
-loadshaper.LOAD_CHECK_ENABLED = True
-
 from loadshaper import CPUP95Controller, MetricsStorage
 
 
@@ -51,6 +38,22 @@ class TestProportionalSafetyScaling(unittest.TestCase):
         # Set test environment to ensure deterministic behavior
         os.environ['PYTEST_CURRENT_TEST'] = 'test_proportional_safety_scaling'
 
+        # Use patch to isolate global configuration and prevent test pollution
+        self.patcher = patch.multiple(
+            'loadshaper',
+            CPU_P95_SLOT_DURATION=60.0,
+            CPU_P95_BASELINE_INTENSITY=20.0,
+            CPU_P95_TARGET_MIN=22.0,
+            CPU_P95_TARGET_MAX=28.0,
+            CPU_P95_SETPOINT=25.0,
+            CPU_P95_EXCEEDANCE_TARGET=6.5,
+            CPU_P95_HIGH_INTENSITY=35.0,
+            LOAD_THRESHOLD=0.6,
+            LOAD_RESUME_THRESHOLD=0.4,
+            LOAD_CHECK_ENABLED=True
+        )
+        self.mock_configs = self.patcher.start()
+
         self.storage = MockMetricsStorage()
         self.controller = CPUP95Controller(self.storage)
 
@@ -61,6 +64,7 @@ class TestProportionalSafetyScaling(unittest.TestCase):
 
     def tearDown(self):
         """Clean up after tests."""
+        self.patcher.stop()
         if 'PYTEST_CURRENT_TEST' in os.environ:
             del os.environ['PYTEST_CURRENT_TEST']
 

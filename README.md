@@ -157,9 +157,9 @@ CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is design
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NET_ACTIVATION` | `adaptive` | Fallback mode: `adaptive`, `always`, `off` |
-| `NET_FALLBACK_START_PCT` | `19.0` | Activate fallback below this CPU P95 threshold |
-| `NET_FALLBACK_STOP_PCT` | `23.0` | Deactivate fallback above this CPU P95 threshold |
-| `NET_FALLBACK_RISK_THRESHOLD_PCT` | `22.0` | Combined risk threshold for activation |
+| `NET_FALLBACK_START_PCT` | `19.0` | Activate fallback below this network utilization threshold |
+| `NET_FALLBACK_STOP_PCT` | `23.0` | Deactivate fallback above this network utilization threshold |
+| `NET_FALLBACK_RISK_THRESHOLD_PCT` | `22.0` | CPU P95 and memory risk threshold for activation |
 | `NET_FALLBACK_DEBOUNCE_SEC` | `30` | Minimum time between activation changes |
 | `NET_FALLBACK_MIN_ON_SEC` | `60` | Minimum time to stay active once triggered |
 | `NET_FALLBACK_MIN_OFF_SEC` | `30` | Minimum time to stay inactive once stopped |

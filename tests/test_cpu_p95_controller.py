@@ -1178,5 +1178,197 @@ class TestHighLoadFallback(unittest.TestCase):
         self.assertFalse(status['fallback_risk'])
 
 
+class TestMissingCoverage(unittest.TestCase):
+    """Test cases for previously untested code paths identified in code review."""
+
+    def setUp(self):
+        self.mock_storage = MockMetricsStorage()
+        self.patches = patch.multiple(loadshaper,
+                                    CPU_P95_SLOT_DURATION=60.0,
+                                    CPU_P95_BASELINE_INTENSITY=20.0,
+                                    CPU_P95_HIGH_INTENSITY=35.0,
+                                    CPU_P95_TARGET_MIN=22.0,
+                                    CPU_P95_TARGET_MAX=28.0,
+                                    CPU_P95_EXCEEDANCE_TARGET=6.5,
+                                    LOAD_CHECK_ENABLED=True,
+                                    LOAD_THRESHOLD=0.6)
+        self.patches.start()
+        self.controller = CPUP95Controller(self.mock_storage)
+
+    def tearDown(self):
+        self.patches.stop()
+
+    def test_dithering_clamp_boundaries(self):
+        """Test dithering adds random ±1% but clamps to valid ranges"""
+        # Put controller in MAINTAINING state with known intensity
+        self.controller.state = 'MAINTAINING'
+        self.mock_storage.set_p95(25.0)  # Should give target intensity ~25%
+
+        # Temporarily remove PYTEST_CURRENT_TEST to enable dithering
+        original_test_env = os.environ.get('PYTEST_CURRENT_TEST')
+        if 'PYTEST_CURRENT_TEST' in os.environ:
+            del os.environ['PYTEST_CURRENT_TEST']
+
+        try:
+            # Mock random.uniform to return predictable values for testing
+            with patch('random.uniform') as mock_random:
+                # Test positive dither
+                mock_random.return_value = 0.8  # Should give +0.8%
+                intensity = self.controller.get_target_intensity()
+                expected_base = 25.0  # MAINTAINING state with P95 at setpoint
+                expected_with_dither = expected_base + 0.8
+                self.assertAlmostEqual(intensity, expected_with_dither, places=1)
+
+                # Test negative dither
+                mock_random.return_value = -0.5  # Should give -0.5%
+                intensity = self.controller.get_target_intensity()
+                expected_with_dither = expected_base - 0.5
+                self.assertAlmostEqual(intensity, expected_with_dither, places=1)
+
+                # Test clamping to baseline floor
+                self.controller.state = 'REDUCING'  # Will have lower target
+                mock_random.return_value = -10.0  # Large negative dither
+                intensity = self.controller.get_target_intensity()
+                self.assertGreaterEqual(intensity, 20.0, "Should clamp to baseline intensity")
+
+                # Test clamping to 100% ceiling
+                self.controller.state = 'BUILDING'  # High intensity state
+                mock_random.return_value = 50.0  # Large positive dither
+                intensity = self.controller.get_target_intensity()
+                self.assertLessEqual(intensity, 100.0, "Should clamp to 100% maximum")
+
+        finally:
+            # Restore original test environment
+            if original_test_env:
+                os.environ['PYTEST_CURRENT_TEST'] = original_test_env
+
+    def test_config_validation_setpoint_adjustment(self):
+        """Test _validate_p95_config adjusts out-of-range setpoints"""
+        original_setpoint = loadshaper.CPU_P95_SETPOINT
+
+        try:
+            # Test setpoint too low (below TARGET_MIN + 1)
+            loadshaper.CPU_P95_SETPOINT = 21.0  # Below safe range
+            with patch('loadshaper.logger') as mock_logger:
+                loadshaper._validate_p95_config()
+                mock_logger.warning.assert_called()
+                mock_logger.info.assert_called()
+                # Should be adjusted to center of range
+                expected_center = (22.0 + 28.0) / 2.0  # 25.0
+                self.assertEqual(loadshaper.CPU_P95_SETPOINT, expected_center)
+
+            # Test setpoint too high (above TARGET_MAX - 1)
+            loadshaper.CPU_P95_SETPOINT = 29.0  # Above safe range
+            with patch('loadshaper.logger') as mock_logger:
+                loadshaper._validate_p95_config()
+                mock_logger.warning.assert_called()
+                mock_logger.info.assert_called()
+                # Should be adjusted to center of range again
+                self.assertEqual(loadshaper.CPU_P95_SETPOINT, expected_center)
+
+        finally:
+            # Restore original value
+            loadshaper.CPU_P95_SETPOINT = original_setpoint
+
+    def test_config_validation_slot_duration_warning(self):
+        """Test _validate_p95_config warns about short slot duration"""
+        original_slot_duration = loadshaper.CPU_P95_SLOT_DURATION
+        original_control_period = loadshaper.CONTROL_PERIOD
+
+        try:
+            # Set up condition for warning (slot duration < 6 * control period)
+            loadshaper.CONTROL_PERIOD = 10.0  # 10 seconds
+            loadshaper.CPU_P95_SLOT_DURATION = 30.0  # Less than 6 * 10 = 60
+
+            with patch('loadshaper.logger') as mock_logger:
+                loadshaper._validate_p95_config()
+                mock_logger.warning.assert_called()
+                # Check warning message mentions the recommended minimum
+                warning_call = mock_logger.warning.call_args[0][0]
+                self.assertIn("very short relative to", warning_call)
+                self.assertIn("Consider using at least 60.0s", warning_call)
+
+        finally:
+            # Restore original values
+            loadshaper.CPU_P95_SLOT_DURATION = original_slot_duration
+            loadshaper.CONTROL_PERIOD = original_control_period
+
+    def test_config_validation_baseline_high_intensity(self):
+        """Test _validate_p95_config enforces baseline < high intensity"""
+        original_baseline = loadshaper.CPU_P95_BASELINE_INTENSITY
+        original_high = loadshaper.CPU_P95_HIGH_INTENSITY
+
+        try:
+            # Set baseline >= high (invalid configuration)
+            loadshaper.CPU_P95_BASELINE_INTENSITY = 35.0
+            loadshaper.CPU_P95_HIGH_INTENSITY = 30.0  # Lower than baseline!
+
+            with patch('loadshaper.logger') as mock_logger:
+                loadshaper._validate_p95_config()
+                mock_logger.warning.assert_called()
+                mock_logger.info.assert_called()
+                # Should adjust high intensity to baseline + 1
+                self.assertEqual(loadshaper.CPU_P95_HIGH_INTENSITY, 36.0)
+
+        finally:
+            # Restore original values
+            loadshaper.CPU_P95_BASELINE_INTENSITY = original_baseline
+            loadshaper.CPU_P95_HIGH_INTENSITY = original_high
+
+    def test_ring_buffer_save_error_handling(self):
+        """Test ring buffer save error handling is non-fatal"""
+        # Temporarily remove PYTEST_CURRENT_TEST to allow save to run
+        original_test_env = os.environ.get('PYTEST_CURRENT_TEST')
+        if 'PYTEST_CURRENT_TEST' in os.environ:
+            del os.environ['PYTEST_CURRENT_TEST']
+
+        try:
+            # Mock open() to raise OSError
+            with patch('builtins.open', side_effect=OSError("Permission denied")):
+                with patch('loadshaper.logger') as mock_logger:
+                    # This should not raise an exception
+                    self.controller._save_ring_buffer_state()
+                    mock_logger.debug.assert_called()
+                    # Check that it logged the error
+                    debug_calls = mock_logger.debug.call_args_list
+                    error_logged = any("Failed to save P95 ring buffer state" in str(call)
+                                     for call in debug_calls)
+                    self.assertTrue(error_logged, "Should log save failure")
+
+            # Test with TypeError (json encoding error)
+            mock_open = unittest.mock.mock_open()
+            with patch('builtins.open', mock_open):
+                with patch('json.dump', side_effect=TypeError("Object not serializable")):
+                    with patch('loadshaper.logger') as mock_logger:
+                        self.controller._save_ring_buffer_state()
+                        mock_logger.debug.assert_called()
+                        debug_calls = mock_logger.debug.call_args_list
+                        error_logged = any("Failed to save P95 ring buffer state" in str(call)
+                                         for call in debug_calls)
+                        self.assertTrue(error_logged, "Should log JSON error")
+
+        finally:
+            # Restore original test environment
+            if original_test_env:
+                os.environ['PYTEST_CURRENT_TEST'] = original_test_env
+
+    def test_fallback_risk_true_condition(self):
+        """Test get_status().fallback_risk becomes true under prolonged blocking"""
+        # Simulate prolonged skipping (MAX_CONSECUTIVE_SKIPPED_SLOTS = 120)
+        self.controller.consecutive_skipped_slots = 125  # Above MAX_CONSECUTIVE_SKIPPED_SLOTS
+        status = self.controller.get_status()
+        self.assertTrue(status['fallback_risk'],
+                       "Should show fallback_risk=true when too many consecutive skips")
+
+        # Reset and test time-based fallback risk (MIN_HIGH_SLOT_INTERVAL_SEC = 3600)
+        self.controller.consecutive_skipped_slots = 0
+        # Set last high slot time to long ago (simulate MIN_HIGH_SLOT_INTERVAL exceeded)
+        import time
+        self.controller.last_high_slot_time = time.monotonic() - 3700  # Over 1 hour ago
+        status = self.controller.get_status()
+        self.assertTrue(status['fallback_risk'],
+                       "Should show fallback_risk=true when too long since last high slot")
+
+
 if __name__ == '__main__':
     unittest.main()

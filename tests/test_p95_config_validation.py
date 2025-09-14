@@ -89,7 +89,7 @@ class TestP95ConfigurationValidation(unittest.TestCase):
 
     def test_p95_slot_duration_validation(self):
         """Test CPU_P95_SLOT_DURATION is reasonable."""
-        # Default 5-second slots
+        # Test with 5-second slots (default is 60-second slots)
         loadshaper.CPU_P95_SLOT_DURATION = 5.0
         self.assertGreater(loadshaper.CPU_P95_SLOT_DURATION, 0.0,
                           "CPU_P95_SLOT_DURATION must be positive")

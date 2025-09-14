@@ -45,6 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Test failures**: Resolved P95 cache pollution issues in test suite causing incorrect exceedance target calculations
 - **Code documentation**: Added comprehensive docstrings and improved critical code comments for Oracle compliance logic
 
+## [3.0.1] - Bug Fixes and Test Coverage
+
+### Fixed
+- **Critical JSON encoding bug**: Fixed `json.JSONEncodeError` which doesn't exist in Python stdlib (replaced with `TypeError`, `ValueError`)
+- **Performance optimization**: Eliminated redundant P95 database queries by using controller cache for network fallback logic
+- **Configuration validation**: Added enforcement that `CPU_P95_BASELINE_INTENSITY` < `CPU_P95_HIGH_INTENSITY` with automatic adjustment
+- **Test isolation bug**: Fixed intermittent test failure in `test_proportional_scaling_in_middle_range` due to shared global state pollution
+- **Documentation corrections**: Fixed incorrect descriptions of `NET_FALLBACK_START_PCT`/`NET_FALLBACK_STOP_PCT` (network thresholds, not CPU thresholds)
+- **Test comment accuracy**: Updated comment referring to "5-second slots" to correctly reflect default 60-second slots
+
+### Added
+- **Enhanced test coverage**: Added 6 new test cases covering previously untested code paths:
+  - Dithering boundary testing with predictable randomization
+  - Configuration validation warnings for out-of-range values
+  - Ring buffer save error handling verification
+  - Fallback risk flag activation conditions
+  - P95 controller configuration edge cases
+- **Improved test isolation**: All proportional safety scaling tests now use proper mocking to prevent global state contamination
+
 ---
 
 ## [2.2.0] - Previous Version
