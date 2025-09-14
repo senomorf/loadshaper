@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
-- **Health endpoint enhancement**: Added `persistence_storage` status and `database_path` fields
+- **Health endpoint enhancement**: Added `persistence_storage` status field (removed `database_path` for security)
 - **Clear error messages**: Detailed guidance when persistent volume configuration is missing
 - **Ring buffer batching**: Configurable batch size (`CPU_P95_RING_BUFFER_BATCH_SIZE`) reduces I/O overhead
 - **Memory usage monitoring**: Tracks P95 cache memory consumption with detailed logging

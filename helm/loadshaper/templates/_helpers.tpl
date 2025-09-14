@@ -104,4 +104,9 @@ Validate configuration compatibility
   {{- fail (printf "Invalid NET_SENSE_MODE '%s'. Must be 'container' or 'host'." .Values.config.NET_SENSE_MODE) }}
 {{- end }}
 
+{{/* BREAKING CHANGE VALIDATION: Persistent storage is now mandatory */}}
+{{- if not .Values.persistence.enabled }}
+  {{- fail "persistence.enabled must be true. LoadShaper now requires a persistent volume for 7-day P95 metrics to prevent Oracle VM reclamation. Ephemeral storage (emptyDir) is no longer supported." }}
+{{- end }}
+
 {{- end }}
