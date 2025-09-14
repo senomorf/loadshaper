@@ -1259,10 +1259,16 @@ class CPUP95Controller:
         Sets up state machine, slot tracking, and initializes 24-hour ring buffer
         for fast exceedance budget control based on Oracle compliance requirements.
 
-        IMPORTANT: This controller assumes only one LoadShaper instance runs per system.
-        Multiple concurrent LoadShaper applications would create race conditions in the
-        ring buffer file writes and could corrupt P95 state persistence.
-        (Note: The application spawns multiple internal worker processes, which is normal.)
+        CRITICAL REQUIREMENT: This controller assumes only one LoadShaper instance runs per system.
+
+        MULTIPLE LOADSHAPER INSTANCES WILL CAUSE:
+        - Race conditions in ring buffer file writes (/var/lib/loadshaper/p95_ring_buffer.json)
+        - SQLite database corruption and locks (/var/lib/loadshaper/metrics.db)
+        - Conflicting P95 calculations leading to Oracle VM reclamation
+        - Inconsistent resource targeting and safety checks
+
+        Each LoadShaper instance requires EXCLUSIVE ACCESS to /var/lib/loadshaper/ directory.
+        (Note: The application spawns multiple internal worker processes, which is normal and safe.)
         """
         self.metrics_storage = metrics_storage
         self._lock = threading.RLock()  # Thread-safe access to shared state
@@ -1365,9 +1371,27 @@ class CPUP95Controller:
             # Write to temporary file first for atomic operation
             with open(temp_path, 'w') as f:
                 json.dump(state, f)
+                # Ensure data is written to disk for durability
+                f.flush()
+                os.fsync(f.fileno())
 
             # Atomically replace the target file
             os.replace(temp_path, ring_buffer_path)
+
+            # Sync parent directory to ensure atomic replace is durable
+            dir_fd = None
+            try:
+                dir_fd = os.open(os.path.dirname(ring_buffer_path), os.O_RDONLY)
+                os.fsync(dir_fd)
+            except OSError:
+                # Directory sync not critical if it fails
+                pass
+            finally:
+                if dir_fd is not None:
+                    try:
+                        os.close(dir_fd)
+                    except OSError:
+                        pass
 
             logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
 
@@ -3647,8 +3671,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                     # Check if the database is in the persistent storage path or a test-like path ending with loadshaper
                     if os.path.commonpath([db_path, persistent_root]) == persistent_root:
                         persistence_ok = True
-                    elif os.path.basename(os.path.dirname(db_path)) == "loadshaper":
-                        # Allow test paths that end with /loadshaper directory
+                    elif os.environ.get('PYTEST_CURRENT_TEST') and os.path.basename(os.path.dirname(db_path)) == "loadshaper":
+                        # Allow test paths that end with /loadshaper directory (only during testing)
                         persistence_ok = True
                 except (OSError, ValueError):
                     persistence_ok = False

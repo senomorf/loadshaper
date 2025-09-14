@@ -8,11 +8,15 @@
 
 ## ⚠️ Work In Progress - Breaking Changes Expected
 
-> **🚧 This project is under active development.** Breaking changes are introduced frequently
-> without migration paths **by design**. No backward compatibility or migration guides are provided
-> as we iterate rapidly toward the optimal Oracle Cloud VM protection solution. This approach
-> prevents technical debt accumulation and enables rapid innovation. Always review the CHANGELOG
-> before updating.
+> **🚧 WORK IN PROGRESS: BREAKING CHANGES BY DESIGN**
+>
+> **Current Status:** Persistent storage is now **MANDATORY**. All fallback to `/tmp` has been completely removed.
+> Containers will **NOT START** without proper persistent volumes. This is an intentional breaking change.
+>
+> **Development Philosophy:** Breaking changes are introduced frequently without migration paths **by design**.
+> No backward compatibility or migration guides are provided as we iterate rapidly toward the optimal
+> Oracle Cloud VM protection solution. This approach prevents technical debt accumulation and enables
+> rapid innovation. Always review the CHANGELOG before updating.
 
 **Modern native network generator implementation** - Uses Python sockets instead of external dependencies for maximum efficiency and control. Requires **Linux 3.14+ (March 2014)** with kernel MemAvailable support.
 
@@ -381,7 +385,12 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 
 > **⚠️ CRITICAL:** For Oracle Free Tier VM protection, ensure **at least one metric target is above 20%**. Setting all targets below 20% will cause Oracle to reclaim your VM. Oracle checks if ALL metrics are below 20% - if so, the VM is reclaimed.
 >
-> **🚨 SINGLE INSTANCE REQUIREMENT:** Only run **ONE LoadShaper instance per system**. Multiple instances will corrupt the P95 calculation database and cause Oracle VM reclamation. Each instance requires exclusive access to the persistent storage directory.
+> **🚨 CRITICAL: SINGLE INSTANCE ONLY:** Only run **ONE LoadShaper instance per system**. Multiple instances create race conditions in:
+> - **P95 ring buffer state** - Concurrent writes corrupt slot history tracking
+> - **Metrics database** - SQLite locks and data corruption
+> - **Resource calculations** - Conflicting load measurements
+>
+> **Result:** Oracle VM reclamation due to broken P95 calculations. Each LoadShaper instance requires **exclusive access** to `/var/lib/loadshaper/` persistent storage.
 
 ### Resource Targets
 
