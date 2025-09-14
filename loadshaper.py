@@ -2574,7 +2574,7 @@ class MetricsStorage:
 
     def detect_database_corruption(self):
         """
-        Detect database corruption using SQLite's integrity check.
+        Detect database corruption using SQLite's integrity check and schema validation.
 
         Returns:
             bool: True if corruption detected, False if database is healthy
@@ -2589,17 +2589,38 @@ class MetricsStorage:
                 result = cursor.fetchone()
 
                 # SQLite returns "ok" if database is healthy
-                is_corrupted = result[0] != "ok" if result else True
+                pragma_corrupted = result[0] != "ok" if result else True
 
-                if is_corrupted:
-                    logger.error(f"Database corruption detected: {result[0] if result else 'Unknown error'}")
+                if pragma_corrupted:
+                    logger.error(f"Database corruption detected via PRAGMA: {result[0] if result else 'Unknown error'}")
+                    return True
 
-                return is_corrupted
+                # Additional validation: check if expected table exists and is accessible
+                try:
+                    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='metrics'")
+                    table_result = cursor.fetchone()
+                    if not table_result:
+                        logger.error("Database corruption detected: metrics table missing")
+                        return True
+
+                    # Try to access the table structure
+                    cursor = conn.execute("PRAGMA table_info(metrics)")
+                    columns = cursor.fetchall()
+                    if not columns:
+                        logger.error("Database corruption detected: metrics table has no columns")
+                        return True
+
+                except sqlite3.Error as table_error:
+                    logger.error(f"Database corruption detected during table validation: {table_error}")
+                    return True
+
+                return False
 
         except sqlite3.DatabaseError as e:
             logger.error(f"Database corruption detected during integrity check: {e}")
             return True
         except Exception as e:
+            logger.error(f"DEBUG: Unexpected exception in detect_database_corruption: {type(e)} - {e}")
             logger.warning(f"Could not check database integrity: {e}")
             return False
 
@@ -2610,13 +2631,13 @@ class MetricsStorage:
         Returns:
             str: Path to backup file, or None if backup failed
         """
-        if not self.db_path or not os.path.exists(self.db_path):
-            return None
-
         try:
             import shutil
             import os
             from datetime import datetime
+
+            if not self.db_path or not os.path.exists(self.db_path):
+                return None
 
             # Create timestamped backup filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2640,7 +2661,10 @@ class MetricsStorage:
         Returns:
             bool: True if recovery successful, False otherwise
         """
+        import os  # Import os at the beginning
         logger.warning("Attempting database corruption recovery...")
+
+        backup_path = None  # Initialize to avoid UnboundLocalError
 
         try:
             # Step 1: Backup corrupted database
