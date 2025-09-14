@@ -76,6 +76,8 @@ class TestRingBufferBatching(unittest.TestCase):
         # Create controller with test database
         metrics_storage = loadshaper.MetricsStorage(self.db_path)
         controller = loadshaper.CPUP95Controller(metrics_storage)
+        controller.test_mode = True  # Enable persistence in tests
+        controller.ring_buffer_path = self.ring_buffer_path  # Use test path
 
         # Mock file operations to count ring buffer saves (including thread-safe temp files)
         write_count = 0
@@ -123,6 +125,8 @@ class TestRingBufferBatching(unittest.TestCase):
                 # Create fresh controller
                 metrics_storage = loadshaper.MetricsStorage(self.db_path)
                 controller = loadshaper.CPUP95Controller(metrics_storage)
+                controller.test_mode = True  # Enable persistence in tests
+                controller.ring_buffer_path = self.ring_buffer_path  # Use test path
 
                 # Mock file operations to count ring buffer saves (including thread-safe temp files)
                 write_count = 0
