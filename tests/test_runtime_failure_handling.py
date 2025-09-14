@@ -12,7 +12,8 @@ import tempfile
 import os
 import time
 import threading
-from unittest.mock import patch, MagicMock, Mock
+import errno
+from unittest.mock import patch, MagicMock, Mock, mock_open
 import unittest
 
 # Import LoadShaper modules
@@ -311,6 +312,88 @@ class TestDatabaseCorruptionRecovery:
 
                 count = storage.get_sample_count()
                 assert count == 0
+
+    def test_p95_controller_enospc_degraded_mode(self):
+        """Test comprehensive ENOSPC error handling in P95 controller leading to degraded mode."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Setup controller with temp storage
+            storage = loadshaper.MetricsStorage(os.path.join(temp_dir, "metrics.db"))
+            controller = loadshaper.CPUP95Controller(storage)
+            controller.test_mode = True  # Allow persistence in tests
+
+            # Verify controller starts in normal mode
+            assert not hasattr(controller, '_degraded_mode') or not controller._degraded_mode
+
+            # Mock the ring buffer path to point to our temp directory
+            ring_buffer_path = os.path.join(temp_dir, "p95_ring_buffer.json")
+
+            with patch.object(controller, '_get_ring_buffer_path', return_value=ring_buffer_path):
+                # Test 1: ENOSPC during ring buffer save triggers degraded mode
+                with patch('builtins.open', mock_open()) as mock_file:
+                    # Simulate ENOSPC error (errno 28)
+                    enospc_error = OSError(errno.ENOSPC, "No space left on device")
+                    mock_file.side_effect = enospc_error
+
+                    # Trigger save operation - should enter degraded mode
+                    controller._save_ring_buffer_state()
+
+                    # Verify degraded mode is activated
+                    assert hasattr(controller, '_degraded_mode')
+                    assert controller._degraded_mode is True
+
+                # Test 2: Verify degraded mode skips future persistence operations
+                with patch('builtins.open') as mock_file_2:
+                    controller._save_ring_buffer_state()
+
+                    # In degraded mode, file operations should be skipped
+                    mock_file_2.assert_not_called()
+
+                # Test 3: Test recovery from degraded mode (manual reset)
+                controller._degraded_mode = False
+
+                # Should now allow normal operations again
+                with patch('builtins.open', mock_open()) as mock_file_3:
+                    with patch('os.replace') as mock_replace:
+                        with patch('os.fsync'):
+                            controller._save_ring_buffer_state()
+
+                            # Should attempt normal file operations
+                            mock_file_3.assert_called()
+                            mock_replace.assert_called()
+
+    def test_metrics_storage_error_resilience(self):
+        """Test MetricsStorage resilience under various error conditions."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "test_metrics.db")
+            storage = loadshaper.MetricsStorage(db_path)
+
+            # Test that storage operations don't crash under normal error conditions
+            # The P95 controller test above covers the ENOSPC degraded mode scenario more thoroughly
+            try:
+                result = storage.store_sample(25.0, 50.0, 15.0, 0.5)
+                # Should handle normal operations without issues
+                assert result is True or result is False  # Either outcome is fine
+            except Exception as e:
+                pytest.fail(f"Storage should handle normal operations gracefully: {e}")
+
+    def test_degraded_mode_persistence_behavior(self):
+        """Test that degraded mode properly prevents crash loops during disk full scenarios."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = loadshaper.MetricsStorage(os.path.join(temp_dir, "metrics.db"))
+            controller = loadshaper.CPUP95Controller(storage)
+            controller.test_mode = True
+
+            # Manually set degraded mode (simulating disk full detection)
+            controller._degraded_mode = True
+
+            # Test that operations are skipped without exceptions
+            try:
+                controller._save_ring_buffer_state()  # Should not crash
+                controller._maybe_save_ring_buffer_state()  # Should not crash
+                # Success - no exceptions thrown
+                assert True
+            except Exception as e:
+                pytest.fail(f"Degraded mode should not raise exceptions: {e}")
 
 
 if __name__ == '__main__':

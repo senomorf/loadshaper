@@ -25,15 +25,18 @@ logger = logging.getLogger(__name__)
 # Oracle shape auto-detection
 # ---------------------------
 
+# Cache TTL constant - 5 minutes to balance performance vs freshness
+DEFAULT_SHAPE_DETECTION_CACHE_TTL_SEC = 300
+
 class ShapeDetectionCache:
     """
     Thread-safe cache for Oracle shape detection results with TTL.
-    
+
     Manages caching of shape detection to avoid repeated expensive system calls
     and Oracle Cloud API requests. Uses a 5-minute TTL by default.
     """
-    
-    def __init__(self, ttl_seconds=300):
+
+    def __init__(self, ttl_seconds=DEFAULT_SHAPE_DETECTION_CACHE_TTL_SEC):
         """
         Initialize cache with specified TTL.
         
@@ -1109,16 +1112,23 @@ def _initialize_config():
     NET_FALLBACK_START_PCT  = getenv_float_with_template("NET_FALLBACK_START_PCT", 19.0, CONFIG_TEMPLATE)
     NET_FALLBACK_STOP_PCT           = getenv_float_with_template("NET_FALLBACK_STOP_PCT", 23.0, CONFIG_TEMPLATE)
     NET_FALLBACK_RISK_THRESHOLD_PCT = getenv_float_with_template("NET_FALLBACK_RISK_THRESHOLD_PCT", 22.0, CONFIG_TEMPLATE)
-    NET_FALLBACK_DEBOUNCE_SEC       = getenv_int_with_template("NET_FALLBACK_DEBOUNCE_SEC", 30, CONFIG_TEMPLATE)
-    NET_FALLBACK_MIN_ON_SEC         = getenv_int_with_template("NET_FALLBACK_MIN_ON_SEC", 60, CONFIG_TEMPLATE)
-    NET_FALLBACK_MIN_OFF_SEC        = getenv_int_with_template("NET_FALLBACK_MIN_OFF_SEC", 30, CONFIG_TEMPLATE)
-    NET_FALLBACK_RAMP_SEC           = getenv_int_with_template("NET_FALLBACK_RAMP_SEC", 10, CONFIG_TEMPLATE)
+
+    # Network fallback timing constants - define defaults for clear documentation
+    DEFAULT_NET_FALLBACK_DEBOUNCE_SEC = 30    # Prevents rapid state oscillation
+    DEFAULT_NET_FALLBACK_MIN_ON_SEC = 60      # Ensures meaningful network activity periods
+    DEFAULT_NET_FALLBACK_MIN_OFF_SEC = 30     # Allows system recovery between activations
+    DEFAULT_NET_FALLBACK_RAMP_SEC = 10        # Smooth rate transitions to avoid spikes
+
+    NET_FALLBACK_DEBOUNCE_SEC       = getenv_int_with_template("NET_FALLBACK_DEBOUNCE_SEC", DEFAULT_NET_FALLBACK_DEBOUNCE_SEC, CONFIG_TEMPLATE)
+    NET_FALLBACK_MIN_ON_SEC         = getenv_int_with_template("NET_FALLBACK_MIN_ON_SEC", DEFAULT_NET_FALLBACK_MIN_ON_SEC, CONFIG_TEMPLATE)
+    NET_FALLBACK_MIN_OFF_SEC        = getenv_int_with_template("NET_FALLBACK_MIN_OFF_SEC", DEFAULT_NET_FALLBACK_MIN_OFF_SEC, CONFIG_TEMPLATE)
+    NET_FALLBACK_RAMP_SEC           = getenv_int_with_template("NET_FALLBACK_RAMP_SEC", DEFAULT_NET_FALLBACK_RAMP_SEC, CONFIG_TEMPLATE)
 
     # Validate final configuration values (including environment overrides)
     _validate_final_config()
     _validate_network_fallback_config()
     _validate_p95_config()
-    _validate_configuration_consistency()
+    # Note: _validate_configuration_consistency() is called in main() after runtime initialization
 
     _config_initialized = True
 
@@ -1327,25 +1337,27 @@ class CPUP95Controller:
             return
 
         try:
-            ring_buffer_path = self._get_ring_buffer_path()
-            temp_path = ring_buffer_path + '.tmp'
-            state = {
-                'slot_history': self.slot_history,
-                'slot_history_index': self.slot_history_index,
-                'slots_recorded': self.slots_recorded,
-                'slot_history_size': self.slot_history_size,
-                'timestamp': time.time()  # Use wall clock time for persistence
-            }
+            with self._lock:
+                ring_buffer_path = self._get_ring_buffer_path()
+                # Use thread-safe temp filename to prevent race conditions
+                temp_path = f"{ring_buffer_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+                state = {
+                    'slot_history': self.slot_history,
+                    'slot_history_index': self.slot_history_index,
+                    'slots_recorded': self.slots_recorded,
+                    'slot_history_size': self.slot_history_size,
+                    'timestamp': time.time()  # Use wall clock time for persistence
+                }
 
-            # Write to temporary file first for atomic operation
-            with open(temp_path, 'w') as f:
-                json.dump(state, f)
-                # Ensure data is written to disk for durability
-                f.flush()
-                os.fsync(f.fileno())
+                # Write to temporary file first for atomic operation
+                with open(temp_path, 'w') as f:
+                    json.dump(state, f)
+                    # Ensure data is written to disk for durability
+                    f.flush()
+                    os.fsync(f.fileno())
 
-            # Atomically replace the target file
-            os.replace(temp_path, ring_buffer_path)
+                # Atomically replace the target file
+                os.replace(temp_path, ring_buffer_path)
 
             # Sync parent directory to ensure atomic replace is durable
             dir_fd = None
@@ -3777,9 +3789,25 @@ class NetworkFallbackState:
     """
     Manages network fallback state and timing for Oracle VM protection.
 
-    Implements smart fallback logic:
-    - E2 shapes: Activate when CPU (p95) AND network both at risk
-    - A1 shapes: Activate when CPU (p95), network, AND memory all at risk
+    Implements smart fallback logic with Oracle shape-specific activation rules:
+    - E2 shapes: Activate when CPU (P95) AND network both at risk
+    - A1 shapes: Activate when CPU (P95), network, AND memory all at risk
+
+    State Machine Transitions:
+    ┌─────────────┐   should_activate=True   ┌─────────────┐
+    │  INACTIVE   │─────────────────────────▶│   ACTIVE    │
+    │  (waiting)  │                          │ (fallback)  │
+    └─────────────┘◀─────────────────────────┘─────────────┘
+                     should_activate=False
+
+    Timing Controls (all configurable via environment variables):
+    - DEBOUNCE_SEC: Prevents rapid oscillation between states
+    - MIN_ON_SEC: Minimum duration fallback stays active
+    - MIN_OFF_SEC: Minimum duration between activations
+    - RAMP_SEC: Gradual rate increase/decrease for smooth transitions
+
+    This prevents VM reclamation by ensuring at least one metric stays above 20%
+    when multiple metrics simultaneously approach Oracle's reclamation threshold.
     """
     def __init__(self):
         self.active = False
@@ -3879,6 +3907,9 @@ def main():
     
     # Validate configuration for Oracle environments
     validate_oracle_configuration()
+
+    # Now that system is fully initialized, run runtime-dependent validations
+    _validate_configuration_consistency()
     
     logger.info(f"[loadshaper v3.0] starting with"
           f" CPU_P95_TARGET={CPU_P95_TARGET_MIN:.1f}-{CPU_P95_TARGET_MAX:.1f}%, MEM_TARGET(excl-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |"

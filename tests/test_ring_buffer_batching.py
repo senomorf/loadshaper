@@ -84,8 +84,12 @@ class TestRingBufferBatching(unittest.TestCase):
 
         def mock_open(*args, **kwargs):
             nonlocal write_count
-            if len(args) > 0 and (args[0] == self.ring_buffer_path or args[0] == self.ring_buffer_path + '.tmp') and 'w' in str(args[1:]):
-                write_count += 1
+            if len(args) > 0 and args[0] and 'w' in str(args[1:]):
+                # Check for ring buffer path or any temp file pattern
+                if (args[0] == self.ring_buffer_path or
+                    args[0] == self.ring_buffer_path + '.tmp' or
+                    (args[0].startswith(self.ring_buffer_path) and '.tmp' in args[0])):
+                    write_count += 1
             return original_open(*args, **kwargs)
 
         with unittest.mock.patch('builtins.open', side_effect=mock_open):
@@ -127,8 +131,12 @@ class TestRingBufferBatching(unittest.TestCase):
 
                 def mock_open(*args, **kwargs):
                     nonlocal write_count
-                    if len(args) > 0 and (args[0] == self.ring_buffer_path or args[0] == self.ring_buffer_path + '.tmp') and 'w' in str(args[1:]):
-                        write_count += 1
+                    if len(args) > 0 and args[0] and 'w' in str(args[1:]):
+                        # Check for ring buffer path or any temp file pattern
+                        if (args[0] == self.ring_buffer_path or
+                            args[0] == self.ring_buffer_path + '.tmp' or
+                            (args[0].startswith(self.ring_buffer_path) and '.tmp' in args[0])):
+                            write_count += 1
                     return original_open(*args, **kwargs)
 
                 with unittest.mock.patch('builtins.open', side_effect=mock_open):

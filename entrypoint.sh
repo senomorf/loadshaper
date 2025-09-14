@@ -27,29 +27,44 @@ if [ ! -d "$PERSISTENCE_DIR" ]; then
     exit 1
 # Check if the persistence directory is actually a mount point
 # This prevents using the image's built-in directory which would lose data on restart
-elif [ -d "$PERSISTENCE_DIR" ] && [ "$(stat -c %d "$PERSISTENCE_DIR" 2>/dev/null)" = "$(stat -c %d "$PERSISTENCE_DIR/.." 2>/dev/null)" ]; then
-    echo "[ERROR] $PERSISTENCE_DIR exists but is NOT a mount point"
-    echo "[ERROR] LoadShaper requires a persistent volume to be mounted at this path"
-    echo "[ERROR] Data stored in the container's filesystem will be lost on restart"
-    echo ""
-    echo "This typically means:"
-    echo "  - No volume is mounted to the container"
-    echo "  - The directory exists in the Docker image (should not happen)"
-    echo ""
-    echo "Required Docker Compose configuration:"
-    echo "  services:"
-    echo "    loadshaper:"
-    echo "      volumes:"
-    echo "        - loadshaper-metrics:/var/lib/loadshaper"
-    echo ""
-    echo "  volumes:"
-    echo "    loadshaper-metrics:"
-    echo "      driver: local"
-    echo ""
-    echo "To verify mount status inside container:"
-    echo "  docker exec loadshaper mount | grep $PERSISTENCE_DIR"
-    echo ""
-    exit 1
+# Use Python for portable device number detection across Alpine/busybox versions
+elif [ -d "$PERSISTENCE_DIR" ]; then
+    # Get device numbers using portable Python approach
+    DEV_PERSISTENT=$(python3 -c "import os; print(os.stat('$PERSISTENCE_DIR').st_dev)" 2>/dev/null)
+    DEV_PARENT=$(python3 -c "import os; print(os.stat('$PERSISTENCE_DIR/..').st_dev)" 2>/dev/null)
+
+    # Verify device detection succeeded
+    if [ -z "$DEV_PERSISTENT" ] || [ -z "$DEV_PARENT" ]; then
+        echo "[ERROR] Failed to detect mount point status for $PERSISTENCE_DIR"
+        echo "[ERROR] Ensure Python3 is available and directory is accessible"
+        exit 1
+    fi
+
+    # Check if same device (not a mount point)
+    if [ "$DEV_PERSISTENT" = "$DEV_PARENT" ]; then
+        echo "[ERROR] $PERSISTENCE_DIR exists but is NOT a mount point"
+        echo "[ERROR] LoadShaper requires a persistent volume to be mounted at this path"
+        echo "[ERROR] Data stored in the container's filesystem will be lost on restart"
+        echo ""
+        echo "This typically means:"
+        echo "  - No volume is mounted to the container"
+        echo "  - The directory exists in the Docker image (should not happen)"
+        echo ""
+        echo "Required Docker Compose configuration:"
+        echo "  services:"
+        echo "    loadshaper:"
+        echo "      volumes:"
+        echo "        - loadshaper-metrics:/var/lib/loadshaper"
+        echo ""
+        echo "  volumes:"
+        echo "    loadshaper-metrics:"
+        echo "      driver: local"
+        echo ""
+        echo "To verify mount status inside container:"
+        echo "  docker exec loadshaper mount | grep $PERSISTENCE_DIR"
+        echo ""
+        exit 1
+    fi
 # Test actual write capability using mktemp for better security
 elif ! TMPFILE=$(mktemp "$PERSISTENCE_DIR/.write_test.XXXXXX" 2>/dev/null); then
     USER_ID=$(id -u)
