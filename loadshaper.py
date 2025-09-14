@@ -721,7 +721,7 @@ def _validate_network_fallback_config():
         ("NET_FALLBACK_DEBOUNCE_SEC", 30),
         ("NET_FALLBACK_MIN_ON_SEC", 60),
         ("NET_FALLBACK_MIN_OFF_SEC", 30),
-        ("NET_FALLBACK_RAMP_SEC", 10)
+        ("NET_FALLBACK_RAMP_SEC", 10),
     ]:
         if var_name in global_vars:
             var_value = global_vars[var_name]
@@ -971,7 +971,7 @@ def _initialize_config():
     NET_FALLBACK_DEBOUNCE_SEC = getenv_int_with_template("NET_FALLBACK_DEBOUNCE_SEC", 30, CONFIG_TEMPLATE)
     NET_FALLBACK_MIN_ON_SEC = getenv_int_with_template("NET_FALLBACK_MIN_ON_SEC", 60, CONFIG_TEMPLATE)
     NET_FALLBACK_MIN_OFF_SEC = getenv_int_with_template("NET_FALLBACK_MIN_OFF_SEC", 30, CONFIG_TEMPLATE)
-    NET_FALLBACK_RAMP_SEC   = getenv_int_with_template("NET_FALLBACK_RAMP_SEC", 10, CONFIG_TEMPLATE)
+    NET_FALLBACK_RAMP_SEC = getenv_int_with_template("NET_FALLBACK_RAMP_SEC", 10, CONFIG_TEMPLATE)
 
     # Validate final configuration values (including environment overrides)
     _validate_final_config()
@@ -1010,6 +1010,7 @@ class CPUP95Controller:
     # State machine timing constants
     STATE_CHANGE_COOLDOWN_SEC = 300  # 5 minutes cooldown after state change
     P95_CACHE_TTL_SEC = 300          # Cache P95 calculations for 5 minutes (aligned with state change cooldown)
+    PERSISTENT_STORAGE_PATH = "/var/lib/loadshaper"  # Persistent storage directory for metrics DB and ring buffer
 
     # Hysteresis values for adaptive deadbands
     HYSTERESIS_SMALL_PCT = 0.5       # Small hysteresis for stable periods
@@ -1138,16 +1139,14 @@ class CPUP95Controller:
     def _get_ring_buffer_path(self):
         """Get path for ring buffer persistence file"""
         # Use same directory as metrics database for consistency
-        try:
-            # Try primary location first
-            db_dir = "/var/lib/loadshaper"
-            if os.path.exists(db_dir) and os.access(db_dir, os.W_OK):
-                return os.path.join(db_dir, "p95_ring_buffer.json")
-        except (OSError, PermissionError):
-            pass
-
-        # Fall back to temp directory
-        return "/tmp/loadshaper_p95_ring_buffer.json"
+        db_dir = self.PERSISTENT_STORAGE_PATH
+        if not os.path.isdir(db_dir):
+            raise FileNotFoundError(f"P95 ring buffer directory does not exist: {db_dir}. "
+                                    f"A persistent volume must be mounted.")
+        if not os.access(db_dir, os.W_OK):
+            raise PermissionError(f"Cannot write to P95 ring buffer directory: {db_dir}. "
+                                  f"Check volume permissions for persistent storage.")
+        return os.path.join(db_dir, "p95_ring_buffer.json")
 
     def _save_ring_buffer_state(self):
         """Save ring buffer state to disk for persistence across restarts"""
@@ -1170,8 +1169,8 @@ class CPUP95Controller:
 
             logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
 
-        except (OSError, PermissionError, TypeError, ValueError) as e:
-            logger.debug(f"Failed to save P95 ring buffer state: {e}")
+        except (OSError, PermissionError, ValueError, TypeError) as e:
+            logger.warning(f"Failed to save P95 ring buffer state: {e}")
             # Non-fatal error - continue operation without persistence
 
     def _load_ring_buffer_state(self):
@@ -1551,7 +1550,7 @@ def cpu_percent_over(dt, prev=None):
     usage = max(0.0, 100.0 * (totald - idled) / totald)
     return usage, cur
 
-def read_meminfo() -> Tuple[int, float, int]:
+def read_meminfo() -> Tuple[int, int, float, int, float]:
     """
     Read memory usage from /proc/meminfo using industry standards.
 
@@ -1562,10 +1561,10 @@ def read_meminfo() -> Tuple[int, float, int]:
     Returns:
         tuple: (total_bytes, free_bytes, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
                - total_bytes: Total system memory in bytes
-               - free_bytes: Free memory in bytes
-               - used_pct_excl_cache: Memory utilization percentage excluding cache/buffers
-               - used_bytes_excl_cache: Used memory in bytes excluding cache/buffers
-               - used_pct_incl_cache: Memory utilization percentage including cache/buffers
+               - free_bytes: Free memory in bytes (MemFree)
+               - used_pct_excl_cache: Memory utilization percentage excluding cache/buffers (Oracle-compliant)
+               - used_bytes_no_cache: Used memory in bytes excluding cache/buffers
+               - used_pct_incl_cache: Memory utilization percentage including cache/buffers (for comparison)
 
     Raises:
         RuntimeError: If /proc/meminfo is not readable, MemAvailable is missing,
@@ -1606,7 +1605,7 @@ def read_meminfo() -> Tuple[int, float, int]:
         # This field represents memory actually available to applications without swapping,
         # accounting for reclaimable cache/buffers. Matches Oracle's likely implementation.
         used_pct_excl_cache = (100.0 * (1.0 - mem_available / total))
-        used_bytes_excl_cache = (total - mem_available) * 1024
+        used_bytes_no_cache = (total - mem_available) * 1024
     else:
         # FALLBACK METHOD: Manual calculation for older kernels
         buffers = m.get("Buffers", 0)
@@ -1614,9 +1613,9 @@ def read_meminfo() -> Tuple[int, float, int]:
         srecl = m.get("SReclaimable", 0)
         shmem = m.get("Shmem", 0)
         buff_cache = buffers + max(0, cached + srecl - shmem)
-        used_no_cache = max(0, total - free - buff_cache)
-        used_pct_excl_cache = (100.0 * used_no_cache / total) if total > 0 else 0.0
-        used_bytes_excl_cache = used_no_cache * 1024
+        used_no_cache_kb = max(0, total - free - buff_cache)
+        used_pct_excl_cache = (100.0 * used_no_cache_kb / total) if total > 0 else 0.0
+        used_bytes_no_cache = used_no_cache_kb * 1024
 
     # Also calculate including cache/buffers for comparison/debugging
     used_incl_cache = max(0, total - free)
@@ -1625,12 +1624,12 @@ def read_meminfo() -> Tuple[int, float, int]:
     # Handle corrupt data - clamp to valid range (master compatibility)
     if mem_available > total:
         used_pct_excl_cache = 0.0
-        used_bytes_excl_cache = 0
+        used_bytes_no_cache = 0
     else:
         used_pct_excl_cache = max(0.0, min(100.0, used_pct_excl_cache))
-        used_bytes_excl_cache = max(0, used_bytes_excl_cache)
+        used_bytes_no_cache = max(0, used_bytes_no_cache)
 
-    return (total * 1024, free * 1024, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
+    return (total * 1024, free * 1024, used_pct_excl_cache, used_bytes_no_cache, used_pct_incl_cache)
 
 def read_loadavg():
     """Read system load averages from /proc/loadavg.
@@ -1704,27 +1703,38 @@ class MetricsStorage:
 
         Args:
             db_path: Path to SQLite database file. If None, uses /var/lib/loadshaper/metrics.db
-                    with fallback to /tmp/loadshaper_metrics.db if permission denied.
 
         Creates database schema for 7-day metrics storage with thread-safe access.
+        Requires persistent storage to maintain Oracle compliance.
         """
         if db_path is None:
-            # Try to use /var/lib/loadshaper, fallback to /tmp
-            try:
-                os.makedirs("/var/lib/loadshaper", exist_ok=True)
-                db_path = "/var/lib/loadshaper/metrics.db"
-            except (OSError, PermissionError):
-                db_path = "/tmp/loadshaper_metrics.db"
+            db_path = os.path.join(CPUP95Controller.PERSISTENT_STORAGE_PATH, "metrics.db")
+
+        # Validate persistent storage directory for 7-day P95 calculations
+        db_dir = os.path.dirname(db_path)
+        if not os.path.isdir(db_dir):
+            raise FileNotFoundError(f"Metrics directory does not exist: {db_dir}. "
+                                    f"A persistent volume must be mounted.")
+        if not os.access(db_dir, os.W_OK):
+            raise PermissionError(f"Cannot write to metrics directory: {db_dir}. "
+                                  f"Check volume permissions for persistent storage.")
 
         self.db_path = db_path
         self.lock = threading.Lock()
+
+        # Storage degradation tracking
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 5  # Mark as degraded after 5 failures
+        self.last_failure_time = None
+
+        logger.info(f"Metrics database initialized at: {self.db_path}")
         self._init_db()
     
     def _init_db(self):
-        """Initialize database schema and handle connection errors.
+        """Initialize database schema for persistent storage.
 
-        Creates the metrics table if it doesn't exist and handles database
-        connectivity issues gracefully.
+        Creates the metrics table if it doesn't exist. Fails fast if database
+        cannot be created, as persistent storage is required for Oracle compliance.
         """
         with self.lock:
             try:
@@ -1738,35 +1748,13 @@ class MetricsStorage:
                         load_avg REAL
                     )
                 """)
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
                 conn.commit()
                 conn.close()
+                logger.info(f"Metrics database schema initialized successfully")
             except Exception as e:
-                logger.error(f"Failed to initialize database: {e}")
-                # If explicit path was given and failed, try fallback to /tmp
-                if self.db_path != "/tmp/loadshaper_metrics.db":
-                    logger.warning("Attempting fallback to /tmp")
-                    self.db_path = "/tmp/loadshaper_metrics.db"
-                    try:
-                        conn = sqlite3.connect(self.db_path)
-                        conn.execute("""
-                            CREATE TABLE IF NOT EXISTS metrics (
-                                timestamp REAL PRIMARY KEY,
-                                cpu_pct REAL,
-                                mem_pct REAL,
-                                net_pct REAL,
-                                load_avg REAL
-                            )
-                        """)
-                        conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
-                        conn.commit()
-                        conn.close()
-                        logger.info(f"Successfully initialized fallback database at {self.db_path}")
-                    except Exception as e2:
-                        logger.error(f"Fallback to /tmp also failed: {e2}")
-                        self.db_path = None
-                else:
-                    self.db_path = None
+                logger.error(f"Failed to initialize metrics database at {self.db_path}: {e}")
+                raise RuntimeError(f"Cannot create metrics database. "
+                                   f"LoadShaper requires persistent storage for 7-day P95 calculations.")
     
     def store_sample(self, cpu_pct, mem_pct, net_pct, load_avg):
         """Store a metrics sample in the database.
@@ -1780,9 +1768,6 @@ class MetricsStorage:
         Returns:
             bool: True if stored successfully, False otherwise
         """
-        if self.db_path is None:
-            return False
-        
         with self.lock:
             try:
                 conn = sqlite3.connect(self.db_path)
@@ -1793,9 +1778,20 @@ class MetricsStorage:
                 )
                 conn.commit()
                 conn.close()
+
+                # Reset failure counter on success
+                self.consecutive_failures = 0
                 return True
             except Exception as e:
                 logger.error(f"Failed to store sample: {e}")
+
+                # Track consecutive failures for degradation detection
+                self.consecutive_failures += 1
+                self.last_failure_time = time.time()
+
+                if self.consecutive_failures >= self.max_consecutive_failures:
+                    logger.warning(f"Storage degraded: {self.consecutive_failures} consecutive failures")
+
                 return False
     
     def get_percentile(self, metric_name, percentile=95.0, days_back=7):
@@ -1809,8 +1805,6 @@ class MetricsStorage:
         Returns:
             float: Calculated percentile value, or None if insufficient data
         """
-        if self.db_path is None:
-            return None
         
         column_map = {
             'cpu': 'cpu_pct',
@@ -1860,8 +1854,6 @@ class MetricsStorage:
         Returns:
             int: Number of records deleted, or 0 if database unavailable
         """
-        if self.db_path is None:
-            return 0
 
         cutoff_time = time.time() - (days_to_keep * 24 * 3600)
         
@@ -1886,8 +1878,6 @@ class MetricsStorage:
         Returns:
             int: Number of samples found, or 0 if database unavailable/error
         """
-        if self.db_path is None:
-            return 0
 
         cutoff_time = time.time() - (days_back * 24 * 3600)
         
@@ -1901,6 +1891,27 @@ class MetricsStorage:
             except Exception as e:
                 logger.error(f"Failed to get sample count: {e}")
                 return 0
+
+    def is_storage_degraded(self):
+        """Check if storage is in a degraded state due to consecutive failures.
+
+        Returns:
+            bool: True if storage is degraded, False otherwise
+        """
+        return self.consecutive_failures >= self.max_consecutive_failures
+
+    def get_storage_status(self):
+        """Get detailed storage status for telemetry.
+
+        Returns:
+            dict: Storage status information
+        """
+        return {
+            'consecutive_failures': self.consecutive_failures,
+            'is_degraded': self.is_storage_degraded(),
+            'last_failure_time': self.last_failure_time,
+            'max_consecutive_failures': self.max_consecutive_failures
+        }
 
 # ---------------------------
 # CPU workers (busy/sleep)
@@ -2723,8 +2734,9 @@ class HealthHandler(BaseHTTPRequestHandler):
             with self.controller_state_lock:
                 uptime = time.time() - self.controller_state.get('start_time', time.time())
             
-            # Check if metrics storage is working
+            # Check if persistent metrics storage is working
             storage_ok = self.metrics_storage is not None and self.metrics_storage.db_path is not None
+            persistence_ok = storage_ok and CPUP95Controller.PERSISTENT_STORAGE_PATH in self.metrics_storage.db_path
             
             # Determine overall health status - direct access to avoid copy
             is_healthy = True
@@ -2737,11 +2749,20 @@ class HealthHandler(BaseHTTPRequestHandler):
                 is_healthy = False
                 status_checks.append("system_paused_safety_stop")
             
-            # Check if metrics storage is functional
+            # Check if persistent metrics storage is functional
             if not storage_ok:
-                status_checks.append("metrics_storage_degraded")
-                # Note: Don't mark unhealthy for storage issues, as core functionality still works
-            
+                is_healthy = False
+                status_checks.append("metrics_storage_failed")
+            elif not persistence_ok:
+                is_healthy = False
+                status_checks.append("persistence_not_available")
+                # Note: Persistence failure marks unhealthy as 7-day P95 calculations require persistent storage
+
+            # Check for storage degradation
+            elif self.metrics_storage and self.metrics_storage.is_storage_degraded():
+                is_healthy = False
+                status_checks.append("storage_degraded")
+
             # Check for extreme resource usage that might indicate issues
             with self.controller_state_lock:
                 cpu_avg = self.controller_state.get('cpu_avg')
@@ -2756,9 +2777,16 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "uptime_seconds": round(uptime, 1),
                 "timestamp": time.time(),
                 "checks": status_checks if status_checks else ["all_systems_operational"],
-                "metrics_storage": "available" if storage_ok else "degraded",
+                "metrics_storage": "available" if storage_ok else "failed",
+                "persistence_storage": "available" if persistence_ok else "not_mounted",
+                "database_path": self.metrics_storage.db_path if self.metrics_storage else None,
                 "load_generation": "paused" if paused_state == 1.0 else "active"
             }
+
+            # Add storage status details if available
+            if self.metrics_storage:
+                storage_status = self.metrics_storage.get_storage_status()
+                health_data["storage_status"] = storage_status
             
             status_code = 200 if is_healthy else 503
             self._send_json_response(status_code, health_data)

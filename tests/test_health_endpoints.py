@@ -70,9 +70,20 @@ class TestHealthEndpoints:
             os.unlink(db_path)
 
     @pytest.fixture
-    def metrics_storage(self, temp_db):
-        """Create a MetricsStorage instance for testing."""
-        return MetricsStorage(temp_db)
+    def metrics_storage(self):
+        """Create a MetricsStorage instance for testing with persistent-like path."""
+        # Create a temporary directory that simulates /var/lib/loadshaper structure
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a path that looks like persistent storage for testing
+            persistent_like_dir = os.path.join(tmpdir, "var", "lib", "loadshaper")
+            os.makedirs(persistent_like_dir, exist_ok=True)
+            db_path = os.path.join(persistent_like_dir, "metrics.db")
+
+            storage = MetricsStorage(db_path)
+            yield storage
 
     @pytest.fixture
     def healthy_state(self):
@@ -134,6 +145,8 @@ class TestHealthEndpoints:
         assert 'timestamp' in response_data
         assert response_data['checks'] == ['all_systems_operational']
         assert response_data['metrics_storage'] == 'available'
+        assert response_data['persistence_storage'] == 'available'
+        assert 'var/lib/loadshaper' in response_data['database_path']  # Should be using persistent-like path
         assert response_data['load_generation'] == 'active'
 
     def test_health_endpoint_unhealthy_paused(self, unhealthy_state, metrics_storage):
@@ -165,18 +178,51 @@ class TestHealthEndpoints:
         assert 'memory_critical' in response_data['checks']
 
     def test_health_endpoint_degraded_storage(self, healthy_state):
-        """Test /health endpoint with degraded metrics storage."""
+        """Test /health endpoint with failed metrics storage."""
         # Use None for metrics storage to simulate failure
         handler = MockHealthHandler("/health", healthy_state, None)
         handler._handle_health()
-        
-        assert handler.response_code == 200  # Still healthy, just degraded
+
+        assert handler.response_code == 503  # Now unhealthy with mandatory persistence
         
         response_data = json.loads(handler.response_body.decode('utf-8'))
-        assert response_data['status'] == 'healthy'
-        assert 'metrics_storage_degraded' in response_data['checks']
-        assert response_data['metrics_storage'] == 'degraded'
+        assert response_data['status'] == 'unhealthy'
+        assert 'metrics_storage_failed' in response_data['checks']
+        assert response_data['metrics_storage'] == 'failed'
+        assert response_data['persistence_storage'] == 'not_mounted'
 
+    def test_health_endpoint_non_persistent_storage(self, healthy_state):
+        """Test /health endpoint when storage exists but not in persistent location."""
+        import tempfile
+
+        # Create a mock storage with a path outside /var/lib/loadshaper
+        class MockNonPersistentStorage:
+            def __init__(self):
+                self.db_path = "/tmp/test_metrics.db"  # Non-persistent path
+
+            def is_storage_degraded(self):
+                return False
+
+            def get_storage_status(self):
+                return {
+                    'consecutive_failures': 0,
+                    'is_degraded': False,
+                    'last_failure_time': None,
+                    'max_consecutive_failures': 5
+                }
+
+        mock_storage = MockNonPersistentStorage()
+        handler = MockHealthHandler("/health", healthy_state, mock_storage)
+        handler._handle_health()
+
+        assert handler.response_code == 503  # Should be unhealthy
+
+        response_data = json.loads(handler.response_body.decode('utf-8'))
+        assert response_data['status'] == 'unhealthy'
+        assert 'persistence_not_available' in response_data['checks']
+        assert response_data['metrics_storage'] == 'available'  # Storage exists
+        assert response_data['persistence_storage'] == 'not_mounted'  # But not persistent
+        assert response_data['database_path'] == "/tmp/test_metrics.db"
 
     def test_metrics_endpoint_basic(self, healthy_state, metrics_storage):
         """Test /metrics endpoint with basic functionality."""

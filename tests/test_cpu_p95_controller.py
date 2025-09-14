@@ -2,7 +2,8 @@ import unittest
 import time
 import tempfile
 import os
-from unittest.mock import Mock, patch, MagicMock
+import json
+from unittest.mock import Mock, patch, MagicMock, mock_open
 import sys
 import logging
 
@@ -1178,6 +1179,60 @@ class TestHighLoadFallback(unittest.TestCase):
         self.assertGreaterEqual(status['hours_since_high_slot'], 0)
         self.assertFalse(status['fallback_risk'])
 
+    @patch('builtins.open', side_effect=PermissionError("Permission denied"))
+    def test_ring_buffer_save_permission_error(self, mock_open):
+        """Test that controller continues when ring buffer save fails with PermissionError."""
+        # Controller should handle save failure gracefully
+        try:
+            # This should not raise an exception
+            self.controller._save_ring_buffer_state()
+        except PermissionError:
+            self.fail("Controller should handle PermissionError gracefully")
+
+        # Controller should still function normally
+        status = self.controller.get_status()
+        self.assertIsInstance(status, dict)
+
+    @patch('builtins.open', side_effect=IOError("Disk full"))
+    def test_ring_buffer_save_io_error(self, mock_open):
+        """Test that controller continues when ring buffer save fails with IOError."""
+        # Controller should handle save failure gracefully
+        try:
+            # This should not raise an exception
+            self.controller._save_ring_buffer_state()
+        except IOError:
+            self.fail("Controller should handle IOError gracefully")
+
+        # Controller should still function normally
+        status = self.controller.get_status()
+        self.assertIsInstance(status, dict)
+
+    @patch('builtins.open', mock_open(read_data='{"invalid": json'))
+    def test_ring_buffer_load_corrupted_json(self):
+        """Test that controller handles corrupted ring buffer JSON gracefully."""
+        # Create a new controller to trigger ring buffer loading
+        with patch.dict(os.environ, {'PYTEST_CURRENT_TEST': ''}):  # Disable test mode
+            try:
+                # This should not raise an exception despite corrupted JSON
+                controller = CPUP95Controller(self.mock_storage)
+                status = controller.get_status()
+                self.assertIsInstance(status, dict)
+            except (json.JSONDecodeError, ValueError):
+                self.fail("Controller should handle corrupted JSON gracefully")
+
+    @patch('builtins.open', side_effect=FileNotFoundError("File not found"))
+    def test_ring_buffer_load_missing_file(self, mock_open):
+        """Test that controller handles missing ring buffer file gracefully."""
+        # Create a new controller to trigger ring buffer loading
+        with patch.dict(os.environ, {'PYTEST_CURRENT_TEST': ''}):  # Disable test mode
+            try:
+                # This should not raise an exception when file is missing
+                controller = CPUP95Controller(self.mock_storage)
+                status = controller.get_status()
+                self.assertIsInstance(status, dict)
+            except FileNotFoundError:
+                self.fail("Controller should handle missing ring buffer file gracefully")
+
 
 class TestMissingCoverage(unittest.TestCase):
     """Test cases for previously untested code paths identified in code review."""
@@ -1327,11 +1382,11 @@ class TestMissingCoverage(unittest.TestCase):
                 with patch('loadshaper.logger') as mock_logger:
                     # This should not raise an exception
                     self.controller._save_ring_buffer_state()
-                    mock_logger.debug.assert_called()
+                    mock_logger.warning.assert_called()
                     # Check that it logged the error
-                    debug_calls = mock_logger.debug.call_args_list
+                    warning_calls = mock_logger.warning.call_args_list
                     error_logged = any("Failed to save P95 ring buffer state" in str(call)
-                                     for call in debug_calls)
+                                     for call in warning_calls)
                     self.assertTrue(error_logged, "Should log save failure")
 
             # Test with TypeError (json encoding error)
@@ -1340,10 +1395,10 @@ class TestMissingCoverage(unittest.TestCase):
                 with patch('json.dump', side_effect=TypeError("Object not serializable")):
                     with patch('loadshaper.logger') as mock_logger:
                         self.controller._save_ring_buffer_state()
-                        mock_logger.debug.assert_called()
-                        debug_calls = mock_logger.debug.call_args_list
+                        mock_logger.warning.assert_called()
+                        warning_calls = mock_logger.warning.call_args_list
                         error_logged = any("Failed to save P95 ring buffer state" in str(call)
-                                         for call in debug_calls)
+                                         for call in warning_calls)
                         self.assertTrue(error_logged, "Should log JSON error")
 
         finally:

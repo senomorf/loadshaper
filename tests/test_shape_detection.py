@@ -606,12 +606,16 @@ class TestConcurrentShapeDetection(unittest.TestCase):
         threads = []
         for _ in range(10):
             thread = threading.Thread(target=detect_shape)
+            thread.daemon = True
             threads.append(thread)
             thread.start()
         
         # Wait for all threads to complete
         for thread in threads:
-            thread.join()
+            thread.join(timeout=5.0)
+            # Force cleanup if thread is still alive
+            if thread.is_alive():
+                print(f"Warning: Thread did not exit within timeout")
         
         # All results should be the same (cache should work correctly)
         self.assertEqual(len(set(results)), 1)

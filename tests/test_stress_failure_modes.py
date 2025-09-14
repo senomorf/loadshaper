@@ -208,6 +208,7 @@ class TestStressFailureModes(unittest.TestCase):
                 args=(loadshaper.duty, loadshaper.paused),
                 daemon=True
             )
+            worker_thread.daemon = True
             worker_thread.start()
 
             time.sleep(0.1)
@@ -254,7 +255,7 @@ class TestStressFailureModes(unittest.TestCase):
         time.sleep(0.1)  # Give threads time to see the signal
 
     def test_metrics_database_corruption_recovery(self):
-        """Test recovery from corrupted metrics database."""
+        """Test behavior when metrics database is corrupted."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, 'corrupted.db')
 
@@ -262,17 +263,17 @@ class TestStressFailureModes(unittest.TestCase):
             with open(db_path, 'wb') as f:
                 f.write(b'This is not a valid SQLite database')
 
-            # Should handle corrupted database gracefully
+            # Should fail fast with corrupted database (no fallback)
             try:
                 metrics_tracker = loadshaper.MetricsStorage(db_path)
-                metrics_tracker.store_sample(25.0, 50.0, 30.0, 1.0)
-                metrics_tracker.get_percentile('cpu')
-                success = True
+                success = False  # Should not reach here
+            except RuntimeError as e:
+                success = "Cannot create metrics database" in str(e)
             except Exception as e:
                 success = False
-                print(f"Database corruption handling failed: {e}")
+                print(f"Unexpected error type: {e}")
 
-            self.assertTrue(success, "Should recover from database corruption")
+            self.assertTrue(success, "Should fail fast with corrupted database")
 
     def test_disk_space_exhaustion(self):
         """Test behavior when disk space is exhausted."""

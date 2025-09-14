@@ -8,10 +8,10 @@
 - **Critical**: CPU load must have minimal impact on system responsiveness - always choose the lightest workload type that minimizes latency for other processes.
 
 ## 7-Day Metrics & Oracle Compliance
-- **Storage**: SQLite database at `/var/lib/loadshaper/metrics.db` (primary) or `/tmp/loadshaper_metrics.db` (fallback)
+- **Storage**: SQLite database at `/var/lib/loadshaper/metrics.db` (persistent storage required)
 - **95th percentile tracking**: CPU only (mirrors Oracle's measurement method for CPU; memory/network use simple averages)
 - **Sample frequency**: Every 5 seconds (≈120,960 samples per week, 10-20MB database size)
-- **Automatic cleanup**: Removes data older than 7 days, handles storage failures gracefully
+- **Automatic cleanup**: Removes data older than 7 days, requires persistent storage for 7-day P95 calculations
 - **Oracle official rules**: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm#compute__idleinstances
 
 ## Load Average Monitoring

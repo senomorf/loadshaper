@@ -41,12 +41,18 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 
 ## Quick Start
 
+**📋 Prerequisites:**
+- Docker and Docker Compose installed
+- **Persistent storage required** - LoadShaper needs persistent volume for 7-day P95 metrics
+
 **1. Clone and deploy:**
 ```bash
 git clone https://github.com/senomorf/loadshaper.git
 cd loadshaper
 docker compose up -d --build
 ```
+
+> **⚠️ Important**: The `compose.yaml` includes a persistent volume (`loadshaper-metrics`) that is **required** for LoadShaper to function. Without it, the container will exit with an error.
 
 **2. Monitor activity:**
 ```bash
@@ -97,15 +103,15 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 - **Load average**: Monitor from `/proc/loadavg` to detect CPU contention
 
 ### 2. **7-Day Metrics Storage**
-- **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis
+- **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis in persistent storage (`/var/lib/loadshaper/metrics.db`)
 - **95th percentile calculation**: CPU only (mirrors Oracle's measurement method)
 - **Automatic cleanup**: Removes data older than 7 days
-- **Storage locations**: `/var/lib/loadshaper/metrics.db` (preferred) or `/tmp/loadshaper_metrics.db` (fallback)
+- **Persistent storage requirement**: Database must be stored at `/var/lib/loadshaper/metrics.db` for 7-day history preservation
 
 ### 3. **Intelligent Load Generation**
 - **CPU stress**: Low-priority workers (nice 19) with arithmetic operations
 - **Memory occupation**: Gradual allocation with periodic page touching for A1.Flex shapes  
-- **Network traffic**: iperf3-based bursts to peer instances when needed
+- **Network traffic**: Native Python network bursts to peer instances when needed
 - **Load balancing**: Automatic pausing when real workloads need resources
 
 ### Operation Flow
@@ -201,8 +207,7 @@ at each control period (default 5 seconds) and automatically cleaned up after
 7 days.
 
 **Storage location:**
-- Primary: `/var/lib/loadshaper/metrics.db` (if writable)
-- Fallback: `/tmp/loadshaper_metrics.db`
+- Required: `/var/lib/loadshaper/metrics.db` (persistent storage required)
 
 **Telemetry output format:**
 ```
@@ -339,7 +344,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `CONTROL_PERIOD_SEC` | `5` | Seconds between control decisions |
 | `AVG_WINDOW_SEC` | `300` | Exponential moving average window for memory/network (5 min) |
 | `HYSTERESIS_PCT` | `5` | Percentage hysteresis to prevent oscillation |
-| `JITTER_PCT` | `15` | Random jitter in load generation (%) |
+| `JITTER_PCT` | `10` | Random jitter in load generation (%) |
 | `JITTER_PERIOD_SEC` | `5` | Seconds between jitter adjustments |
 
 ### P95 Controller Configuration
@@ -379,7 +384,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
 | `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
-| `NET_PORT` | `15201` | iperf3 port for communication |
+| `NET_PORT` | `15201` | TCP port for network communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
 
@@ -731,7 +736,7 @@ A: E2 shapes only have 1GB RAM and memory isn't counted in Oracle's reclamation 
 A: Watch the telemetry output: `docker logs -f loadshaper`. You'll see current, average, and CPU 95th percentile values.
 
 **Q: What happens if I restart the container?**  
-A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` or `/tmp/`). The 7-day rolling window continues from where it left off.
+A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` on persistent storage). The 7-day rolling window continues from where it left off.
 
 **Q: Can I run this alongside other applications?**  
 A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist peacefully with any workload.
@@ -742,7 +747,7 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
 **Q: Network traffic isn't being generated**  
-A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify iperf3 servers are running on peer instances and firewall rules allow traffic on `NET_PORT`.
+A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify peer instances are reachable and firewall rules allow traffic on `NET_PORT`.
 
 **Q: Memory usage isn't increasing on A1.Flex**  
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
@@ -851,14 +856,20 @@ docker logs -f loadshaper | grep "nic("
 
 **Network traffic not generating:**
 - Confirm `NET_MODE=client` and `NET_PEERS` are set correctly
-- Verify peers are running iperf3 servers on the specified port
+- Verify peers are reachable on the specified port
 - Check firewall rules between instances
 - Try `NET_PROTOCOL=tcp` if UDP traffic is filtered
 
 **Database storage issues:**
 ```shell
-# Check if metrics database is working
-docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Using fallback /tmp storage"
+# Check if persistent metrics storage is working
+docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Persistent storage not mounted - container will fail"
+
+# If database corrupted, remove and restart (7-day P95 history will reset)
+docker exec loadshaper rm -f /var/lib/loadshaper/metrics.db && docker restart loadshaper
+
+# Check disk space and verify write permissions
+docker exec loadshaper df -h /var/lib/loadshaper && docker exec loadshaper touch /var/lib/loadshaper/test && docker exec loadshaper rm /var/lib/loadshaper/test
 ```
 
 **Load average causing frequent pauses:**
@@ -1007,20 +1018,19 @@ sys.path.append('/app')
 import loadshaper
 
 # Check database exists
-db_paths = ['/var/lib/loadshaper/metrics.db', '/tmp/loadshaper_metrics.db']
-db_path = next((p for p in db_paths if os.path.exists(p)), None)
-if not db_path:
-    print('No metrics database found')
+db_path = '/var/lib/loadshaper/metrics.db'
+if not os.path.exists(db_path):
+    print('Persistent metrics database not found - volume not mounted correctly')
     exit(1)
 
 # Check recent metrics
-tracker = loadshaper.MetricsTracker(db_path)
-stats = tracker.get_7day_stats('cpu_p95')
-print(f'CPU 95th percentile: {stats[\"p95\"]:.1f}% (need >20%)')
+storage = loadshaper.MetricsStorage()
+cpu_p95 = storage.get_percentile('cpu')
+print(f'CPU 95th percentile: {cpu_p95:.1f}% (need >20%)' if cpu_p95 else 'CPU P95 not available')
 
 try:
-    net_stats = tracker.get_7day_stats('network_current')
-    print(f'Network current: {net_stats[\"current\"]:.1f}% (need >20%)')
+    print(f'Network samples available: {storage.get_sample_count()}')
+    print('Check /metrics endpoint for current utilization levels')
 except:
     print('Network metrics not available')
 
@@ -1028,8 +1038,8 @@ if loadshaper.is_e2_shape():
     print('E2 shape: CPU and network must be >20%')
 else:
     try:
-        mem_stats = tracker.get_7day_stats('memory_current')
-        print(f'Memory current: {mem_stats[\"current\"]:.1f}% (need >20% for A1)')
+        print('Memory tracking active for A1 shapes')
+        print('Check /metrics endpoint for current memory utilization')
     except:
         print('Memory metrics not available')
     print('A1 shape: CPU, network, AND memory must all be >20%')

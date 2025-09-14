@@ -11,9 +11,12 @@ services:
     build: .
     container_name: loadshaper
     restart: ${RESTART_POLICY:-always}
+    user: "1000:1000"  # Run as non-root user matching Dockerfile
     ports:
       - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"   # health check endpoints
     volumes:
+      # Persistent storage for metrics database (REQUIRED)
+      - loadshaper-metrics:/var/lib/loadshaper
       # Mount config templates for Oracle shape auto-detection
       - ./config-templates:/app/config-templates:ro
     healthcheck:
@@ -65,9 +68,17 @@ services:
       NET_LINK_MBIT: "${NET_LINK_MBIT:-1000}"         # fallback link speed if /sys speed is unknown
 
       # Limits for the controller -> client sending rate (Mbps)
-      NET_MIN_RATE_MBIT: "${NET_MIN_RATE_MBIT:-0}"          # Allow true idle (0 Mbps minimum)
+      NET_MIN_RATE_MBIT: "${NET_MIN_RATE_MBIT:-1}"          # Minimum 1 Mbps to maintain activity
       NET_MAX_RATE_MBIT: "${NET_MAX_RATE_MBIT:-800}"  # cap below link speed for safety
 
       # === Health check server ===
       HEALTH_ENABLED: "${HEALTH_ENABLED:-true}"       # enable HTTP health endpoints
       HEALTH_PORT: "${HEALTH_PORT:-8080}"             # port for /health and /metrics endpoints
+      HEALTH_HOST: "${HEALTH_HOST:-0.0.0.0}"          # bind to all interfaces for Docker port mapping
+
+# Persistent volume for metrics database
+# This volume is REQUIRED for LoadShaper to function correctly
+# Without it, 7-day P95 CPU history will be lost on container restart
+volumes:
+  loadshaper-metrics:
+    driver: local
