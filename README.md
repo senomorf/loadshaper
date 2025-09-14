@@ -716,7 +716,6 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_VALIDATE_STARTUP` | `true` | Validate peer connectivity at startup |
 | `NET_REQUIRE_EXTERNAL` | `true` | Require external (non-RFC1918) addresses for E2 shapes |
 | `NET_VALIDATION_TIMEOUT_MS` | `200` | Timeout for peer validation (milliseconds) |
-| `NET_TX_BYTES_MIN_DELTA` | `1000` | Minimum tx_bytes delta for traffic validation |
 | `NET_STATE_DEBOUNCE_SEC` | `5.0` | State transition debounce time (seconds) |
 | `NET_STATE_MIN_ON_SEC` | `15.0` | Minimum time in active state (seconds) |
 | `NET_STATE_MIN_OFF_SEC` | `20.0` | Minimum time in inactive state (seconds) |

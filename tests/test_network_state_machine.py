@@ -124,8 +124,8 @@ class TestNetworkStateMachine(unittest.TestCase):
             # Try to transition too quickly (within debounce time)
             mock_time.return_value = 1000.1  # 100ms later (< 5s debounce threshold)
 
-            # Attempt transition to ERROR should be blocked by debounce
-            self.generator._transition_state(loadshaper.NetworkState.ERROR, "test transition")
+            # Attempt transition to ACTIVE_TCP should be blocked by debounce
+            self.generator._transition_state(loadshaper.NetworkState.ACTIVE_TCP, "test transition")
 
             # State should remain unchanged due to debounce protection
             self.assertEqual(self.generator.state, initial_state,
@@ -276,7 +276,7 @@ class TestNetworkStateMachine(unittest.TestCase):
         }
 
         # All states should be represented
-        self.assertEqual(len(expected_states), 7)
+        self.assertEqual(len(expected_states), 6)
 
         # Each state should have a string value
         for state in expected_states:

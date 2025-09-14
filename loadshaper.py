@@ -3647,10 +3647,8 @@ class NetworkGenerator:
 
     def _handle_no_valid_peers(self):
         """Handle situation when no valid peers are available."""
-        logger.warning("No valid peers available, attempting fallback")
-
-        # No fallback available - log warning
         logger.warning("No external peers available, network generation disabled")
+        self._transition_state(NetworkState.ERROR, "no valid peers available")
 
 
 

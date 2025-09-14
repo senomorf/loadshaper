@@ -195,7 +195,7 @@ volumes:
 - **Oracle criteria accuracy**: Fixed 95th percentile vs current utilization confusion
 - **TCP buffer handling**: Fixed partial send issues in TCP mode
 - **Token bucket dead zones**: Fixed issue where very low rates could prevent traffic generation
-- **NET_PEERS validation**: Now accepts hostnames via DNS resolution fallback
+- **NET_PEERS validation**: Now accepts hostnames via DNS resolution
 - **TCP connection timeout**: Added 0.5s send timeout to prevent blocking
 - **MTU validation**: Fixed large packet warnings and validation logic
 

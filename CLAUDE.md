@@ -9,11 +9,6 @@
 - **Memory**: Simple average (A1 shapes only)
 - **E2 Shapes**: CPU + Network metrics only (50 Mbps cap, 10 Mbps = 20%)
 - **A1 Shapes**: CPU + Network + Memory metrics (1 Gbps/vCPU, 0.2 Gbps = 20%)
-
-## Oracle Free Tier VM Protection
-- **Reclamation Rule**: VMs reclaimed when ALL metrics <20% for 7 days (CPU=95th percentile, memory/network=simple average)
-- **E2 Shapes**: 50 Mbps cap (10 Mbps threshold), CPU+network only
-- **A1.Flex**: 1 Gbps/vCPU (0.2 Gbps threshold), CPU+network+memory
 - **Protection Strategy**: Keep at least one metric >20%, CPU runs at nice 19, network as fallback
 
 ## Metrics Storage
@@ -64,17 +59,6 @@
 - **Peer Reputation**: 0-100 scoring, automatic failover on degradation
 - **State Transitions**: Debounce/min-on/min-off timers prevent flapping
 - **Token Bucket**: 5ms precision rate limiting with burst control
-- **Fallback Activation Logic**:
-  ```python
-  def should_activate(is_e2, cpu_p95, net_avg, mem_avg):
-      if is_e2:  # E2: CPU + network criteria only
-          return (cpu_p95 < NET_FALLBACK_START_PCT and
-                  net_avg < NET_FALLBACK_RISK_THRESHOLD_PCT)
-      else:  # A1: CPU + network + memory criteria
-          return (cpu_p95 < NET_FALLBACK_START_PCT and
-                  net_avg < NET_FALLBACK_RISK_THRESHOLD_PCT and
-                  mem_avg < NET_FALLBACK_RISK_THRESHOLD_PCT)
-  ```
 
 ## Rootless Security
 - Runs as UID/GID 1000, no root, no auto-permission fixes
@@ -93,7 +77,7 @@ Load: `LOAD_{THRESHOLD,RESUME_THRESHOLD,CHECK_ENABLED}`
 Memory: `MEM_{TOUCH_INTERVAL_SEC,STEP_MB,MIN_FREE_MB}`
 Network: `NET_{MODE,PEERS,PORT,PROTOCOL,TTL,PACKET_SIZE,IPV6,{MIN,MAX}_RATE_MBIT,{BURST,IDLE}_SEC}`
 Fallback: `NET_{ACTIVATION,FALLBACK_{START,STOP}_PCT,FALLBACK_RISK_THRESHOLD_PCT,FALLBACK_{DEBOUNCE,MIN_ON,MIN_OFF,RAMP}_SEC}`
-Validation: `NET_{VALIDATE_STARTUP,REQUIRE_EXTERNAL,VALIDATION_TIMEOUT_MS,TX_BYTES_MIN_DELTA,STATE_{DEBOUNCE,MIN_ON,MIN_OFF}_SEC}`
+Validation: `NET_{VALIDATE_STARTUP,REQUIRE_EXTERNAL,VALIDATION_TIMEOUT_MS,STATE_{DEBOUNCE,MIN_ON,MIN_OFF}_SEC}`
 Sensing: `NET_{SENSE_MODE,IFACE,IFACE_INNER,LINK_MBIT}`
 Control: `{CONTROL_PERIOD,AVG_WINDOW,JITTER_PERIOD}_SEC`, `{HYSTERESIS,JITTER}_PCT`
 Health: `HEALTH_{ENABLED,PORT,HOST}`
