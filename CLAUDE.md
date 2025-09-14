@@ -6,6 +6,7 @@
 - CPU stress must run at `nice` 19, use transient bursts, and yield immediately to real workloads.
 - Generate network traffic only as a fallback when CPU or memory activity risks dropping below thresholds.
 - **Critical**: CPU load must have minimal impact on system responsiveness - always choose the lightest workload type that minimizes latency for other processes.
+- **Entrypoint validation**: container exits if persistent storage is missing or not writable.
 
 ## 7-Day Metrics & Oracle Compliance
 - **Storage**: SQLite database at `/var/lib/loadshaper/metrics.db` (persistent storage required)
@@ -32,7 +33,7 @@
 
 ## Memory Calculation Principles
 - **Excludes cache/buffers**: Uses industry-standard calculation that excludes Linux cache/buffers for accurate utilization measurement
-- **MemAvailable preferred**: Uses Linux 3.14+ MemAvailable when available, falls back to manual calculation for older kernels
+- **MemAvailable required**: Uses Linux 3.14+ MemAvailable; container logs an error if unavailable
 - **Oracle compliance**: Aligns with cloud provider standards (AWS CloudWatch, Azure Monitor) and Oracle's likely implementation
 - **Memory occupation not stressing**: Goal is to maintain target utilization percentage, not stress test memory subsystem
 
@@ -54,17 +55,26 @@
 - **Safety limits**: `CPU_STOP_PCT`, `MEM_STOP_PCT`, `NET_STOP_PCT`
 - **Load monitoring**: `LOAD_THRESHOLD`, `LOAD_RESUME_THRESHOLD`, `LOAD_CHECK_ENABLED`
 - **Memory occupation**: `MEM_TOUCH_INTERVAL_SEC`, `MEM_STEP_MB`, `MEM_MIN_FREE_MB`
-- **Network detection**: `NET_SENSE_MODE`, `NET_LINK_MBIT`, `NET_PROTOCOL`, `NET_PEERS`
+- **Network detection**: `NET_SENSE_MODE`, `NET_IFACE`, `NET_IFACE_INNER`, `NET_LINK_MBIT`, `NET_PROTOCOL`, `NET_PEERS`
 - **Network fallback**: `NET_ACTIVATION`, `NET_FALLBACK_START_PCT`, `NET_FALLBACK_STOP_PCT`, `NET_FALLBACK_DEBOUNCE_SEC`, `NET_FALLBACK_MIN_ON_SEC`, `NET_FALLBACK_MIN_OFF_SEC`, `NET_FALLBACK_RAMP_SEC`
 - **Network configuration**: `NET_MODE`, `NET_PORT`, `NET_BURST_SEC`, `NET_IDLE_SEC`, `NET_TTL`, `NET_PACKET_SIZE`, `NET_MIN_RATE_MBIT`, `NET_MAX_RATE_MBIT`
 - **Control behavior**: `CONTROL_PERIOD_SEC`, `AVG_WINDOW_SEC`, `HYSTERESIS_PCT`, `JITTER_PCT`, `JITTER_PERIOD_SEC`
 - **Health monitoring**: `HEALTH_ENABLED`, `HEALTH_PORT`, `HEALTH_HOST`
 
 ## Development Standards
-- **Testing**: Run `python -m pytest -q` (all tests must pass)
+- **Testing**: Always use venv; run `pytest -q` (all tests must pass); install dev dependencies with `pip install -r requirements-dev.txt`
 - **Code style**: Python 3.8+, PEP 8, 4-space indentation, minimal dependencies (stdlib only - native network generation)
 - **Documentation sync**: Keep `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CHANGELOG.md`, and this file synchronized
 - **Architecture**: Single-process design with clear component separation (sensors → controller → workers)
+
+## Testing Guidelines
+**P95 CPU Control**: Validate state machine and exceedance budget; run `tests/test_cpu_p95_controller.py`, `tests/test_p95_integration.py`
+**Memory Management**: Enable `DEBUG_MEM_METRICS=true` and compare excl/incl cache; see `tests/test_memory_occupation.py`
+**Load Average Safety**: Verify pause/resume thresholds; see `tests/test_loadavg.py`, `tests/test_safety_gating.py`
+**Network Fallback**: Validate activation logic for E2 vs A1; see `tests/test_network_fallback.py`, `tests/test_network_fallback_state.py`
+**Persistence**: Confirm `/var/lib/loadshaper/metrics.db` is writable; see `tests/test_metrics_storage.py`, `tests/test_runtime_failure_handling.py`
+**Health Endpoints**: Validate `/health` and `/metrics` endpoints; see `tests/test_health_endpoints.py`
+**Container Setup**: Test entrypoint validation and permission handling; see `tests/test_entrypoint_validation.py`
 
 ## Documentation Synchronization Requirement
 **CRITICAL**: When implementing changes or adjusting documentation, you MUST update all relevant files:

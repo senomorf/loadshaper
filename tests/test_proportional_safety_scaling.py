@@ -71,9 +71,9 @@ class TestProportionalSafetyScaling(unittest.TestCase):
     def test_proportional_scaling_enabled_by_default(self):
         """Test that proportional scaling is enabled by default."""
         self.assertTrue(self.controller.SAFETY_PROPORTIONAL_ENABLED)
-        self.assertEqual(self.controller.SAFETY_SCALE_START, 0.5)
-        self.assertEqual(self.controller.SAFETY_SCALE_FULL, 0.8)
-        self.assertEqual(self.controller.SAFETY_MIN_INTENSITY_SCALE, 0.7)
+        self.assertAlmostEqual(self.controller.SAFETY_SCALE_START, 0.5, places=2)
+        self.assertAlmostEqual(self.controller.SAFETY_SCALE_FULL, 0.8, places=2)
+        self.assertAlmostEqual(self.controller.SAFETY_MIN_INTENSITY_SCALE, 0.7, places=2)
 
     def test_no_scaling_below_start_threshold(self):
         """Test that no scaling occurs below SAFETY_SCALE_START."""

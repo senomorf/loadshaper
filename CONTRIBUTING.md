@@ -34,12 +34,15 @@ This approach allows us to quickly iterate toward optimal Oracle Cloud VM protec
    python3 -m venv venv
    source venv/bin/activate  # Linux/Mac
    # venv\Scripts\activate   # Windows
+
+   # Install development dependencies
+   pip install -r requirements-dev.txt
    ```
 
 3. **Test the setup:**
    ```bash
-   # Run unit tests
-   python -m pytest -q
+   # Run unit tests (pytest is the standard testing framework)
+   pytest -q
    
    # Test Docker build
    docker compose build

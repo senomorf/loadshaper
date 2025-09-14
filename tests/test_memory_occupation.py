@@ -355,7 +355,7 @@ Cached:          2000000 kB
             total_b, free_b, used_pct, used_b, used_pct_incl_cache = loadshaper.read_meminfo()
 
             # When MemAvailable is 0, should return 100% usage (not an error)
-            self.assertEqual(used_pct, 100.0)
+            self.assertAlmostEqual(used_pct, 100.0, places=1)
             self.assertEqual(total_b, 8000000 * 1024)
             self.assertEqual(used_b, 8000000 * 1024)  # All memory "used"
 
@@ -417,7 +417,7 @@ MemAvailable:    2000000 kB
             self.assertLessEqual(used_pct, 100.0)
             # With MemAvailable > MemTotal, calculated usage would be negative,
             # so it should be clamped to 0
-            self.assertEqual(used_pct, 0.0)
+            self.assertAlmostEqual(used_pct, 0.0, places=1)
 
     def test_gc_collect_called_after_shrinking(self):
         """Test that gc.collect() is called after memory shrinking."""

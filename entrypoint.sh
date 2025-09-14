@@ -1,4 +1,5 @@
 #!/bin/sh
+set -Eeuo pipefail
 # LoadShaper Container Entrypoint
 # Validates that persistent storage is properly mounted before starting the application
 
@@ -23,8 +24,8 @@ if [ ! -d "$PERSISTENCE_DIR" ]; then
     echo "      driver: local"
     echo ""
     exit 1
-# Test actual write capability beyond just -w check
-elif ! echo "write_test_$$" > "$PERSISTENCE_DIR/.write_test" 2>/dev/null || ! rm "$PERSISTENCE_DIR/.write_test" 2>/dev/null; then
+# Test actual write capability beyond just -w check (with secure temp file creation)
+elif ! (umask 077; echo "write_test_$$" > "$PERSISTENCE_DIR/.write_test.$$") 2>/dev/null || ! rm "$PERSISTENCE_DIR/.write_test.$$" 2>/dev/null; then
     USER_ID=$(id -u)
     GROUP_ID=$(id -g)
     echo "[ERROR] Cannot write to $PERSISTENCE_DIR - check volume permissions"

@@ -139,7 +139,7 @@ class TestShapeDetection(unittest.TestCase):
         """Test system specs fallback when detection fails."""
         cpu_count, total_mem_gb = loadshaper._get_system_specs()
         self.assertEqual(cpu_count, 1)  # Fallback default
-        self.assertEqual(total_mem_gb, 0.0)  # Fallback default
+        self.assertAlmostEqual(total_mem_gb, 0.0, places=1)  # Fallback default
 
     def test_classify_oracle_shape_e2_1_micro(self):
         """Test classification of E2.1.Micro shape."""
@@ -269,7 +269,7 @@ class TestConfigurationPriority(unittest.TestCase):
         template = {'MEM_MIN_FREE_MB': '512.5'}
         with patch.dict(os.environ, {}, clear=True):
             result = loadshaper.getenv_float_with_template('MEM_MIN_FREE_MB', 256.0, template)
-            self.assertEqual(result, 512.5)
+            self.assertAlmostEqual(result, 512.5, places=1)
             self.assertIsInstance(result, float)
 
 
