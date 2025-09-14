@@ -1,11 +1,5 @@
-# Gemini Agent Guidelines
+# AI Agent Reference
 
-**Primary Reference:** See [CLAUDE.md](CLAUDE.md) for comprehensive AI agent guidelines.
+**Single Source of Truth:** See [CLAUDE.md](CLAUDE.md)
 
-This project uses CLAUDE.md as the single source of truth for AI agent instructions. All agent-specific guidelines, configuration details, and implementation notes are maintained there.
-
-## Quick Links
-- [CLAUDE.md](CLAUDE.md) - Main AI agent guidelines
-- [AGENTS.md](AGENTS.md) - Extended technical implementation details
-- [README.md](README.md) - Project overview and usage
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Development setup and contribution guidelines
+⚠️ **DO NOT UPDATE THIS FILE** - All AI agent instructions must be maintained in CLAUDE.md only.
