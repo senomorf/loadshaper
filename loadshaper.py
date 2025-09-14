@@ -2345,7 +2345,9 @@ class TokenBucket:
         now = time.time()
         elapsed = now - self.last_update
 
-        if elapsed > 0:
+        # Optimization: Only update tokens if enough time has passed
+        # This reduces overhead for high-frequency calls
+        if elapsed >= self.tick_interval:
             tokens_to_add = elapsed * self.rate_mbps * 1_000_000
             self.tokens = min(self.capacity_bits, self.tokens + tokens_to_add)
             self.last_update = now
@@ -2363,6 +2365,53 @@ class NetworkGenerator:
     # Default public DNS servers for reliable external traffic
     DEFAULT_DNS_SERVERS = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
     RFC2544_ADDRESSES = ["198.18.0.1", "198.19.255.254"]  # Fallback benchmarking addresses
+
+    # PEER REPUTATION SYSTEM CONSTANTS
+    # Reputation range: 0.0 (blacklisted) to 100.0 (perfect peer)
+    REPUTATION_INITIAL_NEUTRAL = 50.0     # New peers start with neutral reputation
+    REPUTATION_INITIAL_DNS = 60.0         # DNS servers get higher initial trust
+    REPUTATION_INITIAL_HIGH = 80.0        # Fallback DNS servers get premium trust
+    REPUTATION_INITIAL_LOCAL = 30.0       # Local fallback gets low trust (non-protective)
+    REPUTATION_VALIDATION_BOOST = 10.0    # Bonus for passing initial validation
+    REPUTATION_VALIDATION_PENALTY = 20.0  # Penalty for failing initial validation
+    REPUTATION_SUCCESS_INCREMENT = 1.0    # Small bonus for each successful send
+    REPUTATION_FAILURE_PENALTY = 5.0     # Moderate penalty for each failed send
+    REPUTATION_RECOVERY_BOOST = 15.0      # Large bonus for peer recovery
+    REPUTATION_BLACKLIST_THRESHOLD = 20.0 # Below this triggers temporary blacklist
+    REPUTATION_RECOVERY_MINIMUM = 20.0    # Minimum reputation after recovery boost
+    REPUTATION_MAX = 100.0               # Maximum possible reputation
+    REPUTATION_MIN = 0.0                 # Minimum possible reputation
+
+    # BLACKLIST AND RECOVERY TIMING CONSTANTS
+    BLACKLIST_DURATION_SEC = 120.0       # 2 minutes blacklist for failed peers
+    RECOVERY_CHECK_INTERVAL_SEC = 60.0   # Check every minute for peer recovery
+
+    # NETWORK VALIDATION TIMEOUTS (in seconds)
+    DNS_VALIDATION_TIMEOUT = 0.5         # 500ms for DNS query validation
+    TCP_VALIDATION_TIMEOUT = 0.3         # 300ms for TCP handshake validation
+
+    # HEALTH SCORING SYSTEM CONSTANTS
+    # Health score range: 0 (completely failed) to 100 (perfect health)
+    HEALTH_SCORE_ACTIVE_UDP = 100        # Perfect score for active UDP state
+    HEALTH_SCORE_ACTIVE_TCP = 75         # Good score for active TCP state
+    HEALTH_SCORE_DEGRADED_LOCAL = 30     # Poor score for local-only generation
+    HEALTH_SCORE_VALIDATING = 50         # Moderate score during validation
+    HEALTH_SCORE_INITIALIZING = 40       # Lower score during initialization
+    HEALTH_SCORE_ERROR_OFF = 0           # Failed score for error/off states
+
+    # Health scoring weights for composite calculation (must sum to 100%)
+    HEALTH_WEIGHT_SEND_SUCCESS = 40      # 40% weight for send success rate
+    HEALTH_WEIGHT_TX_BYTES = 40          # 40% weight for tx_bytes verification
+    HEALTH_WEIGHT_PEER_AVAILABILITY = 10 # 10% weight for peer availability
+    HEALTH_WEIGHT_EXTERNAL_VERIFICATION = 10  # 10% weight for external egress verification
+
+    # DNS RATE LIMITING
+    DNS_QPS_MAX = 10.0                   # Maximum 10 DNS queries per second
+
+    # CPU YIELD AND PERFORMANCE CONSTANTS
+    CPU_YIELD_INTERVAL = 100             # Yield CPU every 100 packet sends
+    CPU_YIELD_DURATION = 0.0001          # 0.1ms yield duration
+    TOKEN_BUCKET_MAX_WAIT_SEC = 0.010    # Maximum sleep time for token bucket (10ms)
 
     def __init__(self, rate_mbps: float, protocol: str = "udp", ttl: int = 1,
                  packet_size: int = 1100, port: int = 15201, timeout: float = 0.5,
@@ -2429,7 +2478,7 @@ class NetworkGenerator:
 
         # DNS generation settings
         self.dns_packet_size = min(packet_size, 1100)
-        self.dns_qps_max = 10.0
+        self.dns_qps_max = self.DNS_QPS_MAX
         self.last_dns_send = 0.0
 
         # Initialize packet data
@@ -2479,8 +2528,9 @@ class NetworkGenerator:
                 self._validate_all_peers()
 
             # Start primary protocol
-            self._transition_state(NetworkState.ACTIVE_UDP, "validation complete")
-            self._start_protocol("udp")
+            target_state = NetworkState.ACTIVE_TCP if self.protocol == "tcp" else NetworkState.ACTIVE_UDP
+            self._transition_state(target_state, "validation complete")
+            self._start_protocol(self.protocol)
 
         except Exception as e:
             error_msg = f"Failed to start network generator: {e}"
@@ -2493,7 +2543,7 @@ class NetworkGenerator:
         for addr in addresses:
             self.peers[addr] = {
                 'state': PeerState.UNVALIDATED,
-                'reputation': 50.0,  # Start with neutral reputation
+                'reputation': self.REPUTATION_INITIAL_NEUTRAL,
                 'failures': 0,
                 'successes': 0,
                 'last_attempt': 0.0,
@@ -2540,11 +2590,11 @@ class NetworkGenerator:
         for address, peer_info in self.peers.items():
             if self._validate_peer(address):
                 peer_info['state'] = PeerState.VALID
-                peer_info['reputation'] += 10.0  # Boost reputation for successful validation
+                peer_info['reputation'] += self.REPUTATION_VALIDATION_BOOST
                 valid_peers += 1
             else:
                 peer_info['state'] = PeerState.INVALID
-                peer_info['reputation'] -= 20.0  # Penalize reputation for failed validation
+                peer_info['reputation'] -= self.REPUTATION_VALIDATION_PENALTY
 
         if valid_peers == 0:
             logger.warning("No valid peers found, will attempt DNS fallback")
@@ -2572,7 +2622,7 @@ class NetworkGenerator:
 
             # Send DNS query and wait for response
             test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            test_sock.settimeout(0.5)  # 500ms timeout for DNS
+            test_sock.settimeout(self.DNS_VALIDATION_TIMEOUT)
             try:
                 test_sock.sendto(dns_query, (dns_server, 53))
                 response, addr = test_sock.recvfrom(512)
@@ -2596,7 +2646,7 @@ class NetworkGenerator:
             for family, socktype, proto, canonname, sockaddr in addr_info:
                 try:
                     test_sock = socket.socket(family, socktype, proto)
-                    test_sock.settimeout(0.3)  # 300ms timeout for TCP handshake
+                    test_sock.settimeout(self.TCP_VALIDATION_TIMEOUT)
                     test_sock.connect(sockaddr)
                     test_sock.close()
                     return True
@@ -2616,7 +2666,7 @@ class NetworkGenerator:
         # Only check for recovery every 60 seconds to avoid excessive overhead
         if not hasattr(self, '_last_recovery_check'):
             self._last_recovery_check = current_time
-        elif current_time - self._last_recovery_check < 60.0:
+        elif current_time - self._last_recovery_check < self.RECOVERY_CHECK_INTERVAL_SEC:
             return
 
         self._last_recovery_check = current_time
@@ -2633,7 +2683,7 @@ class NetworkGenerator:
                 peer_info['blacklist_until'] = 0.0
                 if self._validate_peer(address):
                     peer_info['state'] = PeerState.VALID
-                    peer_info['reputation'] = max(20.0, peer_info['reputation'] + 15.0)  # Boost reputation on recovery
+                    peer_info['reputation'] = max(self.REPUTATION_RECOVERY_MINIMUM, peer_info['reputation'] + self.REPUTATION_RECOVERY_BOOST)
                     logger.info(f"Peer {address} recovered and returned to service")
                 else:
                     # Failed recovery - extend blacklist with exponential backoff
@@ -2781,7 +2831,7 @@ class NetworkGenerator:
             if dns_server not in self.peers:
                 self.peers[dns_server] = {
                     'state': PeerState.UNVALIDATED,
-                    'reputation': 60.0,  # DNS servers start with higher reputation
+                    'reputation': self.REPUTATION_INITIAL_DNS,
                     'failures': 0,
                     'successes': 0,
                     'last_attempt': 0.0,
@@ -2803,7 +2853,7 @@ class NetworkGenerator:
 
         self.peers[self.local_fallback] = {
             'state': PeerState.VALID,
-            'reputation': 30.0,  # Low reputation as it's not protective
+            'reputation': self.REPUTATION_INITIAL_LOCAL,
             'failures': 0,
             'successes': 0,
             'last_attempt': 0.0,
@@ -2831,8 +2881,9 @@ class NetworkGenerator:
         next_peer = self._get_next_valid_peer()
         if next_peer:
             logger.info(f"Rotating to next peer: {next_peer}")
-            self._transition_state(NetworkState.ACTIVE_UDP, "peer rotation")
-            self._start_protocol("udp")
+            target_state = NetworkState.ACTIVE_TCP if self.protocol == "tcp" else NetworkState.ACTIVE_UDP
+            self._transition_state(target_state, "peer rotation")
+            self._start_protocol(self.protocol)
         else:
             self._handle_no_valid_peers()
 
@@ -2861,7 +2912,10 @@ class NetworkGenerator:
             if not self.bucket.can_send(self.packet_size):
                 wait_time = self.bucket.wait_time(self.packet_size)
                 if wait_time > 0:
-                    time.sleep(min(wait_time, 0.001))
+                    # Sleep for the actual wait time needed, but cap at 10ms to stay responsive
+                    # This prevents busy-waiting while still maintaining reasonable burst control
+                    sleep_time = min(wait_time, self.TOKEN_BUCKET_MAX_WAIT_SEC)
+                    time.sleep(sleep_time)
                 continue
 
             send_attempts += 1
@@ -2883,8 +2937,8 @@ class NetworkGenerator:
                 logger.debug(f"Send error in state {self.state.value}: {e}")
 
             # Yield CPU periodically
-            if send_attempts % 100 == 0:
-                time.sleep(0.0001)
+            if send_attempts % self.CPU_YIELD_INTERVAL == 0:
+                time.sleep(self.CPU_YIELD_DURATION)
 
         # Validate transmission effectiveness
         self._validate_transmission_effectiveness(tx_before, packets_sent, send_attempts)
@@ -3064,7 +3118,7 @@ class NetworkGenerator:
                     if dns_server not in self.peers:
                         self.peers[dns_server] = {
                             'state': PeerState.VALID,
-                            'reputation': 80.0,  # High initial reputation for DNS servers
+                            'reputation': self.REPUTATION_INITIAL_HIGH,
                             'failures': 0,
                             'successes': 0,
                             'last_attempt': 0.0,
@@ -3100,7 +3154,7 @@ class NetworkGenerator:
         if peer in self.peers:
             peer_info = self.peers[peer]
             peer_info['successes'] += 1
-            peer_info['reputation'] = min(100.0, peer_info['reputation'] + 1.0)
+            peer_info['reputation'] = min(self.REPUTATION_MAX, peer_info['reputation'] + self.REPUTATION_SUCCESS_INCREMENT)
             peer_info['last_attempt'] = time.time()
 
     def _record_peer_failure(self, peer: str, error: str):
@@ -3108,12 +3162,12 @@ class NetworkGenerator:
         if peer in self.peers:
             peer_info = self.peers[peer]
             peer_info['failures'] += 1
-            peer_info['reputation'] = max(0.0, peer_info['reputation'] - 5.0)
+            peer_info['reputation'] = max(self.REPUTATION_MIN, peer_info['reputation'] - self.REPUTATION_FAILURE_PENALTY)
             peer_info['last_attempt'] = time.time()
 
             # Blacklist peer temporarily if reputation is very low
-            if peer_info['reputation'] < 20.0:
-                peer_info['blacklist_until'] = time.time() + 120.0  # 2 minutes
+            if peer_info['reputation'] < self.REPUTATION_BLACKLIST_THRESHOLD:
+                peer_info['blacklist_until'] = time.time() + self.BLACKLIST_DURATION_SEC
                 peer_info['state'] = PeerState.INVALID
                 logger.debug(f"Peer {peer} temporarily blacklisted due to low reputation")
 
@@ -3142,22 +3196,23 @@ class NetworkGenerator:
         """Calculate overall network health score (0-100)."""
         # Base score from current state
         state_scores = {
-            NetworkState.ACTIVE_UDP: 100,
-            NetworkState.ACTIVE_TCP: 75,
-            NetworkState.DEGRADED_LOCAL: 30,
-            NetworkState.VALIDATING: 50,
-            NetworkState.INITIALIZING: 40,
-            NetworkState.ERROR: 0,
-            NetworkState.OFF: 0
+            NetworkState.ACTIVE_UDP: self.HEALTH_SCORE_ACTIVE_UDP,
+            NetworkState.ACTIVE_TCP: self.HEALTH_SCORE_ACTIVE_TCP,
+            NetworkState.DEGRADED_LOCAL: self.HEALTH_SCORE_DEGRADED_LOCAL,
+            NetworkState.VALIDATING: self.HEALTH_SCORE_VALIDATING,
+            NetworkState.INITIALIZING: self.HEALTH_SCORE_INITIALIZING,
+            NetworkState.ERROR: self.HEALTH_SCORE_ERROR_OFF,
+            NetworkState.OFF: self.HEALTH_SCORE_ERROR_OFF
         }
 
-        state_score = state_scores.get(self.state, 0)
+        state_score = state_scores.get(self.state, self.HEALTH_SCORE_ERROR_OFF)
 
-        # Component scores (weighted)
-        send_success_score = self.send_success_rate * 40  # 40% weight
-        tx_bytes_score = min(40, (self.tx_bytes_ema / (self.bucket.rate_mbps * 125000)) * 40)  # 40% weight
-        peer_availability_score = self.peer_availability * 10  # 10% weight
-        external_verification_score = 10 if self.external_egress_verified else 0  # 10% weight
+        # Component scores (weighted according to documented constants)
+        send_success_score = self.send_success_rate * self.HEALTH_WEIGHT_SEND_SUCCESS
+        tx_bytes_score = min(self.HEALTH_WEIGHT_TX_BYTES,
+                           (self.tx_bytes_ema / (self.bucket.rate_mbps * 125000)) * self.HEALTH_WEIGHT_TX_BYTES)
+        peer_availability_score = self.peer_availability * self.HEALTH_WEIGHT_PEER_AVAILABILITY
+        external_verification_score = self.HEALTH_WEIGHT_EXTERNAL_VERIFICATION if self.external_egress_verified else 0
 
         # Calculate weighted score
         component_score = (send_success_score + tx_bytes_score +
@@ -3706,16 +3761,59 @@ class NetworkFallbackState:
 
         return self.active
 
+    def get_ramped_target(self, base_target: float, fallback_target: float) -> float:
+        """
+        Calculate ramped network target during fallback activation.
+
+        Implements smooth rate transitions over NET_FALLBACK_RAMP_SEC seconds
+        from base_target to fallback_target when fallback activates.
+
+        Args:
+            base_target (float): Original network target percentage
+            fallback_target (float): Fallback network target percentage
+
+        Returns:
+            float: Ramped target percentage
+        """
+        if not self.active:
+            return base_target
+
+        # Calculate time since activation
+        now = time.time()
+        time_since_activation = now - self.last_activation
+
+        # If ramping period is complete or NET_FALLBACK_RAMP_SEC is None/0, return full fallback target
+        if NET_FALLBACK_RAMP_SEC is None or NET_FALLBACK_RAMP_SEC <= 0 or time_since_activation >= NET_FALLBACK_RAMP_SEC:
+            return fallback_target
+
+        # Calculate ramp progress (0.0 = start, 1.0 = end)
+        ramp_progress = time_since_activation / NET_FALLBACK_RAMP_SEC
+
+        # Linear interpolation from base_target to fallback_target
+        ramped_target = base_target + (fallback_target - base_target) * ramp_progress
+
+        return ramped_target
+
     def get_debug_info(self) -> Dict[str, Any]:
         """Get debug information about fallback state."""
         now = time.time()
+
+        # Calculate ramp progress if fallback is active
+        ramp_progress_pct = None
+        if self.active and self.last_activation > 0 and NET_FALLBACK_RAMP_SEC is not None and NET_FALLBACK_RAMP_SEC > 0:
+            time_since_activation = now - self.last_activation
+            ramp_progress = min(1.0, time_since_activation / NET_FALLBACK_RAMP_SEC)
+            ramp_progress_pct = ramp_progress * 100
+
         return {
             'active': self.active,
             'activation_count': self.activation_count,
             'seconds_since_change': now - self.last_change,
-            'in_debounce': (now - self.last_change) < NET_FALLBACK_DEBOUNCE_SEC,
+            'in_debounce': (now - self.last_change) < NET_FALLBACK_DEBOUNCE_SEC if NET_FALLBACK_DEBOUNCE_SEC is not None else False,
             'last_activation_ago': now - self.last_activation if self.last_activation > 0 else None,
-            'last_deactivation_ago': now - self.last_deactivation if self.last_deactivation > 0 else None
+            'last_deactivation_ago': now - self.last_deactivation if self.last_deactivation > 0 else None,
+            'ramp_progress_pct': ramp_progress_pct,
+            'ramp_complete': ramp_progress_pct is not None and ramp_progress_pct >= 100.0
         }
 
 def main():
@@ -4014,12 +4112,22 @@ def main():
                 # Integrate fallback with P95-driven control
                 fallback_active = network_fallback_state.should_activate(is_e2, cpu_p95, net_avg, mem_avg)
 
-                # Apply fallback to network target (override jittered target if needed)
+                # Apply fallback to network target with smooth ramping
                 effective_net_target = net_target_now
                 if fallback_active and net_target_now < NET_FALLBACK_START_PCT:
-                    effective_net_target = NET_FALLBACK_START_PCT
+                    # Use ramped target for smooth transitions over NET_FALLBACK_RAMP_SEC
+                    effective_net_target = network_fallback_state.get_ramped_target(
+                        net_target_now, NET_FALLBACK_START_PCT
+                    )
+
+                    # Calculate ramp progress for logging
+                    now = time.time()
+                    time_since_activation = now - network_fallback_state.last_activation
+                    ramp_progress = min(1.0, time_since_activation / NET_FALLBACK_RAMP_SEC) * 100
+
                     logger.info(f"Network fallback ACTIVE (E2={is_e2}, CPU_p95={cpu_p95:.1f}%, "
-                              f"Net={net_avg:.1f}%, Mem={mem_avg:.1f}%) -> target={effective_net_target:.1f}%")
+                              f"Net={net_avg:.1f}%, Mem={mem_avg:.1f}%) -> ramped target={effective_net_target:.1f}% "
+                              f"(ramp {ramp_progress:.1f}%)")
                 elif network_fallback_state.active and not fallback_active:
                     logger.info(f"Network fallback DEACTIVATED")
 
