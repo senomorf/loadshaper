@@ -19,7 +19,7 @@ RUN chmod +x /entrypoint.sh
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${HEALTH_PORT:-8080}/health || exit 1
 
-# Switch to non-root user for security
+# Switch to non-root user for security (rootless philosophy)
 USER loadshaper
 
 # Use entrypoint to validate persistent storage before starting application

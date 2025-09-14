@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Docker Compose now requires `loadshaper-metrics` named volume
 - **BREAKING**: Container exits if `/var/lib/loadshaper` is not writable
 - **BREAKING**: Removed all fallback logic to `/tmp` storage paths
+- **Configuration**: Default `NET_MIN_RATE_MBIT` changed from 0 to 1 Mbps to ensure minimum network activity
 - **Dockerfile**: Added non-root user setup and entrypoint script
 - **Health checks**: Now validate persistence status explicitly
 - **Performance**: Ring buffer state saves batched to reduce I/O frequency (60s → 600s default)

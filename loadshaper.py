@@ -1118,7 +1118,7 @@ class CPUP95Controller:
     # State machine timing constants
     STATE_CHANGE_COOLDOWN_SEC = 300  # 5 minutes cooldown after state change
     P95_CACHE_TTL_SEC = 300          # Cache P95 calculations for 5 minutes (aligned with state change cooldown)
-    PERSISTENT_STORAGE_PATH = "/var/lib/loadshaper"  # Persistent storage directory for metrics DB and ring buffer
+    PERSISTENT_STORAGE_PATH = os.getenv("PERSISTENCE_DIR", "/var/lib/loadshaper")  # Persistent storage directory for metrics DB and ring buffer
 
     # Hysteresis values for adaptive deadbands
     HYSTERESIS_SMALL_PCT = 0.5       # Small hysteresis for stable periods
