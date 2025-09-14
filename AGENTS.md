@@ -126,7 +126,7 @@ The system automatically detects Oracle Cloud shapes via:
 - Build & run in Docker: `docker compose up -d --build`
 - Tail logs: `docker logs -f loadshaper`
 - Local run (Linux only, needs /proc): `python -u loadshaper.py`
-- Override settings at launch, e.g.: `CPU_P95_SETPOINT=30 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
+- Override settings at launch, e.g.: `CPU_P95_SETPOINT=30 NET_PEERS=8.8.8.8,1.1.1.1 docker compose up -d`
 - Run tests: `python -m pytest -q`
 
 **🔗 See also:** [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development setup and testing requirements.

@@ -2425,6 +2425,7 @@ class NetworkGenerator:
         self.state_debounce_sec = 5.0
         self.state_min_on_sec = 15.0
         self.state_min_off_sec = 20.0
+        self.last_transition_time = time.monotonic()
 
         # DNS generation settings
         self.dns_packet_size = min(packet_size, 1100)
@@ -2551,35 +2552,95 @@ class NetworkGenerator:
         logger.info(f"Peer validation complete: {valid_peers}/{len(self.peers)} peers valid")
 
     def _validate_peer(self, address: str) -> bool:
-        """Validate connectivity to a single peer."""
+        """Validate connectivity to a single peer with real reachability test."""
         try:
-            # Simple socket connection test
-            family = socket.AF_INET
-            try:
-                ip = socket.inet_aton(address)  # Test if it's IPv4
-            except socket.error:
-                # Try resolving hostname
-                try:
-                    addr_info = socket.getaddrinfo(address, self.port, socket.AF_UNSPEC, socket.SOCK_DGRAM)
-                    ip, family = addr_info[0][4][0], addr_info[0][0]
-                except socket.gaierror:
-                    return False
+            # Check if this is a DNS server - use DNS query for validation
+            if address in self.DEFAULT_DNS_SERVERS:
+                return self._validate_dns_peer(address)
+            else:
+                # For generic peers, try TCP handshake on configured port
+                return self._validate_generic_peer(address)
+        except Exception as e:
+            logger.debug(f"Peer validation failed for {address}: {e}")
+            return False
 
-            # Quick connectivity test
-            test_sock = socket.socket(family, socket.SOCK_DGRAM)
-            test_sock.settimeout(0.2)  # 200ms timeout
+    def _validate_dns_peer(self, dns_server: str) -> bool:
+        """Validate DNS server with actual DNS query."""
+        try:
+            # Create DNS query packet for a simple A record lookup
+            dns_query = build_dns_query("google.com", qtype=1, packet_size=512)
 
+            # Send DNS query and wait for response
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            test_sock.settimeout(0.5)  # 500ms timeout for DNS
             try:
-                # Send small test packet
-                test_sock.sendto(b'test', (address, self.port))
-                return True
-            except Exception:
+                test_sock.sendto(dns_query, (dns_server, 53))
+                response, addr = test_sock.recvfrom(512)
+                # If we got a response, DNS server is working
+                return len(response) > 12  # Minimum DNS response size
+            except (socket.timeout, socket.error):
                 return False
             finally:
                 test_sock.close()
-
         except Exception:
             return False
+
+    def _validate_generic_peer(self, address: str) -> bool:
+        """Validate generic peer with TCP handshake."""
+        try:
+            # Get address info for protocol-agnostic connection
+            addr_info = socket.getaddrinfo(address, self.port, socket.AF_UNSPEC,
+                                         socket.SOCK_STREAM, socket.IPPROTO_TCP)
+
+            # Try TCP handshake on first available address
+            for family, socktype, proto, canonname, sockaddr in addr_info:
+                try:
+                    test_sock = socket.socket(family, socktype, proto)
+                    test_sock.settimeout(0.3)  # 300ms timeout for TCP handshake
+                    test_sock.connect(sockaddr)
+                    test_sock.close()
+                    return True
+                except (socket.timeout, socket.error, OSError):
+                    if 'test_sock' in locals():
+                        test_sock.close()
+                    continue
+
+            return False
+        except Exception:
+            return False
+
+    def _check_peer_recovery(self):
+        """Periodically attempt to recover blacklisted peers."""
+        current_time = time.time()
+
+        # Only check for recovery every 60 seconds to avoid excessive overhead
+        if not hasattr(self, '_last_recovery_check'):
+            self._last_recovery_check = current_time
+        elif current_time - self._last_recovery_check < 60.0:
+            return
+
+        self._last_recovery_check = current_time
+
+        # Check blacklisted peers for recovery
+        for address, peer_info in self.peers.items():
+            if (peer_info['state'] == PeerState.INVALID and
+                peer_info['blacklist_until'] > 0 and
+                current_time > peer_info['blacklist_until']):
+
+                logger.debug(f"Attempting recovery for blacklisted peer {address}")
+
+                # Reset blacklist and try validation
+                peer_info['blacklist_until'] = 0.0
+                if self._validate_peer(address):
+                    peer_info['state'] = PeerState.VALID
+                    peer_info['reputation'] = max(20.0, peer_info['reputation'] + 15.0)  # Boost reputation on recovery
+                    logger.info(f"Peer {address} recovered and returned to service")
+                else:
+                    # Failed recovery - extend blacklist with exponential backoff
+                    peer_info['failures'] += 1
+                    backoff_time = min(600, 120 * (2 ** min(peer_info['failures'], 5)))  # Max 10 minutes
+                    peer_info['blacklist_until'] = current_time + backoff_time
+                    logger.debug(f"Peer {address} failed recovery, blacklisted for {backoff_time}s")
 
     def _transition_state(self, new_state: NetworkState, reason: str):
         """Transition to new state with logging and hysteresis checks."""
@@ -2589,10 +2650,23 @@ class NetworkGenerator:
         current_time = time.monotonic()
         time_in_state = current_time - self.state_start_time
 
-        # Check hysteresis rules
+        # Check debounce timing - prevent rapid state changes
+        if hasattr(self, 'last_transition_time'):
+            time_since_last_transition = current_time - self.last_transition_time
+            if time_since_last_transition < self.state_debounce_sec:
+                logger.debug(f"State transition blocked by debounce: {time_since_last_transition:.1f}s < {self.state_debounce_sec}s")
+                return
+
+        # Check hysteresis rules - minimum time in active states
         if self.state in [NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP]:
             if time_in_state < self.state_min_on_sec:
                 logger.debug(f"State transition blocked by min-on time: {time_in_state:.1f}s < {self.state_min_on_sec}s")
+                return
+
+        # Check minimum off time for inactive states
+        if self.state in [NetworkState.OFF, NetworkState.ERROR, NetworkState.DEGRADED_LOCAL]:
+            if time_in_state < self.state_min_off_sec:
+                logger.debug(f"State transition blocked by min-off time: {time_in_state:.1f}s < {self.state_min_off_sec}s")
                 return
 
         # Record transition
@@ -2611,6 +2685,7 @@ class NetworkGenerator:
         logger.info(f"Network state: {self.state.value} → {new_state.value} ({reason})")
         self.state = new_state
         self.state_start_time = current_time
+        self.last_transition_time = current_time
 
     def _start_protocol(self, protocol: str):
         """Initialize socket for the specified protocol."""
@@ -2814,6 +2889,9 @@ class NetworkGenerator:
         # Validate transmission effectiveness
         self._validate_transmission_effectiveness(tx_before, packets_sent, send_attempts)
 
+        # Check for peer recovery periodically
+        self._check_peer_recovery()
+
         # Update health metrics
         self._update_health_metrics(packets_sent, send_attempts)
 
@@ -2912,43 +2990,88 @@ class NetworkGenerator:
         return current_time + self.packet_data[8:]
 
     def _get_tcp_connection(self, peer: str):
-        """Get or create TCP connection for peer."""
+        """Get or create TCP connection for peer with IPv4/IPv6 support."""
         if peer in self.tcp_connections:
             return self.tcp_connections[peer]
 
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            sock.connect((peer, self.port))
-            self.tcp_connections[peer] = sock
-            return sock
+            # Use getaddrinfo for protocol-agnostic connection
+            addr_info = socket.getaddrinfo(peer, self.port, socket.AF_UNSPEC,
+                                         socket.SOCK_STREAM, socket.IPPROTO_TCP)
 
+            # Try each address family until one succeeds
+            for family, socktype, proto, canonname, sockaddr in addr_info:
+                try:
+                    sock = socket.socket(family, socktype, proto)
+                    sock.settimeout(self.timeout)
+                    if family == socket.AF_INET6:
+                        # Set IPv6 TTL/hop limit equivalent
+                        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, self.ttl)
+                    else:
+                        # Set IPv4 TTL
+                        sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl)
+
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    sock.connect(sockaddr)
+                    self.tcp_connections[peer] = sock
+                    return sock
+                except (socket.error, OSError) as e:
+                    if 'sock' in locals():
+                        sock.close()
+                    continue
+
+            # All addresses failed
+            return None
         except (socket.error, OSError):
             return None
 
     def _validate_transmission_effectiveness(self, tx_before: Optional[int], packets_sent: int, attempts: int):
         """Validate that transmission actually increased tx_bytes."""
         if self.network_interface is None:
+            logger.debug("No network interface available for tx_bytes validation, using DNS fallback")
+            self._trigger_dns_fallback_if_needed()
             return
 
         tx_after = self._get_tx_bytes()
-        if tx_before is not None and tx_after is not None:
-            tx_delta = tx_after - tx_before
-            expected_bytes = packets_sent * self.packet_size
+        if tx_before is None or tx_after is None:
+            logger.warning("tx_bytes monitoring unavailable (container environment?), using DNS fallback")
+            self._trigger_dns_fallback_if_needed()
+            return
 
-            # Update EMA
-            self.tx_bytes_ema = (self.tx_bytes_alpha * tx_delta +
-                               (1 - self.tx_bytes_alpha) * self.tx_bytes_ema)
+        tx_delta = tx_after - tx_before
+        expected_bytes = packets_sent * self.packet_size
 
-            # Verify external egress for E2 compliance
-            if tx_delta > expected_bytes * 0.6:  # 60% threshold for validation
-                if any(self.peers[peer]['is_external'] for peer in self.peers
-                      if self.peers[peer]['state'] == PeerState.VALID):
-                    self.external_egress_verified = True
-            else:
-                logger.debug(f"Low tx_bytes delta: {tx_delta} bytes vs {expected_bytes} expected")
-                self._handle_ineffective_transmission()
+        # Update EMA
+        self.tx_bytes_ema = (self.tx_bytes_alpha * tx_delta +
+                           (1 - self.tx_bytes_alpha) * self.tx_bytes_ema)
+
+        # Verify external egress for E2 compliance
+        if tx_delta > expected_bytes * 0.6:  # 60% threshold for validation
+            if any(self.peers[peer]['is_external'] for peer in self.peers
+                  if self.peers[peer]['state'] == PeerState.VALID):
+                self.external_egress_verified = True
+        else:
+            logger.debug(f"Low tx_bytes delta: {tx_delta} bytes vs {expected_bytes} expected")
+            self._handle_ineffective_transmission()
+
+    def _trigger_dns_fallback_if_needed(self):
+        """Trigger DNS fallback when tx_bytes validation is unavailable."""
+        if self.state in [NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP]:
+            # Switch to DNS servers for reliable external traffic
+            if not any(peer in self.DEFAULT_DNS_SERVERS for peer in self.peers.keys()):
+                logger.info("Adding DNS servers to peer list for reliable external traffic validation")
+                for dns_server in self.DEFAULT_DNS_SERVERS:
+                    if dns_server not in self.peers:
+                        self.peers[dns_server] = {
+                            'state': PeerState.VALID,
+                            'reputation': 80.0,  # High initial reputation for DNS servers
+                            'failures': 0,
+                            'successes': 0,
+                            'last_attempt': 0.0,
+                            'blacklist_until': 0.0,
+                            'is_external': True,
+                            'hostname': dns_server
+                        }
 
     def _get_tx_bytes(self) -> Optional[int]:
         """Get current tx_bytes count from network interface."""
@@ -3901,7 +4024,7 @@ def main():
                     logger.info(f"Network fallback DEACTIVATED")
 
                 # Network control (only if network can run)
-                if net_can_run and NET_TARGET_PCT > 0 and net_avg is not None and NET_MODE == "client" and NET_PEERS:
+                if net_can_run and NET_TARGET_PCT > 0 and net_avg is not None and NET_MODE == "client":
                     err_net = effective_net_target - net_avg
                     new_rate = float(net_rate_mbit.value) + KP_NET * (err_net)
                     net_rate_mbit.value = max(NET_MIN_RATE, min(NET_MAX_RATE, new_rate))
