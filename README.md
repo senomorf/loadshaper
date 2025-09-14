@@ -70,21 +70,22 @@ That's it! `loadshaper` will automatically detect your Oracle Cloud shape and st
 
 ### Kubernetes/Helm Deployment
 
-For Kubernetes deployments, Helm charts are available in the `charts/` directory:
+For Kubernetes deployments, Helm charts are available in the `helm/` directory:
 
 ```bash
 # Install with default values
-helm install loadshaper ./charts/loadshaper
+helm install loadshaper ./helm/loadshaper
 
 # Or with custom configuration
-helm install loadshaper ./charts/loadshaper -f custom-values.yaml
+helm install loadshaper ./helm/loadshaper -f custom-values.yaml
 ```
 
 Key Kubernetes considerations:
 - **Persistent Volume required** for 7-day P95 metrics storage
-- **Resource requests/limits** should align with Oracle Free Tier constraints
+- **Resource limits included** - Default CPU/memory limits configured for Oracle Free Tier
+- **Security hardened** - Read-only root filesystem and non-root user configured
 - **Single replica only** - LoadShaper must not run multiple instances per node
-- **Node affinity** recommended to ensure consistent VM assignment
+- **Multiple configurations** - Production, security-hardened, and shape-specific value files included
 
 **📖 More Information:**
 - [Configuration Reference](#configuration-reference) - Detailed environment variable options
