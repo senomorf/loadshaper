@@ -178,10 +178,6 @@ class TestNetworkGenerator(unittest.TestCase):
         self.assertIsNotNone(self.generator.packet_data)
         self.assertEqual(len(self.generator.packet_data), self.packet_size)
 
-    def test_dns_default_addresses(self):
-        """Test DNS servers are used as default fallback addresses."""
-        expected_addresses = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
-        self.assertEqual(loadshaper.NetworkGenerator.DEFAULT_DNS_SERVERS, expected_addresses)
 
     def test_packet_size_limits(self):
         """Test packet size limits are enforced."""
@@ -366,25 +362,23 @@ class TestNetworkGenerator(unittest.TestCase):
             gen.start(["127.0.0.1"])
             # Invalid protocol should be handled gracefully, may log warnings or errors
             # State should remain in a safe state
-            self.assertIn(gen.state, [loadshaper.NetworkState.ERROR, loadshaper.NetworkState.OFF,
-                                     loadshaper.NetworkState.DEGRADED_LOCAL])
+            self.assertIn(gen.state, [loadshaper.NetworkState.ERROR, loadshaper.NetworkState.OFF])
 
         gen.stop()
 
     @unittest.mock.patch('loadshaper.logger')
-    def test_rfc2544_fallback_logging(self, mock_logger):
-        """Test logging when falling back to DNS servers."""
+    def test_empty_peer_list_logging(self, mock_logger):
+        """Test logging when no peers are available."""
         gen = loadshaper.NetworkGenerator(rate_mbps=1.0)
 
-        gen.start([])  # Empty peer list - should trigger DNS fallback
+        gen.start([])  # Empty peer list - should warn about disabled network
 
-        # Should log info about using DNS servers for external traffic
-        # The new implementation uses DNS servers as fallback
-        mock_logger.info.assert_called()
-        # Check for DNS-related logging
-        call_args = [call[0][0] for call in mock_logger.info.call_args_list]
-        dns_logged = any('DNS' in arg or 'external traffic' in arg for arg in call_args)
-        self.assertTrue(dns_logged, "Should log about DNS servers for external traffic")
+        # Should log warning about disabled network generation
+        mock_logger.warning.assert_called()
+        # Check for warning about no peers
+        call_args = [call[0][0] for call in mock_logger.warning.call_args_list]
+        warning_logged = any('No valid peers' in arg or 'disabled' in arg for arg in call_args)
+        self.assertTrue(warning_logged, "Should log warning about disabled network generation")
 
         gen.stop()
 
@@ -463,9 +457,9 @@ class TestNetworkGeneratorIntegration(unittest.TestCase):
         if self.generator:
             self.generator.stop()
 
-    def test_udp_burst_with_dns_fallback(self):
-        """Test UDP traffic generation with DNS fallback."""
-        self.generator.start([])  # Use DNS server defaults
+    def test_udp_burst_with_external_peers(self):
+        """Test UDP traffic generation with external peers."""
+        self.generator.start(["8.8.8.8"])  # Use external peer
 
         # Send very short burst to avoid network impact
         packets_sent = self.generator.send_burst(0.01)  # 10ms burst
@@ -480,7 +474,7 @@ class TestNetworkGeneratorIntegration(unittest.TestCase):
         self.generator.update_rate(0.001)  # 1 kbps
 
         # Start generator to initialize socket
-        self.generator.start([])  # Use DNS fallback
+        self.generator.start(["8.8.8.8"])  # Use external peer
 
         start_time = time.time()
         packets_sent = self.generator.send_burst(0.1)  # 100ms burst

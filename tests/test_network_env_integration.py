@@ -89,7 +89,6 @@ class TestNetworkEnvIntegration(unittest.TestCase):
         generator.state_debounce_sec = 7.5
         generator.state_min_on_sec = 25.0
         generator.state_min_off_sec = 30.0
-        generator.dns_qps_max = 15.0
 
         # Verify that timing parameters were properly applied
         self.assertEqual(generator.state_debounce_sec, 7.5,
@@ -98,8 +97,6 @@ class TestNetworkEnvIntegration(unittest.TestCase):
                         "state_min_on_sec should be updateable")
         self.assertEqual(generator.state_min_off_sec, 30.0,
                         "state_min_off_sec should be updateable")
-        self.assertEqual(generator.dns_qps_max, 15.0,
-                        "dns_qps_max should be updateable")
 
     def test_validate_startup_constructor_parameter(self):
         """Test validate_startup constructor parameter works correctly."""

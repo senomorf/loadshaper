@@ -53,10 +53,11 @@
 - Occupies memory to maintain target %, not stress testing
 
 ## Network Generation
-- State machine: OFF→INITIALIZING→VALIDATING→ACTIVE_UDP→ACTIVE_TCP→DEGRADED_LOCAL→ERROR
-- Fallback chain: UDP→TCP→next peer→DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)→local
-- Peer reputation scoring (0-100), tx_bytes validation, external address requirement for E2
-- DNS queries with EDNS0 padding, rate-limited to 10 QPS
+- State machine: OFF→INITIALIZING→VALIDATING→ACTIVE_UDP→ACTIVE_TCP→ERROR
+- Fallback chain: UDP→TCP→next peer (NO DNS spam, NO local traffic)
+- External peers REQUIRED for VM protection (private traffic doesn't count)
+- Peer reputation scoring (0-100), tx_bytes validation
+- MTU 9000 optimized: 8900-byte packets by default
 
 ## Network Reliability
 - **Validation**: tx_bytes verification confirms actual egress, external IP requirement for E2
@@ -92,7 +93,7 @@ Load: `LOAD_{THRESHOLD,RESUME_THRESHOLD,CHECK_ENABLED}`
 Memory: `MEM_{TOUCH_INTERVAL_SEC,STEP_MB,MIN_FREE_MB}`
 Network: `NET_{MODE,PEERS,PORT,PROTOCOL,TTL,PACKET_SIZE,IPV6,{MIN,MAX}_RATE_MBIT,{BURST,IDLE}_SEC}`
 Fallback: `NET_{ACTIVATION,FALLBACK_{START,STOP}_PCT,FALLBACK_RISK_THRESHOLD_PCT,FALLBACK_{DEBOUNCE,MIN_ON,MIN_OFF,RAMP}_SEC}`
-Validation: `NET_{VALIDATE_STARTUP,REQUIRE_EXTERNAL,VALIDATION_TIMEOUT_MS,TX_BYTES_MIN_DELTA,DNS_QPS_MAX,STATE_{DEBOUNCE,MIN_ON,MIN_OFF}_SEC}`
+Validation: `NET_{VALIDATE_STARTUP,REQUIRE_EXTERNAL,VALIDATION_TIMEOUT_MS,TX_BYTES_MIN_DELTA,STATE_{DEBOUNCE,MIN_ON,MIN_OFF}_SEC}`
 Sensing: `NET_{SENSE_MODE,IFACE,IFACE_INNER,LINK_MBIT}`
 Control: `{CONTROL_PERIOD,AVG_WINDOW,JITTER_PERIOD}_SEC`, `{HYSTERESIS,JITTER}_PCT`
 Health: `HEALTH_{ENABLED,PORT,HOST}`
@@ -170,5 +171,6 @@ docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" || echo 
 - **Persistent storage MANDATORY** - no fallback to /tmp
 - **Rootless security** - UID/GID 1000, no auto-fixes
 - **NetworkGenerator rewritten** - state machine, no backwards compatibility
-- **NET_PEERS default** - now 8.8.8.8,1.1.1.1,9.9.9.9 (was RFC2544)
+- **NET_PEERS required** - must be external servers you control
+- **NET_PACKET_SIZE default** - now 8900 for MTU 9000 (was 1100)
 - **Single instance only** - multiple instances corrupt P95/SQLite

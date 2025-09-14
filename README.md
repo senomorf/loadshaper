@@ -139,6 +139,10 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 - Docker and Docker Compose installed
 - **Persistent storage required** - LoadShaper needs persistent volume for 7-day P95 metrics
 - **Single instance only** - Run only one LoadShaper process per system to avoid conflicts
+- **External network peers required** - For network protection, configure `NET_PEERS` with external servers you control
+
+⚠️ **Critical Network Requirement:**
+LoadShaper's network generation requires **external** (non-private) peers to protect VMs from reclamation. Private/internal network traffic does NOT count toward Oracle's 20% utilization threshold. Without valid external peers, network fallback protection will be inactive, relying only on CPU and memory metrics.
 - **Rootless container setup** - LoadShaper follows security best practices (non-root user)
 
 **1. Clone and setup:**
@@ -703,7 +707,20 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
 | `NET_TTL` | `1` | IP TTL for generated packets |
-| `NET_PACKET_SIZE` | `8900` | Packet size (bytes) for UDP/TCP generator |
+| `NET_PACKET_SIZE` | `8900` | Packet size (bytes) optimized for Oracle Cloud MTU 9000 |
+
+### Network Validation & Reliability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NET_VALIDATE_STARTUP` | `true` | Validate peer connectivity at startup |
+| `NET_REQUIRE_EXTERNAL` | `true` | Require external (non-RFC1918) addresses for E2 shapes |
+| `NET_VALIDATION_TIMEOUT_MS` | `200` | Timeout for peer validation (milliseconds) |
+| `NET_TX_BYTES_MIN_DELTA` | `1000` | Minimum tx_bytes delta for traffic validation |
+| `NET_STATE_DEBOUNCE_SEC` | `5.0` | State transition debounce time (seconds) |
+| `NET_STATE_MIN_ON_SEC` | `15.0` | Minimum time in active state (seconds) |
+| `NET_STATE_MIN_OFF_SEC` | `20.0` | Minimum time in inactive state (seconds) |
+| `NET_IPV6` | `auto` | IPv6 mode: `auto`, `on`, `off` |
 
 ### Network Interface Detection
 
@@ -793,9 +810,10 @@ The native network generator provides advanced performance features:
 The network generator includes a comprehensive reliability system to prevent silent failures and ensure Oracle-compliant external traffic generation:
 
 **State Machine Architecture:**
-- `OFF` → `INITIALIZING` → `VALIDATING` → `ACTIVE_UDP` → `ACTIVE_TCP` → `DEGRADED_LOCAL` → `ERROR`
+- `OFF` → `INITIALIZING` → `VALIDATING` → `ACTIVE_UDP` → `ACTIVE_TCP` → `ERROR`
 - Automatic state transitions based on validation results and peer health
 - Hysteresis and debouncing prevent oscillation between states
+- Network is supplementary protection - system continues on CPU/memory even without network
 
 **Peer Validation & Reputation:**
 - **External address validation**: Automatically rejects RFC1918, loopback, and link-local addresses for E2 Oracle compliance
@@ -1115,7 +1133,7 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
 **Q: Network traffic isn't being generated**
-A: Check network state in telemetry output. The new network generator (v75+) uses public DNS servers by default (`NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9`). Monitor network health scores and state transitions. If state shows ERROR or DEGRADED_LOCAL, check connectivity to external addresses.
+A: Check network state in telemetry output. The new network generator (v75+) uses external peers by default (`NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9`). Monitor network health scores and state transitions. If state shows ERROR, check connectivity to external addresses.
 
 **Q: Memory usage isn't increasing on A1.Flex**
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.

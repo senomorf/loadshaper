@@ -175,13 +175,11 @@ class TestTxBytesValidation(unittest.TestCase):
         gen = NetworkGenerator(rate_mbps=10.0, validate_startup=False)
         gen.network_interface = "eth0"
         gen.packet_size = 1100
-        gen.dns_packet_size = 512
-
         # Mock tx_bytes readings (before and after)
         mock_get_tx.return_value = 1001024  # After value
 
-        # Test with actual bytes sent (mix of regular and DNS packets)
-        bytes_sent = 512 + 512  # Two DNS packets
+        # Test with actual bytes sent (regular UDP packets)
+        bytes_sent = 1100  # One regular packet
         gen._validate_transmission_effectiveness(1000000, bytes_sent, 2)
 
         # Should use actual bytes (1024) for validation
@@ -220,16 +218,14 @@ class TestTxBytesValidation(unittest.TestCase):
         """Test that send_burst correctly tracks packet sizes for DNS vs regular packets."""
         gen = NetworkGenerator(rate_mbps=100.0, validate_startup=False)
         gen.packet_size = 1100
-        gen.dns_packet_size = 512
         gen.state = NetworkState.ACTIVE_UDP
 
         # Setup mock socket and peers
         gen.socket = MagicMock()
         gen.socket.sendto = MagicMock(return_value=None)
 
-        # Add a DNS server peer
+        # Add a regular external peer
         gen.peers = {"8.8.8.8": {"state": "VALID", "is_external": True, "blacklist_until": 0}}
-        gen.fallback_dns_servers = ["8.8.8.8"]
 
         with patch('loadshaper.NetworkGenerator._get_tx_bytes', return_value=1000000):
             with patch('loadshaper.NetworkGenerator._validate_transmission_effectiveness') as mock_validate:

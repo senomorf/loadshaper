@@ -31,43 +31,8 @@ class TestPeerValidation(unittest.TestCase):
         if hasattr(self.generator, 'state') and self.generator.state != loadshaper.NetworkState.OFF:
             self.generator.stop()
 
-    def test_dns_peer_validation_success(self):
-        """Test successful DNS peer validation."""
-        with unittest.mock.patch('socket.socket') as mock_socket_class:
-            # Mock successful DNS response
-            mock_socket = mock_socket_class.return_value
-            mock_socket.recvfrom.return_value = (b'\x12\x34' + b'\x00' * 20, ('8.8.8.8', 53))
 
-            result = self.generator._validate_dns_peer('8.8.8.8')
 
-            self.assertTrue(result)
-            mock_socket.sendto.assert_called_once()
-            mock_socket.recvfrom.assert_called_once_with(512)
-            mock_socket.close.assert_called_once()
-
-    def test_dns_peer_validation_timeout(self):
-        """Test DNS peer validation with timeout."""
-        with unittest.mock.patch('socket.socket') as mock_socket_class:
-            # Mock socket timeout
-            mock_socket = mock_socket_class.return_value
-            mock_socket.recvfrom.side_effect = socket.timeout("DNS timeout")
-
-            result = self.generator._validate_dns_peer('8.8.8.8')
-
-            self.assertFalse(result)
-            mock_socket.sendto.assert_called_once()
-            mock_socket.close.assert_called_once()
-
-    def test_dns_peer_validation_empty_response(self):
-        """Test DNS peer validation with empty response."""
-        with unittest.mock.patch('socket.socket') as mock_socket_class:
-            # Mock empty DNS response (less than 12 bytes)
-            mock_socket = mock_socket_class.return_value
-            mock_socket.recvfrom.return_value = (b'\x12\x34', ('8.8.8.8', 53))
-
-            result = self.generator._validate_dns_peer('8.8.8.8')
-
-            self.assertFalse(result)
 
     def test_tcp_peer_validation_success(self):
         """Test successful TCP peer validation."""
@@ -133,29 +98,16 @@ class TestPeerValidation(unittest.TestCase):
                 mock_socket_instances[0].close.assert_called()
                 mock_socket_instances[1].close.assert_called()
 
-    def test_validate_peer_routes_dns_servers(self):
-        """Test _validate_peer routes DNS servers to DNS validation."""
-        with unittest.mock.patch.object(self.generator, '_validate_dns_peer') as mock_dns_validate:
-            with unittest.mock.patch.object(self.generator, '_validate_generic_peer') as mock_generic_validate:
-                mock_dns_validate.return_value = True
 
-                result = self.generator._validate_peer('8.8.8.8')
+    def test_validate_peer_uses_tcp_validation(self):
+        """Test _validate_peer uses TCP validation for all peers."""
+        with unittest.mock.patch.object(self.generator, '_validate_generic_peer') as mock_generic_validate:
+            mock_generic_validate.return_value = True
 
-                self.assertTrue(result)
-                mock_dns_validate.assert_called_once_with('8.8.8.8')
-                mock_generic_validate.assert_not_called()
+            result = self.generator._validate_peer('8.8.8.8')
 
-    def test_validate_peer_routes_generic_peers(self):
-        """Test _validate_peer routes generic peers to TCP validation."""
-        with unittest.mock.patch.object(self.generator, '_validate_dns_peer') as mock_dns_validate:
-            with unittest.mock.patch.object(self.generator, '_validate_generic_peer') as mock_generic_validate:
-                mock_generic_validate.return_value = True
-
-                result = self.generator._validate_peer('example.com')
-
-                self.assertTrue(result)
-                mock_generic_validate.assert_called_once_with('example.com')
-                mock_dns_validate.assert_not_called()
+            self.assertTrue(result)
+            mock_generic_validate.assert_called_once_with('8.8.8.8')
 
     def test_peer_reputation_scoring_valid_peer(self):
         """Test reputation scoring for valid peer."""
@@ -285,19 +237,6 @@ class TestPeerValidation(unittest.TestCase):
                     mock_validate.assert_any_call('8.8.8.8')
                     mock_validate.assert_any_call('1.1.1.1')
 
-    def test_dns_fallback_mechanism(self):
-        """Test DNS fallback mechanism directly."""
-        # Initialize empty peers to trigger DNS fallback
-        self.generator.peers = {}
-
-        with unittest.mock.patch.object(self.generator, '_validate_peer', return_value=True):
-            result = self.generator._try_dns_fallback()
-
-            self.assertTrue(result)
-            # Should have DNS servers in peers
-            dns_servers_in_peers = [addr for addr in self.generator.peers.keys()
-                                  if addr in self.generator.DEFAULT_DNS_SERVERS]
-            self.assertGreater(len(dns_servers_in_peers), 0, "DNS servers should be added as fallback")
 
     def test_ipv6_peer_validation(self):
         """Test IPv6 peer validation support."""
@@ -318,21 +257,15 @@ class TestPeerValidation(unittest.TestCase):
 
     def test_validation_timeout_configuration(self):
         """Test validation timeout constants are properly configured."""
-        self.assertGreater(self.generator.DNS_VALIDATION_TIMEOUT, 0)
         self.assertGreater(self.generator.TCP_VALIDATION_TIMEOUT, 0)
-        self.assertLessEqual(self.generator.DNS_VALIDATION_TIMEOUT, 10)  # Reasonable timeout
         self.assertLessEqual(self.generator.TCP_VALIDATION_TIMEOUT, 10)  # Reasonable timeout
 
     def test_reputation_constants(self):
         """Test reputation system constants are properly configured."""
         self.assertEqual(self.generator.REPUTATION_INITIAL_NEUTRAL, 50.0)
-        self.assertEqual(self.generator.REPUTATION_INITIAL_DNS, 60.0)
-        self.assertEqual(self.generator.REPUTATION_INITIAL_HIGH, 80.0)
         self.assertEqual(self.generator.REPUTATION_BLACKLIST_THRESHOLD, 20.0)
 
         # Thresholds should make sense
-        self.assertGreater(self.generator.REPUTATION_INITIAL_DNS, self.generator.REPUTATION_INITIAL_NEUTRAL)
-        self.assertGreater(self.generator.REPUTATION_INITIAL_HIGH, self.generator.REPUTATION_INITIAL_DNS)
         self.assertGreater(self.generator.REPUTATION_INITIAL_NEUTRAL, self.generator.REPUTATION_BLACKLIST_THRESHOLD)
 
 

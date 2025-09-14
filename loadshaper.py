@@ -12,9 +12,9 @@ import struct
 from datetime import datetime, timezone
 from typing import Tuple, Optional, Dict, Any
 from multiprocessing import Process, Value
-from math import isfinite, exp, ceil
+from math import isfinite, ceil
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 
 # Set up module logger
@@ -36,7 +36,6 @@ class NetworkState(Enum):
     VALIDATING = "VALIDATING"
     ACTIVE_UDP = "ACTIVE_UDP"
     ACTIVE_TCP = "ACTIVE_TCP"
-    DEGRADED_LOCAL = "DEGRADED_LOCAL"
     ERROR = "ERROR"
 
 
@@ -137,53 +136,6 @@ def read_nic_tx_bytes(interface: str) -> Optional[int]:
         return None
 
 
-def build_dns_query(qname: str, qtype: int = 1, packet_size: int = 1100) -> bytes:
-    """
-    Build a DNS query packet with EDNS0 padding.
-
-    Args:
-        qname: Query name (e.g., "example.com")
-        qtype: Query type (1=A, 28=AAAA)
-        packet_size: Target packet size in bytes
-
-    Returns:
-        bytes: Complete DNS query packet
-    """
-    import secrets
-
-    # DNS Header (12 bytes)
-    txid = secrets.randbits(16)
-    flags = 0x0100  # Standard query with recursion desired
-    header = struct.pack('!HHHHHH', txid, flags, 1, 0, 0, 1)  # 1 question, 1 additional
-
-    # Question section
-    # Encode domain name as length-prefixed labels
-    qname_encoded = b''
-    for label in qname.split('.'):
-        if label:  # Skip empty labels
-            qname_encoded += bytes([len(label)]) + label.encode('ascii')
-    qname_encoded += b'\x00'  # Null terminator
-
-    question = qname_encoded + struct.pack('!HH', qtype, 1)  # qtype, qclass=IN
-
-    # Additional section - EDNS0 OPT RR for padding
-    opt_name = b'\x00'  # Root domain
-    opt_type = 41       # OPT RR type
-    opt_class = 1232    # UDP payload size
-    opt_ttl = 0         # Extended RCODE and flags
-
-    # Calculate padding needed
-    current_size = len(header) + len(question) + 1 + 2 + 2 + 4 + 2  # OPT RR header
-    padding_option_header = 4  # Option code (2) + option length (2)
-    padding_needed = max(0, packet_size - current_size - padding_option_header)
-
-    # EDNS0 padding option (code 12)
-    padding_option = struct.pack('!HH', 12, padding_needed) + b'\x00' * padding_needed
-    opt_rdata = padding_option
-
-    opt_rr = opt_name + struct.pack('!HHIH', opt_type, opt_class, opt_ttl, len(opt_rdata)) + opt_rdata
-
-    return header + question + opt_rr
 
 
 # ---------------------------
@@ -1279,17 +1231,15 @@ def _initialize_config():
 
     # Native network generator configuration
     NET_TTL           = getenv_int_with_template("NET_TTL", 1, CONFIG_TEMPLATE)
-    NET_PACKET_SIZE   = getenv_int_with_template("NET_PACKET_SIZE", 1100, CONFIG_TEMPLATE)  # Reduced for DNS compatibility
+    NET_PACKET_SIZE   = getenv_int_with_template("NET_PACKET_SIZE", 8900, CONFIG_TEMPLATE)  # Optimized for MTU 9000
 
     # Network validation and reliability configuration
     NET_VALIDATE_STARTUP = getenv_with_template("NET_VALIDATE_STARTUP", "true", CONFIG_TEMPLATE).strip().lower() in ['true', '1', 'yes']
     NET_REQUIRE_EXTERNAL = getenv_with_template("NET_REQUIRE_EXTERNAL", "true", CONFIG_TEMPLATE).strip().lower() in ['true', '1', 'yes']
     NET_VALIDATION_TIMEOUT_MS = getenv_int_with_template("NET_VALIDATION_TIMEOUT_MS", 200, CONFIG_TEMPLATE)
-    NET_TX_BYTES_MIN_DELTA = getenv_int_with_template("NET_TX_BYTES_MIN_DELTA", 1000, CONFIG_TEMPLATE)
     NET_STATE_DEBOUNCE_SEC = getenv_float_with_template("NET_STATE_DEBOUNCE_SEC", 5.0, CONFIG_TEMPLATE)
     NET_STATE_MIN_ON_SEC = getenv_float_with_template("NET_STATE_MIN_ON_SEC", 15.0, CONFIG_TEMPLATE)
     NET_STATE_MIN_OFF_SEC = getenv_float_with_template("NET_STATE_MIN_OFF_SEC", 20.0, CONFIG_TEMPLATE)
-    NET_DNS_QPS_MAX = getenv_float_with_template("NET_DNS_QPS_MAX", 10.0, CONFIG_TEMPLATE)
     NET_IPV6 = getenv_with_template("NET_IPV6", "auto", CONFIG_TEMPLATE).strip().lower()
 
     # Network fallback configuration
@@ -3252,14 +3202,10 @@ class NetworkGenerator:
     """
 
     # Default public DNS servers for reliable external traffic
-    DEFAULT_DNS_SERVERS = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
 
     # PEER REPUTATION SYSTEM CONSTANTS
     # Reputation range: 0.0 (blacklisted) to 100.0 (perfect peer)
     REPUTATION_INITIAL_NEUTRAL = 50.0     # New peers start with neutral reputation
-    REPUTATION_INITIAL_DNS = 60.0         # DNS servers get higher initial trust
-    REPUTATION_INITIAL_HIGH = 80.0        # Fallback DNS servers get premium trust
-    REPUTATION_INITIAL_LOCAL = 30.0       # Local fallback gets low trust (non-protective)
     REPUTATION_VALIDATION_BOOST = 10.0    # Bonus for passing initial validation
     REPUTATION_VALIDATION_PENALTY = 20.0  # Penalty for failing initial validation
     REPUTATION_SUCCESS_INCREMENT = 1.0    # Small bonus for each successful send
@@ -3275,14 +3221,12 @@ class NetworkGenerator:
     RECOVERY_CHECK_INTERVAL_SEC = 60.0   # Check every minute for peer recovery
 
     # NETWORK VALIDATION TIMEOUTS (in seconds)
-    DNS_VALIDATION_TIMEOUT = 0.5         # 500ms for DNS query validation
     TCP_VALIDATION_TIMEOUT = 0.3         # 300ms for TCP handshake validation
 
     # HEALTH SCORING SYSTEM CONSTANTS
     # Health score range: 0 (completely failed) to 100 (perfect health)
     HEALTH_SCORE_ACTIVE_UDP = 100        # Perfect score for active UDP state
     HEALTH_SCORE_ACTIVE_TCP = 75         # Good score for active TCP state
-    HEALTH_SCORE_DEGRADED_LOCAL = 30     # Poor score for local-only generation
     HEALTH_SCORE_VALIDATING = 50         # Moderate score during validation
     HEALTH_SCORE_INITIALIZING = 40       # Lower score during initialization
     HEALTH_SCORE_ERROR_OFF = 0           # Failed score for error/off states
@@ -3293,8 +3237,6 @@ class NetworkGenerator:
     HEALTH_WEIGHT_PEER_AVAILABILITY = 10 # 10% weight for peer availability
     HEALTH_WEIGHT_EXTERNAL_VERIFICATION = 10  # 10% weight for external egress verification
 
-    # DNS RATE LIMITING
-    DNS_QPS_MAX = 10.0                   # Maximum 10 DNS queries per second
 
     # CPU YIELD AND PERFORMANCE CONSTANTS
     CPU_YIELD_INTERVAL = 100             # Yield CPU every 100 packet sends
@@ -3337,8 +3279,6 @@ class NetworkGenerator:
         self.current_peer_index = 0
         self.last_used_peer = None  # Track the last peer we selected for use
         self.last_sent_peer = None  # Track the last peer we actually sent to successfully
-        self.fallback_dns_servers = self.DEFAULT_DNS_SERVERS.copy()
-        self.local_fallback = "127.0.0.1"
 
         # Connection management
         self.socket = None
@@ -3366,9 +3306,6 @@ class NetworkGenerator:
         self.last_transition_time = time.monotonic()
 
         # DNS generation settings
-        self.dns_packet_size = min(packet_size, 1100)
-        self.dns_qps_max = self.DNS_QPS_MAX
-        self.last_dns_send = 0.0
 
         # Initialize packet data
         self._prepare_packet_data()
@@ -3394,8 +3331,8 @@ class NetworkGenerator:
         try:
             # Initialize peer list
             if not target_addresses:
-                logger.info("No peers provided, using default DNS servers for external traffic")
-                target_addresses = self.DEFAULT_DNS_SERVERS.copy()
+                logger.info("No peers provided, network generation disabled")
+                target_addresses = []
 
             # Validate external address requirement
             if self.require_external:
@@ -3490,43 +3427,19 @@ class NetworkGenerator:
                 peer_info['reputation'] -= self.REPUTATION_VALIDATION_PENALTY
 
         if valid_peers == 0:
-            logger.warning("No valid peers found, will attempt DNS fallback")
+            logger.warning("No valid peers found - network generation disabled")
 
         logger.info(f"Peer validation complete: {valid_peers}/{len(self.peers)} peers valid")
 
     def _validate_peer(self, address: str) -> bool:
         """Validate connectivity to a single peer with real reachability test."""
         try:
-            # Check if this is a DNS server - use DNS query for validation
-            if address in self.DEFAULT_DNS_SERVERS:
-                return self._validate_dns_peer(address)
-            else:
-                # For generic peers, try TCP handshake on configured port
-                return self._validate_generic_peer(address)
+            # For all peers, try TCP handshake on configured port
+            return self._validate_generic_peer(address)
         except Exception as e:
             logger.debug(f"Peer validation failed for {address}: {e}")
             return False
 
-    def _validate_dns_peer(self, dns_server: str) -> bool:
-        """Validate DNS server with actual DNS query."""
-        try:
-            # Create DNS query packet for a simple A record lookup
-            dns_query = build_dns_query("google.com", qtype=1, packet_size=512)
-
-            # Send DNS query and wait for response
-            test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            test_sock.settimeout(self.DNS_VALIDATION_TIMEOUT)
-            try:
-                test_sock.sendto(dns_query, (dns_server, 53))
-                response, addr = test_sock.recvfrom(512)
-                # If we got a response, DNS server is working
-                return len(response) > 12  # Minimum DNS response size
-            except (socket.timeout, socket.error):
-                return False
-            finally:
-                test_sock.close()
-        except Exception:
-            return False
 
     def _validate_generic_peer(self, address: str) -> bool:
         """Validate generic peer with TCP handshake."""
@@ -3619,7 +3532,7 @@ class NetworkGenerator:
                     return
 
             # Check minimum off time for inactive states (but not for initial startup)
-            if self.state in [NetworkState.OFF, NetworkState.ERROR, NetworkState.DEGRADED_LOCAL]:
+            if self.state in [NetworkState.OFF, NetworkState.ERROR]:
                 if time_in_state < self.state_min_off_sec:
                     logger.debug(f"State transition blocked by min-off time: {time_in_state:.1f}s < {self.state_min_off_sec}s")
                     return
@@ -3736,52 +3649,10 @@ class NetworkGenerator:
         """Handle situation when no valid peers are available."""
         logger.warning("No valid peers available, attempting fallback")
 
-        # Try DNS servers as fallback
-        if self._try_dns_fallback():
-            return
+        # No fallback available - log warning
+        logger.warning("No external peers available, network generation disabled")
 
-        # Final fallback to local generation
-        self._try_local_fallback()
 
-    def _try_dns_fallback(self) -> bool:
-        """Attempt to use DNS servers as fallback peers."""
-        logger.info("Attempting DNS server fallback for external traffic")
-
-        for dns_server in self.fallback_dns_servers:
-            if dns_server not in self.peers:
-                self.peers[dns_server] = {
-                    'state': PeerState.UNVALIDATED,
-                    'reputation': self.REPUTATION_INITIAL_DNS,
-                    'failures': 0,
-                    'successes': 0,
-                    'last_attempt': 0.0,
-                    'blacklist_until': 0.0,
-                    'is_external': True
-                }
-
-                if self._validate_peer(dns_server):
-                    self.peers[dns_server]['state'] = PeerState.VALID
-                    logger.info(f"DNS fallback successful: using {dns_server}")
-                    return True
-
-        logger.warning("DNS fallback failed, all DNS servers unreachable")
-        return False
-
-    def _try_local_fallback(self):
-        """Final fallback to local generation (non-protective)."""
-        logger.warning("Entering degraded local generation mode - Oracle protection NOT guaranteed")
-
-        self.peers[self.local_fallback] = {
-            'state': PeerState.VALID,
-            'reputation': self.REPUTATION_INITIAL_LOCAL,
-            'failures': 0,
-            'successes': 0,
-            'last_attempt': 0.0,
-            'blacklist_until': 0.0,
-            'is_external': False
-        }
-
-        self._transition_state(NetworkState.DEGRADED_LOCAL, "no external peers available")
 
     def _handle_protocol_failure(self):
         """Handle protocol-level failures with fallback logic."""
@@ -3831,10 +3702,8 @@ class NetworkGenerator:
         while (time.time() - start_time) < duration_seconds:
             # Determine actual packet size based on state and target
             peer = self._get_next_valid_peer()
-            if peer and peer in self.fallback_dns_servers:
-                actual_packet_size = self.dns_packet_size
-            else:
-                actual_packet_size = self.packet_size
+            # Use configured packet size (optimized for MTU 9000)
+            actual_packet_size = self.packet_size
 
             # Check if we can send a packet
             if not self.bucket.can_send(actual_packet_size):
@@ -3854,8 +3723,6 @@ class NetworkGenerator:
                     success = self._send_udp_burst_packet()
                 elif self.state == NetworkState.ACTIVE_TCP:
                     success = self._send_tcp_burst_packet()
-                elif self.state == NetworkState.DEGRADED_LOCAL:
-                    success = self._send_local_packet()
 
                 if success:
                     packets_sent += 1
@@ -3888,18 +3755,9 @@ class NetworkGenerator:
             return False
 
         try:
-            # Special handling for DNS servers (port 53)
-            port = 53 if peer in self.fallback_dns_servers else self.port
-
-            if port == 53:
-                # Send DNS query with EDNS0 padding
-                packet = self._build_dns_packet()
-                if self._should_rate_limit_dns():
-                    return False
-                self.last_dns_send = time.time()
-            else:
-                # Send regular packet
-                packet = self._get_current_packet()
+            # Send regular UDP packet
+            packet = self._get_current_packet()
+            port = self.port
 
             self.socket.sendto(packet, (peer, port))
             self._record_peer_success(peer)
@@ -3938,36 +3796,8 @@ class NetworkGenerator:
                 del self.tcp_connections[peer]
             return False
 
-    def _send_local_packet(self) -> bool:
-        """Send packet to local interface (degraded mode)."""
-        try:
-            if not self.socket:
-                self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                self.socket.setblocking(False)
 
-            packet = self._get_current_packet()
-            self.socket.sendto(packet, (self.local_fallback, self.port))
-            return True
 
-        except socket.error:
-            return False
-
-    def _build_dns_packet(self) -> bytes:
-        """Build DNS query packet for external traffic generation."""
-        import secrets
-
-        # Generate random query name to avoid caching
-        random_label = secrets.token_hex(6)
-        qname = f"x-{random_label}.example.com"
-        qtype = 1 if random.random() > 0.5 else 28  # Alternate A and AAAA queries
-
-        return build_dns_query(qname, qtype, self.dns_packet_size)
-
-    def _should_rate_limit_dns(self) -> bool:
-        """Check if DNS queries should be rate limited."""
-        if time.time() - self.last_dns_send < (1.0 / self.dns_qps_max):
-            return True
-        return False
 
     def _get_current_packet(self) -> bytes:
         """Get packet with current timestamp."""
@@ -4019,14 +3849,12 @@ class NetworkGenerator:
             attempts: Number of send attempts made
         """
         if self.network_interface is None:
-            logger.debug("No network interface available for tx_bytes validation, using DNS fallback")
-            self._trigger_dns_fallback_if_needed()
+            logger.debug("No network interface available for tx_bytes validation")
             return
 
         tx_after = self._get_tx_bytes()
         if tx_before is None or tx_after is None:
-            logger.warning("tx_bytes monitoring unavailable (container environment?), using DNS fallback")
-            self._trigger_dns_fallback_if_needed()
+            logger.warning("tx_bytes monitoring unavailable (container environment?)")
             return
 
         tx_delta = tx_after - tx_before
@@ -4055,24 +3883,6 @@ class NetworkGenerator:
             logger.debug(f"Low tx_bytes delta: {tx_delta} bytes vs {expected_bytes} expected")
             self._handle_ineffective_transmission()
 
-    def _trigger_dns_fallback_if_needed(self):
-        """Trigger DNS fallback when tx_bytes validation is unavailable."""
-        if self.state in [NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP]:
-            # Switch to DNS servers for reliable external traffic
-            if not any(peer in self.DEFAULT_DNS_SERVERS for peer in self.peers.keys()):
-                logger.info("Adding DNS servers to peer list for reliable external traffic validation")
-                for dns_server in self.DEFAULT_DNS_SERVERS:
-                    if dns_server not in self.peers:
-                        self.peers[dns_server] = {
-                            'state': PeerState.VALID,
-                            'reputation': self.REPUTATION_INITIAL_HIGH,
-                            'failures': 0,
-                            'successes': 0,
-                            'last_attempt': 0.0,
-                            'blacklist_until': 0.0,
-                            'is_external': True,
-                            'hostname': dns_server
-                        }
 
     def _get_tx_bytes(self) -> Optional[int]:
         """Get current tx_bytes count from network interface."""
@@ -4145,7 +3955,6 @@ class NetworkGenerator:
         state_scores = {
             NetworkState.ACTIVE_UDP: self.HEALTH_SCORE_ACTIVE_UDP,
             NetworkState.ACTIVE_TCP: self.HEALTH_SCORE_ACTIVE_TCP,
-            NetworkState.DEGRADED_LOCAL: self.HEALTH_SCORE_DEGRADED_LOCAL,
             NetworkState.VALIDATING: self.HEALTH_SCORE_VALIDATING,
             NetworkState.INITIALIZING: self.HEALTH_SCORE_INITIALIZING,
             NetworkState.ERROR: self.HEALTH_SCORE_ERROR_OFF,
@@ -4241,7 +4050,9 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
     """
     global NET_MODE, NET_MIN_RATE, NET_MAX_RATE, NET_PROTOCOL, NET_TTL, NET_PACKET_SIZE, NET_PORT
     global NET_REQUIRE_EXTERNAL, NET_VALIDATE_STARTUP, NET_STATE_DEBOUNCE_SEC, NET_STATE_MIN_ON_SEC
-    global NET_STATE_MIN_OFF_SEC
+    global NET_STATE_MIN_OFF_SEC, NET_PEERS, NET_BURST_SEC, NET_IDLE_SEC
+    global NET_VALIDATION_TIMEOUT_MS
+    global controller_state_lock, network_generator_status
 
     if NET_MODE != "client":
         return
@@ -4278,16 +4089,36 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
                     validate_startup=NET_VALIDATE_STARTUP
                 )
 
-                # Apply timing and DNS configuration from ENV variables
+                # Apply timing and validation configuration from ENV variables
                 generator.state_debounce_sec = NET_STATE_DEBOUNCE_SEC
                 generator.state_min_on_sec = NET_STATE_MIN_ON_SEC
                 generator.state_min_off_sec = NET_STATE_MIN_OFF_SEC
-                generator.dns_qps_max = NET_DNS_QPS_MAX
+                # Apply validation timeouts if configured
+                if NET_VALIDATION_TIMEOUT_MS > 0:
+                    generator.TCP_VALIDATION_TIMEOUT = NET_VALIDATION_TIMEOUT_MS / 1000.0
 
-                # Start generator with configured peers or DNS defaults
+                # Start generator with configured peers
                 generator.start(NET_PEERS if NET_PEERS else [])
                 last_rate = current_rate
                 logger.debug(f"Network generator started: {current_rate:.1f} Mbps, {NET_PROTOCOL.upper()}")
+
+                # Update shared network status
+                health_status = generator.get_health_status()
+                with controller_state_lock:
+                    external_count = sum(1 for addr, info in generator.peers.items()
+                                       if info.get('is_external', False) and
+                                       info['state'] == PeerState.VALID)
+                    internal_count = sum(1 for addr, info in generator.peers.items()
+                                       if not info.get('is_external', False) and
+                                       info['state'] == PeerState.VALID)
+                    network_generator_status.update({
+                        'state': health_status['state'],
+                        'protection_active': external_count > 0,
+                        'external_peers_count': external_count,
+                        'internal_peers_count': internal_count,
+                        'health_score': health_status['health_score'],
+                        'external_egress_verified': health_status['external_egress_verified']
+                    })
 
             elif generator:
                 # Just update rate if generator exists
@@ -4301,6 +4132,24 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
                     packets_sent = generator.send_burst(burst_duration)
                     if packets_sent > 0:
                         logger.debug(f"Sent {packets_sent} packets in {burst_duration}s burst")
+
+                    # Update shared network status after burst
+                    health_status = generator.get_health_status()
+                    with controller_state_lock:
+                        external_count = sum(1 for addr, info in generator.peers.items()
+                                           if info.get('is_external', False) and
+                                           info['state'] == PeerState.VALID)
+                        internal_count = sum(1 for addr, info in generator.peers.items()
+                                           if not info.get('is_external', False) and
+                                           info['state'] == PeerState.VALID)
+                        network_generator_status.update({
+                            'state': health_status['state'],
+                            'protection_active': external_count > 0,
+                            'external_peers_count': external_count,
+                            'internal_peers_count': internal_count,
+                            'health_score': health_status['health_score'],
+                            'external_egress_verified': health_status['external_egress_verified']
+                        })
                 except Exception as e:
                     logger.debug(f"Network burst error: {e}")
 
@@ -4860,6 +4709,17 @@ def main():
     # Shared state for health endpoints with thread safety
     import threading
     controller_state_lock = threading.Lock()
+
+    # Network generator status (shared between threads)
+    network_generator_status = {
+        'state': 'OFF',
+        'protection_active': False,
+        'external_peers_count': 0,
+        'internal_peers_count': 0,
+        'health_score': 0,
+        'external_egress_verified': False
+    }
+
     controller_state = {
         'start_time': time.time(),
         'cpu_pct': 0.0,
@@ -4873,7 +4733,8 @@ def main():
         'net_rate': 0.0,
         'paused': 0.0,
         'mem_target': MEM_TARGET_PCT,
-        'net_target': NET_TARGET_PCT
+        'net_target': NET_TARGET_PCT,
+        'network_generator': network_generator_status
     }
 
     global paused
@@ -5039,8 +4900,10 @@ def main():
                     'net_target': net_target_now,
                     'network_fallback_active': fallback_debug['active'],
                     'network_fallback_count': fallback_debug['activation_count'],
+                    'network_fallback_reason': fallback_debug.get('activation_reason', ''),
                     'is_e2_shape': is_e2,
-                    'cpu_p95_7d': cpu_p95
+                    'cpu_p95_7d': cpu_p95,
+                    'network_generator': network_generator_status
                 })
 
             # Store metrics sample for 7-day analysis with corruption handling

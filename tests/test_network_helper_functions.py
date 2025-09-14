@@ -88,45 +88,8 @@ class TestNetworkHelperFunctions(unittest.TestCase):
             result = loadshaper.read_nic_tx_bytes("eth0")
             self.assertIsNone(result)
 
-    def test_build_dns_query_basic(self):
-        """Test build_dns_query basic functionality."""
-        query = loadshaper.build_dns_query("google.com", qtype=1, packet_size=512)
 
-        # Verify it's a bytes object
-        self.assertIsInstance(query, bytes)
 
-        # Verify minimum DNS packet size
-        self.assertGreaterEqual(len(query), 12)  # DNS header size
-
-        # Verify it's close to requested size (within reason)
-        self.assertLessEqual(len(query), 600)  # Allow some overhead
-
-        # Verify DNS header structure (first 12 bytes)
-        self.assertEqual(len(query[:12]), 12)
-
-    def test_build_dns_query_padding(self):
-        """Test build_dns_query with EDNS0 padding."""
-        # Small packet
-        small_query = loadshaper.build_dns_query("test.com", packet_size=256)
-        self.assertLessEqual(len(small_query), 300)  # Allow overhead
-
-        # Large packet
-        large_query = loadshaper.build_dns_query("test.com", packet_size=1100)
-        self.assertGreaterEqual(len(large_query), 1000)  # Should be padded
-        self.assertLessEqual(len(large_query), 1150)  # Allow overhead
-
-    def test_build_dns_query_different_types(self):
-        """Test build_dns_query with different query types."""
-        # A record
-        query_a = loadshaper.build_dns_query("example.com", qtype=1)
-
-        # AAAA record
-        query_aaaa = loadshaper.build_dns_query("example.com", qtype=28)
-
-        # Both should be valid but different
-        self.assertNotEqual(query_a, query_aaaa)
-        self.assertIsInstance(query_a, bytes)
-        self.assertIsInstance(query_aaaa, bytes)
 
 
 class TestNetworkStateEnums(unittest.TestCase):
@@ -139,7 +102,6 @@ class TestNetworkStateEnums(unittest.TestCase):
         self.assertEqual(loadshaper.NetworkState.VALIDATING.value, "VALIDATING")
         self.assertEqual(loadshaper.NetworkState.ACTIVE_UDP.value, "ACTIVE_UDP")
         self.assertEqual(loadshaper.NetworkState.ACTIVE_TCP.value, "ACTIVE_TCP")
-        self.assertEqual(loadshaper.NetworkState.DEGRADED_LOCAL.value, "DEGRADED_LOCAL")
         self.assertEqual(loadshaper.NetworkState.ERROR.value, "ERROR")
 
     def test_peer_state_values(self):

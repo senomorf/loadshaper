@@ -28,9 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors
 - **Network generation reliability**: Complete rewrite fixing silent failures and Oracle E2 compliance issues
   - Detects failed network generation via tx_bytes monitoring
-  - Changed default peers from RFC2544 placeholder IPs to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
+  - Changed default peers from RFC2544 placeholder IPs to external addresses (8.8.8.8, 1.1.1.1, 9.9.9.9)
   - Validates external addresses rejecting RFC1918, loopback, and link-local for Oracle E2 compliance
-  - Implements automatic fallback chain: UDP → TCP → next peer → DNS servers → local generation
+  - Implements automatic protocol fallback: UDP → TCP → next peer
   - Added debounce and min-on/min-off time controls to prevent network state oscillation
 - **Persistent volume storage**: Metrics database now properly persisted in Docker Compose
   - 7-day P95 history preserved across container restarts
@@ -41,10 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **NetworkGenerator state machine**: Complete state-driven network generation with reliability features
-  - State progression: OFF → INITIALIZING → VALIDATING → ACTIVE_UDP → ACTIVE_TCP → DEGRADED_LOCAL → ERROR
+  - State progression: OFF → INITIALIZING → VALIDATING → ACTIVE_UDP → ACTIVE_TCP → ERROR
   - Peer validation and reputation with EMA-based scoring system
   - Runtime tx_bytes monitoring for actual traffic validation
-  - DNS packet generation with EDNS0 padding for fallback traffic
   - Network health scoring (0-100) based on state, reputation, and errors
 - **Persistent storage validation**: Enhanced container startup checks
   - Entrypoint validation ensures persistent storage is properly mounted

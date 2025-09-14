@@ -104,17 +104,6 @@ class TestNetworkStateMachine(unittest.TestCase):
             # Should transition to ERROR state on exception
             self.assertEqual(self.generator.state, loadshaper.NetworkState.ERROR)
 
-    def test_degraded_local_fallback(self):
-        """Test fallback to DEGRADED_LOCAL when peers fail."""
-        with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
-            with unittest.mock.patch.object(self.generator, '_validate_all_peers'):
-                with unittest.mock.patch.object(self.generator, '_start_udp',
-                                               side_effect=Exception("UDP failed")):
-                    with unittest.mock.patch.object(self.generator, '_try_local_fallback'):
-                        self.generator.start(["8.8.8.8"])
-
-                        # Might reach degraded state depending on fallback logic
-                        self.assertIsInstance(self.generator.state, loadshaper.NetworkState)
 
     def test_state_transition_debounce(self):
         """Test state transition debouncing prevents rapid changes."""
@@ -135,8 +124,8 @@ class TestNetworkStateMachine(unittest.TestCase):
             # Try to transition too quickly (within debounce time)
             mock_time.return_value = 1000.1  # 100ms later (< 5s debounce threshold)
 
-            # Attempt transition to DEGRADED_LOCAL should be blocked by debounce
-            self.generator._transition_state(loadshaper.NetworkState.DEGRADED_LOCAL, "test transition")
+            # Attempt transition to ERROR should be blocked by debounce
+            self.generator._transition_state(loadshaper.NetworkState.ERROR, "test transition")
 
             # State should remain unchanged due to debounce protection
             self.assertEqual(self.generator.state, initial_state,
@@ -211,26 +200,14 @@ class TestNetworkStateMachine(unittest.TestCase):
                 # Should handle invalid peers gracefully
                 self.assertIn(self.generator.state, [s for s in loadshaper.NetworkState])
 
-    def test_dns_fallback_state_handling(self):
-        """Test DNS fallback triggers appropriate state changes."""
+    def test_empty_peer_list_handling(self):
+        """Test behavior with empty peer list (no fallbacks available)."""
         with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
-            # Start with no peers to trigger DNS fallback
+            # Start with no peers - should reach ERROR state
             self.generator.start([])
 
-            # Should handle DNS fallback and reach a valid state
+            # Should reach ERROR state when no peers available
             self.assertIn(self.generator.state, [s for s in loadshaper.NetworkState])
-
-            # Should have DNS servers in peers if fallback succeeded
-            if self.generator.state not in [loadshaper.NetworkState.OFF, loadshaper.NetworkState.ERROR]:
-                dns_servers_present = any(
-                    dns in self.generator.peers
-                    for dns in self.generator.DEFAULT_DNS_SERVERS
-                )
-                # DNS fallback should add DNS servers to peers
-                self.assertTrue(
-                    dns_servers_present or len(self.generator.peers) == 0,
-                    "DNS fallback should add DNS servers to peers"
-                )
 
     def test_protocol_failure_cascade(self):
         """Test protocol failure handling with fallback cascade."""
@@ -295,7 +272,6 @@ class TestNetworkStateMachine(unittest.TestCase):
             loadshaper.NetworkState.VALIDATING,
             loadshaper.NetworkState.ACTIVE_UDP,
             loadshaper.NetworkState.ACTIVE_TCP,
-            loadshaper.NetworkState.DEGRADED_LOCAL,
             loadshaper.NetworkState.ERROR
         }
 
