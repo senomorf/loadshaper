@@ -101,8 +101,9 @@ LoadShaper follows **strict rootless container principles** for maximum security
 mkdir -p /var/lib/loadshaper
 chown 1000:1000 /var/lib/loadshaper  # Match container's UID/GID
 
-# For named volumes - Docker manages permissions automatically
+# For named volumes - requires one-time permission setup
 docker volume create loadshaper-metrics
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
 
 # For custom paths - use PERSISTENCE_DIR environment variable
 export PERSISTENCE_DIR=/custom/path/to/storage

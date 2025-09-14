@@ -193,6 +193,23 @@ Key Kubernetes considerations:
 - **Multiple configurations** - Production, security-hardened, and shape-specific value files included
 - **Node affinity** recommended to ensure consistent VM assignment
 
+### Optional Security Hardening
+
+For security-conscious environments, you can add additional hardening to your Docker Compose deployment:
+
+```yaml
+services:
+  loadshaper:
+    # ... existing configuration ...
+    read_only: true                    # Read-only root filesystem
+    tmpfs:
+      - /tmp                          # Allow temporary files in memory
+    cap_drop:
+      - ALL                           # Drop all Linux capabilities
+    security_opt:
+      - no-new-privileges:true        # Prevent privilege escalation
+```
+
 **📖 More Information:**
 - [Configuration Reference](#configuration-reference) - Detailed environment variable options
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Development setup and contribution guidelines
@@ -836,7 +853,6 @@ Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid r
   "checks": ["all_systems_operational"],
   "metrics_storage": "available",
   "persistence_storage": "available",
-  "database_path": "/var/lib/loadshaper/metrics.db",
   "load_generation": "active",
   "storage_status": {
     "disk_usage_mb": 45.2,

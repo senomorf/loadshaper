@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
-- **Health endpoint enhancement**: Added `persistence_storage` status and `database_path` fields
+- **Health endpoint enhancement**: Added `persistence_storage` status field (removed `database_path` for security)
 - **Clear error messages**: Detailed guidance when persistent volume configuration is missing
 - **NetworkGenerator state machine**: Complete state-driven network generation (OFF → INITIALIZING → VALIDATING → ACTIVE_UDP → ACTIVE_TCP → DEGRADED_LOCAL → ERROR)
 - **Peer validation and reputation**: EMA-based scoring system tracks peer reliability over time

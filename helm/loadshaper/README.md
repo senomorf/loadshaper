@@ -145,7 +145,7 @@ networkPolicy:
   enabled: false
   
 podSecurityContext:
-  fsGroup: 2000
+  fsGroup: 1000
   
 securityContext:
   runAsNonRoot: true
@@ -221,7 +221,7 @@ securityContext:
     type: RuntimeDefault          # Default seccomp profile
 
 podSecurityContext:
-  fsGroup: 2000
+  fsGroup: 1000
   fsGroupChangePolicy: OnRootMismatch  # Efficient volume permissions
 
 serviceAccount:
