@@ -191,7 +191,7 @@ volumes:
 - **Resource detection**: More accurate network interface speed detection
 
 ### Technical Details
-- Database location: `/var/lib/loadshaper/metrics.db` (primary) or `/tmp/loadshaper_metrics.db` (fallback)
+- Database location: `/var/lib/loadshaper/metrics.db` (primary) or `/tmp/loadshaper_metrics.db` (fallback - removed in later versions)
 - Sample frequency: Every 5 seconds (≈120,960 samples per week)
 - Database size: 10-20MB for 7 days of data
 - Default load thresholds: 0.6 (pause) / 0.4 (resume)

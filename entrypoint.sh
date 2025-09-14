@@ -1,5 +1,5 @@
 #!/bin/sh
-set -euo pipefail
+set -eu
 # LoadShaper Container Entrypoint
 # Validates that persistent storage is properly mounted before starting the application
 

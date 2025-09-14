@@ -77,3 +77,20 @@
 
 ## Project Development Status
 **This is a Work In Progress project.** Breaking changes are intentionally introduced without migration paths as we iterate toward the optimal Oracle Cloud VM protection solution. This approach allows rapid innovation and prevents technical debt accumulation during active development phases.
+
+### Current Breaking Change: Mandatory Persistent Storage
+**CRITICAL CHANGE:** Persistent storage is now **MANDATORY**. All fallback to `/tmp` storage has been completely removed by design.
+
+- **Container startup**: Will fail immediately if `/var/lib/loadshaper` volume is not mounted or writable
+- **No migration path**: Existing deployments without persistent volumes must be updated
+- **Oracle compliance**: 7-day P95 CPU history requires persistent metrics database
+- **Multi-instance protection**: Race condition warnings enhanced to prevent P95 calculation corruption
+
+### Single Instance Requirement
+**CRITICAL:** Only ONE LoadShaper instance per system. Multiple instances cause:
+- P95 ring buffer state corruption (`/var/lib/loadshaper/p95_ring_buffer.json`)
+- SQLite database locks and corruption (`/var/lib/loadshaper/metrics.db`)
+- Oracle VM reclamation due to broken P95 calculations
+- Resource measurement conflicts and safety check failures
+
+Each instance requires **exclusive access** to `/var/lib/loadshaper/` directory.
