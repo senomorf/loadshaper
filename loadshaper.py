@@ -3335,14 +3335,14 @@ class NetworkGenerator:
         # Peer management
         self.peers = {}  # {address: PeerInfo}
         self.current_peer_index = 0
-        self.last_used_peer = None  # Track the last peer we actually sent to
+        self.last_used_peer = None  # Track the last peer we selected for use
+        self.last_sent_peer = None  # Track the last peer we actually sent to successfully
         self.fallback_dns_servers = self.DEFAULT_DNS_SERVERS.copy()
         self.local_fallback = "127.0.0.1"
 
         # Connection management
         self.socket = None
         self.tcp_connections = {}
-        self.resolved_targets = {}
 
         # Validation and monitoring
         self.tx_bytes_ema = 0.0
@@ -3415,6 +3415,10 @@ class NetworkGenerator:
             if self.validate_startup:
                 self._transition_state(NetworkState.VALIDATING, "validating peers")
                 self._validate_all_peers()
+
+            # Validate protocol before transitioning state
+            if self.protocol not in ["udp", "tcp"]:
+                raise ValueError(f"Unsupported protocol: {self.protocol}")
 
             # Start primary protocol
             target_state = NetworkState.ACTIVE_TCP if self.protocol == "tcp" else NetworkState.ACTIVE_UDP
@@ -3590,10 +3594,17 @@ class NetworkGenerator:
         time_in_state = current_time - self.state_start_time
 
         # Allow first transition from OFF state without timing restrictions (startup)
+        # Also allow transitions to ERROR state (critical failures should not be delayed)
+        # Also allow transitions during startup sequence (INITIALIZING -> VALIDATING -> ACTIVE_*)
+        # Also allow transitions to OFF state (stop() should always work)
         is_first_transition = (self.state == NetworkState.OFF and
                                len(self.state_transitions) == 0)
+        is_error_transition = (new_state == NetworkState.ERROR)
+        is_startup_sequence = (self.state in [NetworkState.INITIALIZING, NetworkState.VALIDATING] and
+                               new_state in [NetworkState.VALIDATING, NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP])
+        is_stop_transition = (new_state == NetworkState.OFF)
 
-        if not is_first_transition:
+        if not is_first_transition and not is_error_transition and not is_startup_sequence and not is_stop_transition:
             # Check debounce timing - prevent rapid state changes
             if hasattr(self, 'last_transition_time'):
                 time_since_last_transition = current_time - self.last_transition_time
@@ -3654,7 +3665,11 @@ class NetworkGenerator:
         target_ip = self._get_next_valid_peer()
         if not target_ip:
             self._handle_no_valid_peers()
-            return
+            # After fallback, try to get a peer again
+            target_ip = self._get_next_valid_peer()
+            if not target_ip:
+                # Still no peers after fallback, cannot continue
+                return
 
         family = socket.AF_INET
         try:
@@ -3693,8 +3708,13 @@ class NetworkGenerator:
 
     def _get_next_valid_peer(self) -> Optional[str]:
         """Get next valid peer using round-robin."""
-        valid_peers = [addr for addr, info in self.peers.items()
-                      if info['state'] == PeerState.VALID and time.time() > info['blacklist_until']]
+        # Include UNVALIDATED peers if validate_startup is False (optimistic sending)
+        if not self.validate_startup:
+            valid_peers = [addr for addr, info in self.peers.items()
+                          if info['state'] in [PeerState.VALID, PeerState.UNVALIDATED] and time.time() > info['blacklist_until']]
+        else:
+            valid_peers = [addr for addr, info in self.peers.items()
+                          if info['state'] == PeerState.VALID and time.time() > info['blacklist_until']]
 
         if not valid_peers:
             return None
@@ -3883,6 +3903,7 @@ class NetworkGenerator:
 
             self.socket.sendto(packet, (peer, port))
             self._record_peer_success(peer)
+            self.last_sent_peer = peer  # Track successful send
             return True
 
         except socket.error as e:
@@ -3904,6 +3925,7 @@ class NetworkGenerator:
             packet = self._get_current_packet()
             conn.send(packet)
             self._record_peer_success(peer)
+            self.last_sent_peer = peer  # Track successful send
             return True
 
         except (socket.error, OSError) as e:
@@ -4010,16 +4032,24 @@ class NetworkGenerator:
         tx_delta = tx_after - tx_before
         expected_bytes = bytes_sent  # Use actual bytes sent, not estimated
 
-        # Update EMA
-        self.tx_bytes_ema = (self.tx_bytes_alpha * tx_delta +
+        # Calculate elapsed time for rate calculation
+        elapsed_time = 0.1  # Minimum assumed time to prevent division by zero
+        if hasattr(self, '_last_validation_time'):
+            elapsed_time = max(0.1, time.time() - self._last_validation_time)
+        self._last_validation_time = time.time()
+
+        # Convert to bytes per second for EMA
+        tx_rate_bps = tx_delta / elapsed_time if elapsed_time > 0 else 0
+
+        # Update EMA with rate, not raw bytes
+        self.tx_bytes_ema = (self.tx_bytes_alpha * tx_rate_bps +
                            (1 - self.tx_bytes_alpha) * self.tx_bytes_ema)
 
         # Verify external egress for E2 compliance
         # Only mark as verified if we actually sent to external peers
         if tx_delta > expected_bytes * 0.6:  # 60% threshold for validation
             # Check if the last peer we actually sent to was external
-            peer = self._get_current_peer()
-            if peer and self.peers.get(peer, {}).get('is_external', False):
+            if self.last_sent_peer and self.peers.get(self.last_sent_peer, {}).get('is_external', False):
                 self.external_egress_verified = True
         else:
             logger.debug(f"Low tx_bytes delta: {tx_delta} bytes vs {expected_bytes} expected")
@@ -4183,7 +4213,6 @@ class NetworkGenerator:
 
         # Reset state
         self.peers.clear()
-        self.resolved_targets.clear()
 
     def __enter__(self):
         """Context manager entry."""

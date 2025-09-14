@@ -95,16 +95,14 @@ class TestNetworkStateMachine(unittest.TestCase):
 
     def test_error_state_transition(self):
         """Test error conditions lead to ERROR state."""
-        with unittest.mock.patch.object(self.generator, '_detect_network_interface',
+        # Mock _detect_network_interface to raise an exception that won't be caught
+        # The original method catches exceptions, so we need to mock at a different level
+        with unittest.mock.patch.object(self.generator, '_initialize_peers',
                                        side_effect=Exception("Network error")):
             self.generator.start(["8.8.8.8"])
 
-            # Should transition to ERROR state on exception or handle gracefully
-            self.assertIn(self.generator.state, [
-                loadshaper.NetworkState.ERROR,
-                loadshaper.NetworkState.DEGRADED_LOCAL,
-                loadshaper.NetworkState.OFF
-            ])
+            # Should transition to ERROR state on exception
+            self.assertEqual(self.generator.state, loadshaper.NetworkState.ERROR)
 
     def test_degraded_local_fallback(self):
         """Test fallback to DEGRADED_LOCAL when peers fail."""
@@ -137,8 +135,8 @@ class TestNetworkStateMachine(unittest.TestCase):
             # Try to transition too quickly (within debounce time)
             mock_time.return_value = 1000.1  # 100ms later (< 5s debounce threshold)
 
-            # Attempt transition should be blocked by debounce
-            self.generator._transition_state(loadshaper.NetworkState.ERROR, "test transition")
+            # Attempt transition to DEGRADED_LOCAL should be blocked by debounce
+            self.generator._transition_state(loadshaper.NetworkState.DEGRADED_LOCAL, "test transition")
 
             # State should remain unchanged due to debounce protection
             self.assertEqual(self.generator.state, initial_state,
@@ -172,8 +170,8 @@ class TestNetworkStateMachine(unittest.TestCase):
             # Attempt to transition away too quickly (within min-on time)
             mock_time.return_value = 1005.0  # 5 seconds later (< 15s min-on time)
 
-            # Try to force transition to different state
-            self.generator._transition_state(loadshaper.NetworkState.ERROR, "premature transition")
+            # Try to force transition to TCP (non-error/stop transition)
+            self.generator._transition_state(loadshaper.NetworkState.ACTIVE_TCP, "premature transition")
 
             # State should remain unchanged due to min-on time protection
             self.assertEqual(self.generator.state, initial_state,
@@ -182,10 +180,10 @@ class TestNetworkStateMachine(unittest.TestCase):
             # Wait longer than min-on time and try again
             mock_time.return_value = 1020.0  # 20 seconds later (> 15s min-on time)
 
-            self.generator._transition_state(loadshaper.NetworkState.ERROR, "transition after min-on time")
+            self.generator._transition_state(loadshaper.NetworkState.ACTIVE_TCP, "transition after min-on time")
 
             # Now transition should succeed
-            self.assertEqual(self.generator.state, loadshaper.NetworkState.ERROR,
+            self.assertEqual(self.generator.state, loadshaper.NetworkState.ACTIVE_TCP,
                            "State transition should succeed after min-on time period")
 
             # Test min-off time for inactive states
@@ -248,16 +246,30 @@ class TestNetworkStateMachine(unittest.TestCase):
 
     def test_stop_state_cleanup(self):
         """Test stop() properly cleans up state."""
+        # Create generator with validate_startup=False to simplify test
+        self.generator.validate_startup = False
+
         with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
-            self.generator.start(["8.8.8.8"])
+            with unittest.mock.patch.object(self.generator, '_start_protocol'):
+                self.generator.start(["8.8.8.8"])
 
-            # Record pre-stop state
-            pre_stop_state = self.generator.state
-            self.assertIsInstance(pre_stop_state, loadshaper.NetworkState)
+                # Record pre-stop state (should be ACTIVE_UDP after start)
+                pre_stop_state = self.generator.state
+                self.assertIsInstance(pre_stop_state, loadshaper.NetworkState)
+                # Should be in an active state after successful start
+                # Debug: print state to see what's happening
+                if pre_stop_state not in [loadshaper.NetworkState.ACTIVE_UDP, loadshaper.NetworkState.ACTIVE_TCP]:
+                    print(f"DEBUG: Unexpected state: {pre_stop_state}")
+                    print(f"DEBUG: validate_startup: {self.generator.validate_startup}")
+                    print(f"DEBUG: state transitions: {self.generator.state_transitions}")
+                self.assertIn(pre_stop_state, [
+                    loadshaper.NetworkState.ACTIVE_UDP,
+                    loadshaper.NetworkState.ACTIVE_TCP
+                ])
 
-            # Stop should return to OFF state
-            self.generator.stop()
-            self.assertEqual(self.generator.state, loadshaper.NetworkState.OFF)
+                # Stop should return to OFF state
+                self.generator.stop()
+                self.assertEqual(self.generator.state, loadshaper.NetworkState.OFF)
 
     def test_state_persistence_during_operation(self):
         """Test state remains stable during normal operation."""

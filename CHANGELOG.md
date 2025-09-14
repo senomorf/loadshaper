@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Container security hardened** - Now runs as non-root user (uid/gid 1000) with no fallback to ephemeral storage
 
 ### Fixed
-- **Critical bug fixes in issue #75 implementation**:
+- **Critical network generation bug fixes**:
   - **State machine initialization**: Fixed debounce blocking first transition from OFF→INITIALIZING, preventing network generation startup
   - **CGNAT detection**: Fixed incomplete 100.64.0.0/10 range check (was only detecting 100.64.x.x, now properly detects entire 100.64.0.0-100.127.255.255)
   - **Special-use IP ranges**: Added missing RFC 2544 (198.18.0.0/15), TEST-NETs, and other reserved ranges to external address validation

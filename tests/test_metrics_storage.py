@@ -9,9 +9,14 @@ from unittest.mock import patch
 import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 from loadshaper import MetricsStorage
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestMetricsStorage:
     @pytest.fixture
     def temp_db(self):

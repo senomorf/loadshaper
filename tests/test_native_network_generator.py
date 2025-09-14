@@ -178,10 +178,10 @@ class TestNetworkGenerator(unittest.TestCase):
         self.assertIsNotNone(self.generator.packet_data)
         self.assertEqual(len(self.generator.packet_data), self.packet_size)
 
-    def test_rfc2544_default_addresses(self):
-        """Test RFC 2544 default addresses are used when no peers specified."""
-        expected_addresses = ["198.18.0.1", "198.19.255.254"]
-        self.assertEqual(loadshaper.NetworkGenerator.RFC2544_ADDRESSES, expected_addresses)
+    def test_dns_default_addresses(self):
+        """Test DNS servers are used as default fallback addresses."""
+        expected_addresses = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
+        self.assertEqual(loadshaper.NetworkGenerator.DEFAULT_DNS_SERVERS, expected_addresses)
 
     def test_packet_size_limits(self):
         """Test packet size limits are enforced."""
@@ -379,7 +379,7 @@ class TestNetworkGenerator(unittest.TestCase):
         gen.start([])  # Empty peer list - should trigger DNS fallback
 
         # Should log info about using DNS servers for external traffic
-        # The new implementation uses DNS servers, not RFC 2544 addresses
+        # The new implementation uses DNS servers as fallback
         mock_logger.info.assert_called()
         # Check for DNS-related logging
         call_args = [call[0][0] for call in mock_logger.info.call_args_list]
@@ -463,9 +463,9 @@ class TestNetworkGeneratorIntegration(unittest.TestCase):
         if self.generator:
             self.generator.stop()
 
-    def test_udp_burst_with_rfc2544(self):
-        """Test UDP traffic generation with RFC 2544 addresses."""
-        self.generator.start([])  # Use RFC 2544 defaults
+    def test_udp_burst_with_dns_fallback(self):
+        """Test UDP traffic generation with DNS fallback."""
+        self.generator.start([])  # Use DNS server defaults
 
         # Send very short burst to avoid network impact
         packets_sent = self.generator.send_burst(0.01)  # 10ms burst
@@ -525,7 +525,7 @@ class TestNetworkClientThread(unittest.TestCase):
         loadshaper.NET_TTL = 1
         loadshaper.NET_PACKET_SIZE = 1000
         loadshaper.NET_PORT = 15201
-        loadshaper.NET_PEERS = []  # Use RFC 2544 defaults
+        loadshaper.NET_PEERS = []  # Use DNS server defaults
         loadshaper.NET_BURST_SEC = 1
         loadshaper.NET_IDLE_SEC = 1
         loadshaper.NET_MIN_RATE = 0.1

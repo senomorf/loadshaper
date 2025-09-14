@@ -7,7 +7,7 @@ ring buffer state saves to reduce I/O frequency and improve performance.
 """
 
 import unittest
-import unittest.mock
+from unittest.mock import patch
 import sys
 import os
 import time
@@ -17,9 +17,14 @@ import shutil
 from multiprocessing import Value
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestRingBufferBatching(unittest.TestCase):
     """Test ring buffer batching optimization."""
 

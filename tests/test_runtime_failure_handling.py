@@ -21,9 +21,13 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestStorageDegradation:
     """Test storage degradation detection and handling."""
 
@@ -105,6 +109,7 @@ class TestStorageDegradation:
                 storage.consecutive_failures = 0
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestHealthEndpointDegradation:
     """Test health endpoint reporting of storage degradation."""
 
@@ -194,6 +199,7 @@ class TestHealthEndpointDegradation:
             assert handler.response_body['storage_status']['consecutive_failures'] == 0
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestP95ControllerFailureHandling:
     """Test P95 controller behavior during storage failures."""
 
@@ -260,6 +266,7 @@ class TestP95ControllerFailureHandling:
                 assert isinstance(intensity, (int, float))
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestDatabaseCorruptionRecovery:
     """Test handling of database corruption scenarios."""
 

@@ -9,6 +9,7 @@ graceful degradation and recovery.
 
 import unittest
 import unittest.mock
+from unittest.mock import patch
 import sys
 import os
 import time
@@ -19,9 +20,14 @@ import tempfile
 import signal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestStressFailureModes(unittest.TestCase):
     """Test failure modes and stress conditions."""
 

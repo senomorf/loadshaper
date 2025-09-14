@@ -10,6 +10,7 @@ This module tests the database corruption handling methods:
 
 import unittest
 import unittest.mock
+from unittest.mock import patch
 import sys
 import os
 import time
@@ -19,9 +20,14 @@ import sqlite3
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 import loadshaper
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestDatabaseCorruptionHandling(unittest.TestCase):
     """Test database corruption detection and recovery."""
 

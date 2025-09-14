@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test suite for critical bug fixes in issue #75 implementation.
+Test suite for critical network generation validations.
 
 Tests:
 1. State machine initialization without debounce blocking
@@ -52,22 +52,25 @@ class TestStateMachineInitialization(unittest.TestCase):
         self.assertEqual(gen.state, NetworkState.INITIALIZING)
 
     def test_subsequent_transitions_enforce_timing(self):
-        """After first transition, timing restrictions should apply."""
+        """After startup, timing restrictions should apply to non-startup transitions."""
         gen = NetworkGenerator(rate_mbps=10.0, validate_startup=False)
         gen.state_debounce_sec = 0.1  # Short debounce for testing
+        gen.state_min_on_sec = 0.1  # Short min-on for testing
 
-        # First transition should succeed
-        gen._transition_state(NetworkState.INITIALIZING, "first")
+        # Startup transitions should succeed without debounce
+        gen._transition_state(NetworkState.INITIALIZING, "startup")
         self.assertEqual(gen.state, NetworkState.INITIALIZING)
+        gen._transition_state(NetworkState.ACTIVE_UDP, "startup complete")
+        self.assertEqual(gen.state, NetworkState.ACTIVE_UDP)
 
-        # Immediate second transition should be blocked by debounce
-        gen._transition_state(NetworkState.VALIDATING, "too fast")
-        self.assertEqual(gen.state, NetworkState.INITIALIZING)
+        # Non-startup transition should be blocked by debounce
+        gen._transition_state(NetworkState.ACTIVE_TCP, "too fast")
+        self.assertEqual(gen.state, NetworkState.ACTIVE_UDP)  # Should still be UDP
 
-        # After debounce time, should succeed
-        time.sleep(0.11)
-        gen._transition_state(NetworkState.VALIDATING, "after debounce")
-        self.assertEqual(gen.state, NetworkState.VALIDATING)
+        # After both debounce and min-on time, should succeed
+        time.sleep(0.12)  # Slightly more than both 0.1s debounce and 0.1s min-on
+        gen._transition_state(NetworkState.ACTIVE_TCP, "after debounce")
+        self.assertEqual(gen.state, NetworkState.ACTIVE_TCP)
 
 
 class TestCGNATDetection(unittest.TestCase):
@@ -182,12 +185,13 @@ class TestTxBytesValidation(unittest.TestCase):
         gen._validate_transmission_effectiveness(1000000, bytes_sent, 2)
 
         # Should use actual bytes (1024) for validation
-        # Check that EMA was updated with actual delta (1024 bytes increase)
-        self.assertAlmostEqual(gen.tx_bytes_ema, 1024 * 0.2, delta=10)
+        # EMA is now calculated as bytes per second, not raw bytes
+        # With default elapsed time of 0.1s minimum, rate would be 1024/0.1 = 10240 B/s
+        # EMA update: 0 * 0.8 + 10240 * 0.2 = 2048 B/s
+        self.assertAlmostEqual(gen.tx_bytes_ema, 2048, delta=100)
 
-    @patch('loadshaper.NetworkGenerator._get_current_peer')
     @patch('loadshaper.NetworkGenerator._get_tx_bytes')
-    def test_external_egress_checks_actual_peer(self, mock_get_tx, mock_get_peer):
+    def test_external_egress_checks_actual_peer(self, mock_get_tx):
         """Test that external_egress_verified only set when sending to external peer."""
         gen = NetworkGenerator(rate_mbps=10.0, validate_startup=False)
         gen.network_interface = "eth0"
@@ -201,14 +205,14 @@ class TestTxBytesValidation(unittest.TestCase):
 
         # Test 1: Sending to internal peer should NOT verify external egress
         mock_get_tx.return_value = 1002000  # Good increase
-        mock_get_peer.return_value = "192.168.1.1"
+        gen.last_sent_peer = "192.168.1.1"  # Set the last sent peer directly
         gen.external_egress_verified = False
         gen._validate_transmission_effectiveness(1000000, 1500, 1)
         self.assertFalse(gen.external_egress_verified)
 
         # Test 2: Sending to external peer SHOULD verify external egress
         mock_get_tx.return_value = 1004000  # Another good increase
-        mock_get_peer.return_value = "8.8.8.8"
+        gen.last_sent_peer = "8.8.8.8"  # Set the last sent peer directly
         gen._validate_transmission_effectiveness(1002000, 1500, 1)
         self.assertTrue(gen.external_egress_verified)
 

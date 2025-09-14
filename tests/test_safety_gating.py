@@ -17,6 +17,9 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Set test mode environment variable before importing loadshaper
+os.environ['LOADSHAPER_TEST_MODE'] = 'true'
+
 # Import and set up configuration before importing loadshaper components
 import loadshaper
 
@@ -47,6 +50,7 @@ class MockMetricsStorage:
         return None
 
 
+@patch.dict(os.environ, {'LOADSHAPER_TEST_MODE': 'true'})
 class TestSafetyGating(unittest.TestCase):
     """Test safety gating mechanisms in CPUP95Controller."""
 
