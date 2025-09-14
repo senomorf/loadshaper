@@ -47,6 +47,10 @@ This approach allows us to quickly iterate toward optimal Oracle Cloud VM protec
    # Test Docker build
    docker compose build
    
+   # Create persistent storage directory (required for local runs)
+   sudo mkdir -p /var/lib/loadshaper
+   sudo chown $USER:$USER /var/lib/loadshaper
+
    # Test runtime (requires Linux)
    python3 -u loadshaper.py  # or use Docker
    ```
