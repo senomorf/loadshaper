@@ -113,25 +113,52 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 
 ## Architecture
 
-`loadshaper` operates as a lightweight monitoring and control system with three main components:
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           LoadShaper                                │
+├─────────────────┬─────────────────┬─────────────────┬───────────────┤
+│  Metrics        │   P95 CPU       │  Load           │   Health      │
+│  Collector      │   Controller    │  Generators     │   Server      │
+│                 │                 │                 │               │
+│ ┌─────────────┐ │ ┌─────────────┐ │ ┌─────────────┐ │ ┌───────────┐ │
+│ │ /proc/stat  │ │ │ Ring Buffer │ │ │ CPU Workers │ │ │ /health   │ │
+│ │ /proc/mem   │─┼─│ SQLite DB   │─┼─│ Mem Alloc   │ │ │ /metrics  │ │
+│ │ /proc/net   │ │ │ State Mach  │ │ │ Net Traffic │ │ │ :8080     │ │
+│ │ /loadavg    │ │ │ Slot Timing │ │ │             │ │ │           │ │
+│ └─────────────┘ │ └─────────────┘ │ └─────────────┘ │ └───────────┘ │
+└─────────────────┴─────────────────┴─────────────────┴───────────────┘
+         │                   │                   │              │
+         │                   │                   │              │
+         ▼                   ▼                   ▼              ▼
+    5s samples         7-day P95           Oracle VM        Docker/K8s
+    EMA averages      calculations        protection        monitoring
+```
 
-### 1. **Metric Collection**
+`loadshaper` operates as a lightweight monitoring and control system with four main components:
+
+### 1. **Metrics Collector**
 - **CPU utilization**: Read from `/proc/stat` (system-wide percentage)
 - **Memory utilization**: Read from `/proc/meminfo` using industry-standard calculation (see [Memory Calculation](#memory-calculation))
 - **Network utilization**: Read from `/proc/net/dev` with automatic speed detection
 - **Load average**: Monitor from `/proc/loadavg` to detect CPU contention
 
-### 2. **7-Day Metrics Storage**
+### 2. **P95 CPU Controller**
 - **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis in persistent storage (`/var/lib/loadshaper/metrics.db`)
 - **95th percentile calculation**: CPU only (mirrors Oracle's measurement method)
 - **Automatic cleanup**: Removes data older than 7 days
 - **Persistent storage requirement**: Database must be stored at `/var/lib/loadshaper/metrics.db` for 7-day history preservation
 
-### 3. **Intelligent Load Generation**
+### 3. **Load Generators**
 - **CPU stress**: Low-priority workers (nice 19) with arithmetic operations
 - **Memory occupation**: Gradual allocation with periodic page touching for A1.Flex shapes  
 - **Network traffic**: Native Python network bursts to peer instances when needed
 - **Load balancing**: Automatic pausing when real workloads need resources
+
+### 4. **Health Server**
+- **HTTP endpoints**: `/health` and `/metrics` on port 8080 (configurable)
+- **Docker integration**: Provides health checks for container orchestration
+- **Monitoring support**: Real-time metrics for external monitoring systems
+- **Security**: Binds to localhost by default, configurable for external access
 
 ### Operation Flow
 ```
