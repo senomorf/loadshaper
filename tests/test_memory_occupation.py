@@ -284,7 +284,7 @@ Shmem:            100000 kB
 """
         
         with patch('builtins.open', unittest.mock.mock_open(read_data=mock_meminfo)):
-            total_b, used_pct, used_b = loadshaper.read_meminfo()
+            total_b, free_b, used_pct, used_b, used_pct_incl_cache = loadshaper.read_meminfo()
             
             # Verify basic values
             self.assertEqual(total_b, 8000000 * 1024)  # Total memory in bytes
@@ -328,10 +328,10 @@ MemAvailable:     600000 kB
         with patch('builtins.open', unittest.mock.mock_open(read_data=mock_meminfo)):
             result = loadshaper.read_meminfo()
             
-            # Verify return format: (total_bytes, used_pct, used_bytes)
-            self.assertEqual(len(result), 3, "read_meminfo() should return 3 values")
-            
-            total_b, used_pct, used_b = result
+            # Verify return format: (total_bytes, free_bytes, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
+            self.assertEqual(len(result), 5, "read_meminfo() should return 5 values")
+
+            total_b, free_b, used_pct, used_b, used_pct_incl_cache = result
             
             # Verify types
             self.assertIsInstance(total_b, int, "total_bytes should be int")
@@ -352,7 +352,7 @@ Cached:          2000000 kB
 """
 
         with patch('builtins.open', unittest.mock.mock_open(read_data=mock_meminfo)):
-            total_b, used_pct, used_b = loadshaper.read_meminfo()
+            total_b, free_b, used_pct, used_b, used_pct_incl_cache = loadshaper.read_meminfo()
 
             # When MemAvailable is 0, should return 100% usage (not an error)
             self.assertEqual(used_pct, 100.0)
@@ -371,7 +371,7 @@ EmptyValue:      kB
 """
 
         with patch('builtins.open', unittest.mock.mock_open(read_data=mock_meminfo)):
-            total_b, used_pct, used_b = loadshaper.read_meminfo()
+            total_b, free_b, used_pct, used_b, used_pct_incl_cache = loadshaper.read_meminfo()
 
             # Should successfully parse valid lines and ignore bad ones
             self.assertEqual(total_b, 8000000 * 1024)
@@ -410,7 +410,7 @@ MemAvailable:    2000000 kB
 """
 
         with patch('builtins.open', unittest.mock.mock_open(read_data=mock_meminfo)):
-            total_b, used_pct, used_b = loadshaper.read_meminfo()
+            total_b, free_b, used_pct, used_b, used_pct_incl_cache = loadshaper.read_meminfo()
 
             # Should clamp usage percentage to valid range
             self.assertGreaterEqual(used_pct, 0.0)

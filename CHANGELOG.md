@@ -7,7 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **📖 Related Documentation:** [README.md](README.md) | [CONTRIBUTING.md](CONTRIBUTING.md) | [AGENTS.md](AGENTS.md)
 
-## [Unreleased]
+## [3.0.0] - Breaking Change Release
+
+### ⚠️ BREAKING CHANGES
+- **New P95-driven CPU control system** - replaces previous implementation completely
+- **No backward compatibility** - this is intentional for the WIP project
+- **Pure P95 control** - uses Oracle's exact 95th percentile measurement criteria
+
+### Added
+- **P95-driven CPU control**: Pure Oracle-compliant 95th percentile control system
+- **CPU P95 state machine**: BUILDING/MAINTAINING/REDUCING states based on 7-day CPU P95 trends
+- **Exceedance budget controller**: Maintains approximately 6.5% of time slots above threshold to achieve target P95
+- **Proportional safety scaling**: Dynamic CPU intensity adjustment based on system load to maintain responsiveness while achieving P95 targets
+- **Oracle rules compliance**: CPU uses P95 measurement, memory/network use simple thresholds (per official Oracle documentation)
+- **P95 controller configuration**: `CPU_P95_TARGET_MIN`, `CPU_P95_TARGET_MAX`, `CPU_P95_SETPOINT`, etc.
+- **Enhanced telemetry**: Shows CPU P95 controller state, exceedance percentage, and target ranges
+- **Official Oracle documentation link**: Added to README and agent guidelines for reference
+- **WIP project status**: Clear documentation that breaking changes are expected
+
+### Changed
+- **BREAKING**: CPU control logic completely replaced with pure P95 system
+- **BREAKING**: All configuration files updated to use P95 variables only
+- **BREAKING**: Helm charts updated with new P95 configuration structure
+- **Telemetry format**: Removed P95 display for memory/network (Oracle doesn't use P95 for these metrics)
+- **Health endpoints**: Include P95 controller status in JSON responses
+- **Documentation accuracy**: Corrected Oracle reclamation rules across all documentation files
+
+### Removed
+- **CPU_TARGET_PCT variable**: Completely removed from codebase
+- **Backward compatibility**: No support for old configuration format
+
+### Fixed
+- **Critical Oracle compliance issue**: CPU control now uses 95th percentile matching Oracle's exact reclamation criteria
+- **Issue #73**: LoadShaper now uses P95 values for control decisions, not just telemetry display
+- **Load gating mismatch**: Fixed critical bug where controller recorded high slots even when main loop forced baseline due to load constraints
+- **Jumbo config template fixes**: Updated jumbo frame configuration templates to use correct P95 variables instead of deprecated CPU_TARGET_PCT
+- **Test failures**: Resolved P95 cache pollution issues in test suite causing incorrect exceedance target calculations
+- **Code documentation**: Added comprehensive docstrings and improved critical code comments for Oracle compliance logic
+
+## [3.0.2] - Critical Bug Fixes and Thread Safety
+
+### Fixed
+- **Critical memory unpacking bug**: Fixed variable unpacking mismatch where `read_meminfo()` returns 5 values but only 3 were unpacked, causing undefined variable errors
+- **P95 cache fallback logic**: Fixed fallback to return cached P95 value when database read fails instead of returning None
+- **Thread safety**: Added missing `with self._lock:` protection to `get_target_intensity()` and `get_exceedance_target()` methods
+- **Safety scaling efficiency**: Fixed `_calculate_safety_scaled_intensity()` method signature to accept `normal_intensity` parameter, preventing redundant calculations
+- **Configuration warning clarity**: Enhanced setpoint adjustment warning to show the actual adjusted value
+- **Logging level**: Changed P95 ring buffer initialization message from debug to info level for better visibility
+
+### Technical Improvements
+- **Reduced database queries**: Safety scaling now avoids calling `get_target_intensity()` twice when scaling is needed
+- **Better error recovery**: P95 controller now gracefully handles temporary database failures using cached values
+- **Consistent thread safety**: All P95 controller methods now use proper locking for concurrent access protection
+
+## [3.0.1] - Bug Fixes and Test Coverage
+
+### Fixed
+- **Critical JSON encoding bug**: Fixed `json.JSONEncodeError` which doesn't exist in Python stdlib (replaced with `TypeError`, `ValueError`)
+- **Performance optimization**: Eliminated redundant P95 database queries by using controller cache for network fallback logic
+- **Configuration validation**: Added enforcement that `CPU_P95_BASELINE_INTENSITY` < `CPU_P95_HIGH_INTENSITY` with automatic adjustment
+- **Test isolation bug**: Fixed intermittent test failure in `test_proportional_scaling_in_middle_range` due to shared global state pollution
+- **Documentation corrections**: Fixed incorrect descriptions of `NET_FALLBACK_START_PCT`/`NET_FALLBACK_STOP_PCT` (network thresholds, not CPU thresholds)
+- **Test comment accuracy**: Updated comment referring to "5-second slots" to correctly reflect default 60-second slots
+
+### Added
+- **Enhanced test coverage**: Added 6 new test cases covering previously untested code paths:
+  - Dithering boundary testing with predictable randomization
+  - Configuration validation warnings for out-of-range values
+  - Ring buffer save error handling verification
+  - Fallback risk flag activation conditions
+  - P95 controller configuration edge cases
+- **Improved test isolation**: All proportional safety scaling tests now use proper mocking to prevent global state contamination
+
+---
+
+## [2.2.0] - Previous Version
 
 ### Added
 - **Native Python network generator** (#71): Complete replacement of iperf3 with native socket-based implementation
@@ -173,30 +247,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker Compose v3.9 requirement
 - Network configuration restructure
 
-### Migration Guide
-
-**Upgrading to v1.2.0:**
-```bash
-# Clean restart recommended for new metrics database
-docker compose down -v
-docker compose up -d --build
-
-# New environment variables (optional):
-LOAD_THRESHOLD=0.6
-LOAD_RESUME_THRESHOLD=0.4 
-LOAD_CHECK_ENABLED=true
-```
-
-**Upgrading to v1.1.0:**
-```bash  
-# Update environment variable names:
-# OLD: CPU_PERCENT -> NEW: CPU_TARGET_PCT
-# OLD: MEM_PERCENT -> NEW: MEM_TARGET_PCT
-# OLD: NET_PERCENT -> NEW: NET_TARGET_PCT
-
-# Rebuild container:
-docker compose up -d --build
-```
 
 ### Development History
 

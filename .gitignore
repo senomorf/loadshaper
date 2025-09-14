@@ -208,3 +208,6 @@ __marimo__/
 
 .gemini/
 gha-creds-*.json
+
+# macOS
+.DS_Store

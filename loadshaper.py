@@ -11,7 +11,7 @@ import socket
 import struct
 from typing import Tuple, Optional, Dict, Any
 from multiprocessing import Process, Value
-from math import isfinite
+from math import isfinite, exp, ceil
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -54,7 +54,7 @@ class ShapeDetectionCache:
         with self._lock:
             if (self._cache is not None and 
                 self._timestamp is not None and 
-                time.time() - self._timestamp < self._ttl):
+                time.monotonic() - self._timestamp < self._ttl):
                 return self._cache
             return None
     
@@ -67,7 +67,7 @@ class ShapeDetectionCache:
         """
         with self._lock:
             self._cache = value
-            self._timestamp = time.time()
+            self._timestamp = time.monotonic()
     
     def clear_cache(self):
         """Clear cache (for testing purposes)."""
@@ -247,7 +247,7 @@ def _get_system_specs():
 # Memory tolerance constants for Oracle shape detection
 # These ranges account for kernel memory usage and system overhead
 E2_1_MICRO_MEM_RANGE = (0.8, 1.2)   # ±20% tolerance for ~1GB (E2.1.Micro)
-E2_2_MICRO_MEM_RANGE = (1.8, 2.2)   # ±20% tolerance for ~2GB (E2.2.Micro)
+E2_2_MICRO_MEM_RANGE = (1.8, 2.2)   # ±10% tolerance for ~2GB (E2.2.Micro)
 A1_FLEX_1_MEM_RANGE = (5.5, 6.5)    # ±0.5GB tolerance for ~6GB (A1.Flex 1 vCPU)
 A1_FLEX_2_MEM_RANGE = (11.5, 12.5)  # ±0.5GB tolerance for ~12GB (A1.Flex 2 vCPU)
 A1_FLEX_3_MEM_RANGE = (17.5, 18.5)  # ±0.5GB tolerance for ~18GB (A1.Flex 3 vCPU)
@@ -345,7 +345,7 @@ def _validate_config_value(key, value):
         ValueError: If value is invalid for the given key
     """
     # Validate percentage values (0-100)
-    if key.endswith('_PCT'):
+    if key.endswith('_PCT') or (key.startswith('CPU_P95_') and not key.endswith('_SEC')):
         try:
             pct = float(value)
             if not 0 <= pct <= 100:
@@ -356,10 +356,10 @@ def _validate_config_value(key, value):
             raise ValueError(f"{key}={value} must be a valid number (percentage)")
     
     # Validate positive numeric values with bounds checking
-    elif key in ['CONTROL_PERIOD_SEC', 'AVG_WINDOW_SEC', 'MEM_MIN_FREE_MB', 
+    elif key in ['CONTROL_PERIOD_SEC', 'AVG_WINDOW_SEC', 'MEM_MIN_FREE_MB',
                  'MEM_STEP_MB', 'MEM_TOUCH_INTERVAL_SEC', 'NET_PORT', 'NET_BURST_SEC', 'NET_IDLE_SEC',
                  'NET_LINK_MBIT', 'NET_MIN_RATE_MBIT', 'NET_MAX_RATE_MBIT',
-                 'JITTER_PERIOD_SEC']:
+                 'JITTER_PERIOD_SEC', 'CPU_P95_SLOT_DURATION_SEC']:
         try:
             num = float(value)
             if num <= 0:
@@ -379,6 +379,7 @@ def _validate_config_value(key, value):
                 'NET_MIN_RATE_MBIT': (0.1, 10000.0),      # 0.1 Mbps to 10 Gbps
                 'NET_MAX_RATE_MBIT': (1.0, 10000.0),      # 1 Mbps to 10 Gbps
                 'JITTER_PERIOD_SEC': (1.0, 3600.0),       # 1 second to 1 hour
+                'CPU_P95_SLOT_DURATION_SEC': (10.0, 3600.0),  # 10 seconds to 1 hour
             }
             
             if key in bounds:
@@ -464,7 +465,7 @@ def load_config_template(template_file):
               
     Examples:
         >>> load_config_template('e2-1-micro.env')
-        {'CPU_TARGET_PCT': '30', 'MEM_TARGET_PCT': '60', ...}
+        {'MEM_TARGET_PCT': '60', 'NET_TARGET_PCT': '10', ...}
         
         >>> load_config_template(None)
         {}
@@ -553,16 +554,16 @@ def getenv_with_template(name, default, config_template):
         3. Default value (lowest priority)
         
     Examples:
-        >>> # ENV: CPU_TARGET_PCT=50, Template: CPU_TARGET_PCT=30
-        >>> getenv_with_template('CPU_TARGET_PCT', '25', template)
+        >>> # ENV: MEM_TARGET_PCT=50, Template: MEM_TARGET_PCT=30
+        >>> getenv_with_template('MEM_TARGET_PCT', '25', template)
         '50'  # Environment variable wins
-        
-        >>> # ENV: not set, Template: CPU_TARGET_PCT=30  
-        >>> getenv_with_template('CPU_TARGET_PCT', '25', template)
+
+        >>> # ENV: not set, Template: MEM_TARGET_PCT=30
+        >>> getenv_with_template('MEM_TARGET_PCT', '25', template)
         '30'  # Template value used
-        
+
         >>> # ENV: not set, Template: not set
-        >>> getenv_with_template('CPU_TARGET_PCT', '25', {})
+        >>> getenv_with_template('MEM_TARGET_PCT', '25', {})
         '25'  # Default value used
     """
     # Priority 1: Environment variable (user override)
@@ -594,8 +595,8 @@ def getenv_float_with_template(name, default, config_template):
         float: Parsed float value or default if conversion fails
         
     Examples:
-        >>> getenv_float_with_template('CPU_TARGET_PCT', 30.0, {'CPU_TARGET_PCT': '25.5'})
-        25.5
+        >>> getenv_float_with_template('MEM_TARGET_PCT', 60.0, {'MEM_TARGET_PCT': '45.5'})
+        45.5
         
         >>> getenv_float_with_template('INVALID_NUM', 30.0, {'INVALID_NUM': 'not_a_number'})
         30.0  # Falls back to default on parse error
@@ -662,13 +663,11 @@ def _validate_final_config():
     for security and correctness, logging warnings for invalid values
     and falling back to defaults where possible.
     """
-    global CPU_TARGET_PCT, MEM_TARGET_PCT, NET_TARGET_PCT
+    global MEM_TARGET_PCT, NET_TARGET_PCT
     global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
-    global NET_PORT
-    
+    global NET_PORT, LOAD_CHECK_ENABLED
     # Validate percentage values
     for var_name, var_value in [
-        ("CPU_TARGET_PCT", CPU_TARGET_PCT),
         ("MEM_TARGET_PCT", MEM_TARGET_PCT), 
         ("NET_TARGET_PCT", NET_TARGET_PCT),
         ("CPU_STOP_PCT", CPU_STOP_PCT),
@@ -677,9 +676,7 @@ def _validate_final_config():
     ]:
         if not (0 <= var_value <= 100):
             logger.warning(f"Invalid {var_name}={var_value} (must be 0-100%), using default")
-            if "CPU_TARGET" in var_name:
-                CPU_TARGET_PCT = 30.0
-            elif "MEM_TARGET" in var_name:
+            if "MEM_TARGET" in var_name:
                 MEM_TARGET_PCT = 60.0
             elif "NET_TARGET" in var_name:
                 NET_TARGET_PCT = 10.0
@@ -740,16 +737,76 @@ def _validate_network_fallback_config():
             global_vars["NET_ACTIVATION"] = 'adaptive'
 
 
+def _validate_p95_config():
+    """
+    Validate P95 CPU controller configuration values.
+
+    Ensures CPU_P95_SETPOINT falls within the target range and provides
+    front-loaded validation with clear error messages for configuration issues.
+    """
+    global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT
+    global CPU_P95_SLOT_DURATION, CONTROL_PERIOD
+    global CPU_P95_BASELINE_INTENSITY, CPU_P95_HIGH_INTENSITY
+
+    # Validate that setpoint falls within target range
+    if CPU_P95_SETPOINT is not None and CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MAX is not None:
+        # Add safety margin to avoid edge cases
+        safety_margin = 1.0
+        min_valid = CPU_P95_TARGET_MIN + safety_margin
+        max_valid = CPU_P95_TARGET_MAX - safety_margin
+
+        if not (min_valid <= CPU_P95_SETPOINT <= max_valid):
+            new_setpoint = (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2.0
+            logger.warning(f"CPU_P95_SETPOINT={CPU_P95_SETPOINT}% is outside safe range "
+                          f"[{min_valid:.1f}%-{max_valid:.1f}%]. Adjusting to {new_setpoint:.1f}%.")
+            CPU_P95_SETPOINT = new_setpoint
+
+    # Validate that slot duration is reasonable relative to control period
+    if CPU_P95_SLOT_DURATION is not None and CONTROL_PERIOD is not None:
+        # Slot duration should be at least 6x the control period for reasonable slot management
+        min_slot_ratio = 6
+        if CPU_P95_SLOT_DURATION < (CONTROL_PERIOD * min_slot_ratio):
+            logger.warning(f"CPU_P95_SLOT_DURATION_SEC={CPU_P95_SLOT_DURATION}s is very short relative to "
+                          f"CONTROL_PERIOD_SEC={CONTROL_PERIOD}s. Consider using at least "
+                          f"{CONTROL_PERIOD * min_slot_ratio}s for stable slot management.")
+
+    # Validate that baseline intensity is less than high intensity
+    if CPU_P95_BASELINE_INTENSITY is not None and CPU_P95_HIGH_INTENSITY is not None:
+        if CPU_P95_BASELINE_INTENSITY >= CPU_P95_HIGH_INTENSITY:
+            logger.warning(f"CPU_P95_BASELINE_INTENSITY={CPU_P95_BASELINE_INTENSITY}% must be less than "
+                          f"CPU_P95_HIGH_INTENSITY={CPU_P95_HIGH_INTENSITY}%. Adjusting high intensity.")
+            CPU_P95_HIGH_INTENSITY = max(CPU_P95_HIGH_INTENSITY, CPU_P95_BASELINE_INTENSITY + 1.0)
+            logger.info(f"Adjusted CPU_P95_HIGH_INTENSITY to {CPU_P95_HIGH_INTENSITY:.1f}%")
+
+
 # ---------------------------
 # Env / config
 # ---------------------------
 def getenv_float(name, default):
+    """Get float environment variable with fallback to default.
+
+    Args:
+        name: Environment variable name
+        default: Default value if variable not set or invalid
+
+    Returns:
+        float: Environment variable value or default
+    """
     try:
         return float(os.getenv(name, default))
     except Exception:
         return float(default)
 
 def getenv_int(name, default):
+    """Get integer environment variable with fallback to default.
+
+    Args:
+        name: Environment variable name
+        default: Default value if variable not set or invalid
+
+    Returns:
+        int: Environment variable value or default
+    """
     try:
         return int(os.getenv(name, default))
     except Exception:
@@ -762,7 +819,6 @@ TEMPLATE_FILE = None
 IS_ORACLE = None
 CONFIG_TEMPLATE = {}
 
-CPU_TARGET_PCT = None
 MEM_TARGET_PCT = None
 NET_TARGET_PCT = None
 CPU_STOP_PCT = None
@@ -777,6 +833,15 @@ LOAD_CHECK_ENABLED = None
 JITTER_PCT = None
 JITTER_PERIOD = None
 MEM_MIN_FREE_MB = None
+
+# P95-driven CPU control globals
+CPU_P95_TARGET_MIN = None
+CPU_P95_TARGET_MAX = None
+CPU_P95_SETPOINT = None
+CPU_P95_EXCEEDANCE_TARGET = None
+CPU_P95_SLOT_DURATION = None
+CPU_P95_HIGH_INTENSITY = None
+CPU_P95_BASELINE_INTENSITY = None
 MEM_STEP_MB = None
 MEM_TOUCH_INTERVAL_SEC = None
 NET_MODE = None
@@ -817,11 +882,13 @@ def _initialize_config():
     during module import.
     """
     global _config_initialized, DETECTED_SHAPE, TEMPLATE_FILE, IS_ORACLE, CONFIG_TEMPLATE
-    global CPU_TARGET_PCT, MEM_TARGET_PCT, NET_TARGET_PCT
+    global MEM_TARGET_PCT, NET_TARGET_PCT
     global CPU_STOP_PCT, MEM_STOP_PCT, NET_STOP_PCT
     global CONTROL_PERIOD, AVG_WINDOW_SEC, HYSTERESIS_PCT
     global LOAD_THRESHOLD, LOAD_RESUME_THRESHOLD, LOAD_CHECK_ENABLED
     global JITTER_PCT, JITTER_PERIOD, MEM_MIN_FREE_MB, MEM_STEP_MB, MEM_TOUCH_INTERVAL_SEC
+    global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT, CPU_P95_EXCEEDANCE_TARGET
+    global CPU_P95_SLOT_DURATION, CPU_P95_HIGH_INTENSITY, CPU_P95_BASELINE_INTENSITY
     global NET_ACTIVATION, NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
     global NET_FALLBACK_DEBOUNCE_SEC, NET_FALLBACK_MIN_ON_SEC, NET_FALLBACK_MIN_OFF_SEC, NET_FALLBACK_RAMP_SEC
     global NET_MODE, NET_PEERS, NET_PORT, NET_BURST_SEC, NET_IDLE_SEC, NET_PROTOCOL
@@ -835,7 +902,6 @@ def _initialize_config():
     DETECTED_SHAPE, TEMPLATE_FILE, IS_ORACLE = detect_oracle_shape()
     CONFIG_TEMPLATE = load_config_template(TEMPLATE_FILE)
 
-    CPU_TARGET_PCT    = getenv_float_with_template("CPU_TARGET_PCT", 30.0, CONFIG_TEMPLATE)
     MEM_TARGET_PCT    = getenv_float_with_template("MEM_TARGET_PCT", 60.0, CONFIG_TEMPLATE)  # excludes cache/buffers
     NET_TARGET_PCT    = getenv_float_with_template("NET_TARGET_PCT", 10.0, CONFIG_TEMPLATE)  # NIC utilization %
 
@@ -847,9 +913,27 @@ def _initialize_config():
     AVG_WINDOW_SEC    = getenv_float_with_template("AVG_WINDOW_SEC", 300.0, CONFIG_TEMPLATE)
     HYSTERESIS_PCT    = getenv_float_with_template("HYSTERESIS_PCT", 5.0, CONFIG_TEMPLATE)
 
-    LOAD_THRESHOLD    = getenv_float_with_template("LOAD_THRESHOLD", 0.6, CONFIG_TEMPLATE)      # pause when load avg per core > this (conservative for Oracle Free Tier)
-    LOAD_RESUME_THRESHOLD = getenv_float_with_template("LOAD_RESUME_THRESHOLD", 0.4, CONFIG_TEMPLATE)  # resume when load avg per core < this (hysteresis)
+    # LOAD AVERAGE THRESHOLDS: Conservative values for Oracle Free Tier protection
+    # 0.6 per core = 60% sustained load triggers pause (protects legitimate workloads)
+    # 0.4 per core = 40% resume threshold (hysteresis prevents oscillation)
+    # Values are conservative because Free Tier VMs have limited resources and
+    # any interference with legitimate workloads defeats the purpose of the service.
+    LOAD_THRESHOLD    = getenv_float_with_template("LOAD_THRESHOLD", 0.6, CONFIG_TEMPLATE)      # CPU contention detection threshold
+    LOAD_RESUME_THRESHOLD = getenv_float_with_template("LOAD_RESUME_THRESHOLD", 0.4, CONFIG_TEMPLATE)  # Hysteresis gap for stability
     LOAD_CHECK_ENABLED = _parse_boolean(getenv_with_template("LOAD_CHECK_ENABLED", "true", CONFIG_TEMPLATE))
+
+    # P95-driven CPU control configuration
+    # CRITICAL FOR ORACLE COMPLIANCE: Oracle Free Tier VMs are reclaimed when ALL metrics
+    # stay below 20% for 7 consecutive days. Oracle measures CPU using 95th percentile.
+    # Target range 22-28% provides safe buffer above 20% reclamation threshold while avoiding
+    # excessive resource usage that could impact legitimate workloads.
+    CPU_P95_TARGET_MIN = getenv_float_with_template("CPU_P95_TARGET_MIN", 22.0, CONFIG_TEMPLATE)  # Oracle compliance floor: must stay >20% P95
+    CPU_P95_TARGET_MAX = getenv_float_with_template("CPU_P95_TARGET_MAX", 28.0, CONFIG_TEMPLATE)  # Efficiency ceiling: avoids excessive usage
+    CPU_P95_SETPOINT   = getenv_float_with_template("CPU_P95_SETPOINT", 25.0, CONFIG_TEMPLATE)    # Optimal target: center of safe range
+    CPU_P95_EXCEEDANCE_TARGET = getenv_float_with_template("CPU_P95_EXCEEDANCE_TARGET", 6.5, CONFIG_TEMPLATE)  # Target % of high slots (>5% ensures P95>baseline)
+    CPU_P95_SLOT_DURATION = getenv_float_with_template("CPU_P95_SLOT_DURATION_SEC", 60.0, CONFIG_TEMPLATE)  # Duration of each slot in seconds
+    CPU_P95_HIGH_INTENSITY = getenv_float_with_template("CPU_P95_HIGH_INTENSITY", 35.0, CONFIG_TEMPLATE)  # CPU % during high slots
+    CPU_P95_BASELINE_INTENSITY = getenv_float_with_template("CPU_P95_BASELINE_INTENSITY", 20.0, CONFIG_TEMPLATE)  # CPU % during normal slots (minimum for P95>20%)
 
     JITTER_PCT        = getenv_float_with_template("JITTER_PCT", 10.0, CONFIG_TEMPLATE)
     JITTER_PERIOD     = getenv_float_with_template("JITTER_PERIOD_SEC", 5.0, CONFIG_TEMPLATE)
@@ -892,6 +976,7 @@ def _initialize_config():
     # Validate final configuration values (including environment overrides)
     _validate_final_config()
     _validate_network_fallback_config()
+    _validate_p95_config()
     
     _config_initialized = True
 
@@ -914,10 +999,524 @@ MAX_DUTY = 0.95     # CPU duty cap
 # - Short enough to ensure other processes get timely CPU access
 SLEEP_SLICE = 0.005
 
+class CPUP95Controller:
+    """
+    P95-driven CPU controller implementing Oracle's exact reclamation criteria.
+
+    Uses exceedance budget control: maintains approximately 6.5% of time slots above threshold
+    to achieve target P95. Implements state machine based on 7-day P95 trends.
+    """
+
+    # State machine timing constants
+    STATE_CHANGE_COOLDOWN_SEC = 300  # 5 minutes cooldown after state change
+    P95_CACHE_TTL_SEC = 300          # Cache P95 calculations for 5 minutes (aligned with state change cooldown)
+
+    # Hysteresis values for adaptive deadbands
+    HYSTERESIS_SMALL_PCT = 0.5       # Small hysteresis for stable periods
+    HYSTERESIS_MEDIUM_PCT = 1.0      # Medium hysteresis (stable operation)
+    HYSTERESIS_LARGE_PCT = 2.0       # Large hysteresis
+    HYSTERESIS_XLARGE_PCT = 2.5      # Extra large hysteresis after state change
+
+    # State maintain buffer zones (require being well within range to transition)
+    MAINTAIN_BUFFER_SMALL = 0.5      # Buffer when using small hysteresis
+    MAINTAIN_BUFFER_MEDIUM = 1.5     # Buffer when using medium hysteresis
+    MAINTAIN_BUFFER_LARGE = 2.0      # Buffer when using large hysteresis
+
+    # Distance thresholds for aggressive adjustments
+    DISTANCE_THRESHOLD_LARGE = 5.0   # Far from target threshold for aggressive action
+    DISTANCE_THRESHOLD_XLARGE = 10.0 # Very far from target threshold for maximum aggression
+
+    # Intensity adjustments for BUILDING state
+    BUILD_AGGRESSIVE_INTENSITY_BOOST = 8.0  # Very aggressive catch-up when far below
+    BUILD_NORMAL_INTENSITY_BOOST = 5.0      # Normal catch-up intensity boost
+
+    # Intensity adjustments for REDUCING state
+    REDUCE_AGGRESSIVE_INTENSITY_CUT = 5.0   # Conservative high when way above target
+    REDUCE_MODERATE_INTENSITY_CUT = 2.0     # Moderate reduction
+
+    # Proportional control gain for MAINTAINING state
+    MAINTAIN_PROPORTIONAL_GAIN = 0.2        # Proportional adjustment factor for setpoint control
+
+    # Dithering for micro-variations in production
+    DITHER_RANGE_PCT = 1.0                  # ±1% random variation for better P95 control
+
+    # Exceedance target adjustments for BUILDING state
+    BUILD_AGGRESSIVE_EXCEEDANCE_BOOST = 4.0 # When far below target
+    BUILD_NORMAL_EXCEEDANCE_BOOST = 1.0     # Normal building boost
+
+    # Exceedance targets for REDUCING state
+    REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET = 1.0   # Very low for fast reduction
+    REDUCE_MODERATE_EXCEEDANCE_TARGET = 2.5     # Moderate reduction
+
+    # Exceedance caps and adjustments
+    EXCEEDANCE_SAFETY_CAP = 12.0            # Maximum exceedance percentage for safety
+    MAINTAIN_EXCEEDANCE_ADJUSTMENT = 0.5    # Fine adjustment in maintaining state
+
+    # Safety-driven proportional scaling constants
+    SAFETY_PROPORTIONAL_ENABLED = True     # Enable proportional scaling based on load
+    SAFETY_SCALE_START = 0.5               # Load level where scaling starts (below resume threshold)
+    SAFETY_SCALE_FULL = 0.8                # Load level where full baseline is applied
+    SAFETY_MIN_INTENSITY_SCALE = 0.7       # Minimum scaling factor (70% of normal intensity)
+
+    # Setpoint bounds for safety
+    SETPOINT_SAFETY_MARGIN = 1.0            # Stay 1% away from target boundaries
+
+    def __init__(self, metrics_storage):
+        """Initialize the P95-driven CPU controller.
+
+        Args:
+            metrics_storage: MetricsStorage instance for accessing historical P95 data
+
+        Sets up state machine, slot tracking, and initializes 24-hour ring buffer
+        for fast exceedance budget control based on Oracle compliance requirements.
+        """
+        self.metrics_storage = metrics_storage
+        self._lock = threading.RLock()  # Thread-safe access to shared state
+        self.state = 'MAINTAINING'
+        self.last_state_change = time.monotonic()
+        self.current_slot_start = time.monotonic()
+        self.current_slot_is_high = False
+        self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
+        self.slots_skipped_safety = 0
+
+        # Sustained high-load fallback mechanism
+        self.consecutive_skipped_slots = 0
+        self.last_high_slot_time = time.monotonic()
+
+        # Fallback thresholds
+        self.MAX_CONSECUTIVE_SKIPPED_SLOTS = 120  # 2 hours at 60s slots
+        self.MIN_HIGH_SLOT_INTERVAL_SEC = 3600   # Force one high slot per hour minimum
+
+        # Ring buffer for last 24h of slot data (fast control)
+        # Calculate size dynamically based on slot duration: 86400 seconds / slot_duration
+        self.slot_history_size = max(1, int(ceil(86400.0 / CPU_P95_SLOT_DURATION)))
+        self.slot_history = [False] * self.slot_history_size  # True = high slot
+        self.slot_history_index = 0
+        self.slots_recorded = 0
+
+        # P95 caching to reduce database queries (performance optimization)
+        self._p95_cache = None
+        self._p95_cache_time = 0
+        self._p95_cache_ttl_sec = self.P95_CACHE_TTL_SEC
+
+        # Ring buffer persistence optimization (reduce disk I/O)
+        self.slots_since_last_save = 0
+
+        # Try to load persisted ring buffer state to solve cold start problem
+        self._load_ring_buffer_state()
+
+        # Initialize first slot (no load average available yet)
+        self._start_new_slot(current_load_avg=None)
+
+    def get_cpu_p95(self):
+        """Get 7-day CPU P95 from metrics storage with caching"""
+        with self._lock:
+            now = time.monotonic()
+
+            # Return cached value if still valid
+            if self._p95_cache is not None and (now - self._p95_cache_time) < self._p95_cache_ttl_sec:
+                return self._p95_cache
+
+            # Query database for fresh P95 value
+            p95 = self.metrics_storage.get_percentile('cpu', percentile=95)
+
+            # Only update cache if a valid value is returned
+            if p95 is not None:
+                self._p95_cache = p95
+                self._p95_cache_time = now
+                return p95
+
+            # Fallback: If DB returns None but we have a cached value, use it
+            # This prevents controller from losing P95 input during temporary DB issues
+            if self._p95_cache is not None:
+                logger.debug("P95 controller: Using cached P95 value due to database read failure")
+                return self._p95_cache
+
+            # Last resort: No data available
+            return None
+
+    def _get_ring_buffer_path(self):
+        """Get path for ring buffer persistence file"""
+        # Use same directory as metrics database for consistency
+        try:
+            # Try primary location first
+            db_dir = "/var/lib/loadshaper"
+            if os.path.exists(db_dir) and os.access(db_dir, os.W_OK):
+                return os.path.join(db_dir, "p95_ring_buffer.json")
+        except (OSError, PermissionError):
+            pass
+
+        # Fall back to temp directory
+        return "/tmp/loadshaper_p95_ring_buffer.json"
+
+    def _save_ring_buffer_state(self):
+        """Save ring buffer state to disk for persistence across restarts"""
+        # Skip persistence in test mode for predictable test behavior
+        if os.environ.get('PYTEST_CURRENT_TEST'):
+            return
+
+        try:
+            ring_buffer_path = self._get_ring_buffer_path()
+            state = {
+                'slot_history': self.slot_history,
+                'slot_history_index': self.slot_history_index,
+                'slots_recorded': self.slots_recorded,
+                'slot_history_size': self.slot_history_size,
+                'timestamp': time.time()  # Use wall clock time for persistence
+            }
+
+            with open(ring_buffer_path, 'w') as f:
+                json.dump(state, f)
+
+            logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
+
+        except (OSError, PermissionError, TypeError, ValueError) as e:
+            logger.debug(f"Failed to save P95 ring buffer state: {e}")
+            # Non-fatal error - continue operation without persistence
+
+    def _load_ring_buffer_state(self):
+        """Load ring buffer state from disk if available and recent"""
+        # Skip persistence in test mode for predictable test behavior
+        if os.environ.get('PYTEST_CURRENT_TEST'):
+            logger.debug("Skipping ring buffer loading in test mode")
+            return
+
+        try:
+            ring_buffer_path = self._get_ring_buffer_path()
+
+            if not os.path.exists(ring_buffer_path):
+                logger.info("No persisted P95 ring buffer state found, starting fresh")
+                return
+
+            with open(ring_buffer_path, 'r') as f:
+                state = json.load(f)
+
+            # Validate state age - only use if less than 2 hours old
+            # Note: Ring buffer validity (2h) is intentionally much longer than P95 cache TTL (5min)
+            # This allows cold start recovery while ensuring fresh P95 data drives control decisions
+            state_age_hours = (time.time() - state.get('timestamp', 0)) / 3600
+            if state_age_hours > 2:
+                logger.debug(f"P95 ring buffer state too old ({state_age_hours:.1f}h), ignoring")
+                return
+
+            # Validate state structure and size consistency
+            expected_size = max(1, int(ceil(86400.0 / CPU_P95_SLOT_DURATION)))
+            if (state.get('slot_history_size') != expected_size or
+                len(state.get('slot_history', [])) != expected_size):
+                logger.debug("P95 ring buffer state size mismatch, ignoring")
+                return
+
+            # Restore state
+            self.slot_history = state['slot_history']
+            self.slot_history_index = state['slot_history_index']
+            self.slots_recorded = state['slots_recorded']
+
+            logger.info(f"Restored P95 ring buffer state ({self.slots_recorded}/{self.slot_history_size} slots, age={state_age_hours:.1f}h)")
+
+        except (OSError, PermissionError, json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.debug(f"Failed to load P95 ring buffer state: {e}")
+            # Non-fatal error - continue with fresh ring buffer
+
+    def update_state(self, cpu_p95):
+        """Update state machine with adaptive thresholds based on current CPU P95"""
+        with self._lock:
+            if cpu_p95 is None:
+                return  # No P95 data yet
+
+            old_state = self.state
+            now = time.monotonic()
+
+            # Adaptive hysteresis based on recent state changes (prevents oscillation)
+            time_since_change = now - self.last_state_change
+            if time_since_change < self.STATE_CHANGE_COOLDOWN_SEC:  # Recent change - larger deadband
+                hysteresis = self.HYSTERESIS_XLARGE_PCT
+                maintain_buffer = self.MAINTAIN_BUFFER_LARGE
+            else:  # Stable - smaller deadband for faster response
+                hysteresis = self.HYSTERESIS_MEDIUM_PCT
+                maintain_buffer = self.MAINTAIN_BUFFER_SMALL
+
+            # State transitions with adaptive hysteresis
+            if cpu_p95 < (CPU_P95_TARGET_MIN - hysteresis):
+                self.state = 'BUILDING'
+            elif cpu_p95 > (CPU_P95_TARGET_MAX + hysteresis):
+                self.state = 'REDUCING'
+            elif CPU_P95_TARGET_MIN <= cpu_p95 <= CPU_P95_TARGET_MAX:
+                # Only transition to MAINTAINING if we're in the target range
+                if self.state in ['BUILDING', 'REDUCING']:
+                    # Add adaptive hysteresis - need to be well within range to transition
+                    if (CPU_P95_TARGET_MIN + maintain_buffer) <= cpu_p95 <= (CPU_P95_TARGET_MAX - maintain_buffer):
+                        self.state = 'MAINTAINING'
+
+            if old_state != self.state:
+                self.last_state_change = now
+                logger.info(f"CPU P95 controller state: {old_state} → {self.state} (P95={cpu_p95:.1f}%, hysteresis={hysteresis:.1f}%)")
+
+    def get_target_intensity(self):
+        """Get target CPU intensity based on current state and distance from target"""
+        with self._lock:
+            cpu_p95 = self.get_cpu_p95()
+
+            if self.state == 'BUILDING':
+                # More aggressive if further from target
+                if cpu_p95 is not None and cpu_p95 < (CPU_P95_TARGET_MIN - self.DISTANCE_THRESHOLD_LARGE):
+                    computed = CPU_P95_HIGH_INTENSITY + self.BUILD_AGGRESSIVE_INTENSITY_BOOST  # Very aggressive catch-up
+                else:
+                    computed = CPU_P95_HIGH_INTENSITY + self.BUILD_NORMAL_INTENSITY_BOOST  # Normal catch-up
+            elif self.state == 'REDUCING':
+                # More conservative if way above target, but keep high slots truly high
+                # Reduction comes from lower exceedance frequency, not making high slots low
+                if cpu_p95 is not None and cpu_p95 > (CPU_P95_TARGET_MAX + self.DISTANCE_THRESHOLD_XLARGE):
+                    computed = CPU_P95_HIGH_INTENSITY - self.REDUCE_AGGRESSIVE_INTENSITY_CUT  # Conservative high intensity
+                else:
+                    computed = CPU_P95_HIGH_INTENSITY - self.REDUCE_MODERATE_INTENSITY_CUT  # Moderate reduction
+            else:  # MAINTAINING
+                # CRITICAL FIX: Tie high intensity to setpoint for accurate P95 targeting
+                # When exceedance > 5%, P95 collapses to high intensity value, so we want
+                # high intensity to equal our target setpoint to achieve precise control
+                setpoint = CPU_P95_SETPOINT if CPU_P95_SETPOINT is not None else (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2
+                if cpu_p95 is not None:
+                    # Use setpoint as the base, with small adjustments based on current P95
+                    error = cpu_p95 - setpoint
+                    # Small proportional adjustment: if we're below setpoint, increase intensity slightly
+                    adjustment = -error * self.MAINTAIN_PROPORTIONAL_GAIN  # Negative because we want inverse relationship
+                    computed = setpoint + adjustment
+                    # Clamp to reasonable bounds around setpoint
+                    computed = max(CPU_P95_TARGET_MIN + self.SETPOINT_SAFETY_MARGIN,
+                                  min(CPU_P95_TARGET_MAX - self.SETPOINT_SAFETY_MARGIN, computed))
+                else:
+                    computed = setpoint  # Default to setpoint when no P95 data
+
+            # CRITICAL: Ensure high intensity is always >= baseline (never below baseline)
+            base_intensity = max(CPU_P95_BASELINE_INTENSITY, computed)
+
+            # Add small dithering to break up step behavior (±1% random variation)
+            # This creates micro-variations in high slots that help achieve mid-range P95 targets
+            # Skip dithering during tests (deterministic behavior for tests)
+            if os.environ.get('PYTEST_CURRENT_TEST'):
+                # In test mode - return exact values for predictable tests
+                return base_intensity
+            else:
+                # In production mode - add dithering for better P95 control
+                dither = random.uniform(-self.DITHER_RANGE_PCT, self.DITHER_RANGE_PCT)
+                dithered_intensity = base_intensity + dither
+                # Ensure we stay within reasonable bounds after dithering
+                return max(CPU_P95_BASELINE_INTENSITY, min(100.0, dithered_intensity))
+
+    def get_exceedance_target(self):
+        """Get adaptive exceedance target based on state and P95 distance from target"""
+        with self._lock:
+            cpu_p95 = self.get_cpu_p95()
+            base_target = CPU_P95_EXCEEDANCE_TARGET
+
+            if self.state == 'BUILDING':
+                # Higher exceedance if we're far below target
+                if cpu_p95 is not None and cpu_p95 < (CPU_P95_TARGET_MIN - self.DISTANCE_THRESHOLD_LARGE):
+                    return min(self.EXCEEDANCE_SAFETY_CAP, base_target + self.BUILD_AGGRESSIVE_EXCEEDANCE_BOOST)  # Cap for safety
+                else:
+                    return base_target + self.BUILD_NORMAL_EXCEEDANCE_BOOST  # Slightly higher for building
+            elif self.state == 'REDUCING':
+                # Lower exceedance, more aggressive if way above target
+                if cpu_p95 is not None and cpu_p95 > (CPU_P95_TARGET_MAX + self.DISTANCE_THRESHOLD_XLARGE):
+                    return self.REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET  # Very low for fast reduction
+                else:
+                    return self.REDUCE_MODERATE_EXCEEDANCE_TARGET  # Moderate reduction
+            else:  # MAINTAINING
+                # Keep exceedance stable - only adjust intensity for control in MAINTAINING state
+                # This prevents dual-variable control which can cause instability
+                return base_target
+
+    def should_run_high_slot(self, current_load_avg):
+        """Determine if this slot should be high intensity (slot-based control)"""
+        with self._lock:
+            now = time.monotonic()
+
+            # Handle multiple slot rollovers if process stalled
+            while now >= (self.current_slot_start + CPU_P95_SLOT_DURATION):
+                self._end_current_slot()
+                self._start_new_slot(current_load_avg)
+
+            return self.current_slot_is_high, self.current_target_intensity
+
+    def _end_current_slot(self):
+        """End current slot and record its type in history"""
+        # Record slot in ring buffer (24-hour sliding window for fast exceedance calculations)
+        # Ring buffer avoids expensive database queries for recent slot history
+        self.slot_history[self.slot_history_index] = self.current_slot_is_high
+        self.slot_history_index = (self.slot_history_index + 1) % self.slot_history_size
+        if self.slots_recorded < self.slot_history_size:
+            self.slots_recorded += 1  # Don't exceed buffer size
+
+        # Persist ring buffer state periodically for cold start protection (reduce disk I/O)
+        self.slots_since_last_save += 1
+        if self.slots_since_last_save >= 10:
+            self._save_ring_buffer_state()
+            self.slots_since_last_save = 0
+
+    def _start_new_slot(self, current_load_avg):
+        """Start new slot and determine its type"""
+        self.current_slot_start = time.monotonic()
+        now = self.current_slot_start
+
+        # Check if we need to force a high slot due to sustained blocking
+        time_since_high_slot = now - self.last_high_slot_time
+        force_high_slot = (self.consecutive_skipped_slots >= self.MAX_CONSECUTIVE_SKIPPED_SLOTS or
+                          time_since_high_slot >= self.MIN_HIGH_SLOT_INTERVAL_SEC)
+
+        # Safety check - scale intensity based on system load (only if load checking is enabled)
+        # But allow forced high slots to override safety when P95 protection is at risk
+        if (LOAD_CHECK_ENABLED and current_load_avg is not None and
+            current_load_avg > LOAD_THRESHOLD and not force_high_slot):
+            self.slots_skipped_safety += 1
+            self.consecutive_skipped_slots += 1
+            self.current_slot_is_high = False
+            normal_intensity = self.get_target_intensity()
+            self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg, normal_intensity)
+            logger.debug(f"P95 controller: skipped slot due to load (consecutive={self.consecutive_skipped_slots}, time_since_high={time_since_high_slot:.0f}s)")
+            return
+
+        # Calculate current exceedance from recent slot history
+        # Exceedance = percentage of slots that were high intensity
+        # This is the core metric for controlling P95: approximately 6.5% of slots
+        # should be high intensity to achieve target P95 above the baseline
+        current_exceedance = self._calculate_current_exceedance()
+
+        # Get target exceedance based on state (adaptive based on distance from P95 target)
+        exceedance_target = self.get_exceedance_target() / 100.0
+
+        # Decide slot type based on exceedance budget control or forced fallback
+        # Key insight: We "spend" our exceedance budget (6.5%) by running high slots
+        # If we're under budget, we can afford to run high; if over budget, run baseline
+        # But force high slots when necessary to prevent P95 collapse during sustained load
+        if force_high_slot:
+            self.current_slot_is_high = True
+            normal_intensity = self.get_target_intensity()
+            self.current_target_intensity = normal_intensity
+            # Use reduced intensity for forced slots to minimize system impact
+            if current_load_avg is not None and current_load_avg > LOAD_THRESHOLD:
+                self.current_target_intensity = self._calculate_safety_scaled_intensity(current_load_avg, normal_intensity)
+                # Log when forced high slot gets intensity reduced for visibility
+                if self.current_target_intensity < normal_intensity:
+                    logger.debug(f"P95 controller: forced high slot intensity scaled down from {normal_intensity:.1f}% to {self.current_target_intensity:.1f}% due to load {current_load_avg:.2f}")
+            logger.info(f"P95 controller: forced high slot (consecutive_skipped={self.consecutive_skipped_slots}, hours_since_high={time_since_high_slot/3600:.1f})")
+        elif current_exceedance < exceedance_target:
+            self.current_slot_is_high = True
+            self.current_target_intensity = self.get_target_intensity()
+        else:
+            self.current_slot_is_high = False
+            self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
+
+        # Reset counters when running a high slot
+        if self.current_slot_is_high:
+            self.consecutive_skipped_slots = 0
+            self.last_high_slot_time = now
+
+    def _calculate_current_exceedance(self):
+        """
+        Calculate current exceedance as ratio (0.0-1.0) from slot history.
+
+        Returns:
+            float: Exceedance ratio (0.0 = 0%, 1.0 = 100%)
+        """
+        with self._lock:
+            if self.slots_recorded == 0:
+                return 0.0
+            high_slots = sum(self.slot_history[:self.slots_recorded])
+            return high_slots / self.slots_recorded
+
+    def get_current_exceedance(self):
+        """Get current exceedance percentage from slot history"""
+        return self._calculate_current_exceedance() * 100.0
+
+    def get_status(self):
+        """Get controller status for telemetry"""
+        with self._lock:
+            cpu_p95 = self.get_cpu_p95()  # get_cpu_p95() will acquire lock too (re-entrant)
+            current_exceedance = self.get_current_exceedance()
+
+            # Current slot status
+            time_in_slot = time.monotonic() - self.current_slot_start if self.current_slot_start else 0
+            slot_remaining = max(0, CPU_P95_SLOT_DURATION - time_in_slot)
+
+            # High-load fallback status
+            time_since_high_slot = time.monotonic() - self.last_high_slot_time
+            fallback_risk = (self.consecutive_skipped_slots >= self.MAX_CONSECUTIVE_SKIPPED_SLOTS or
+                            time_since_high_slot >= self.MIN_HIGH_SLOT_INTERVAL_SEC)
+
+            return {
+            'state': self.state,
+            'cpu_p95': cpu_p95,
+            'target_range': f"{CPU_P95_TARGET_MIN:.1f}-{CPU_P95_TARGET_MAX:.1f}%",
+            'exceedance_pct': current_exceedance,
+            'exceedance_target': self.get_exceedance_target(),
+            'current_slot_is_high': self.current_slot_is_high,
+            'slot_remaining_sec': slot_remaining,
+            'slots_recorded': self.slots_recorded,
+            'slots_skipped_safety': self.slots_skipped_safety,
+            'consecutive_skipped_slots': self.consecutive_skipped_slots,
+            'hours_since_high_slot': time_since_high_slot / 3600,
+            'fallback_risk': fallback_risk,
+            'target_intensity': self.current_target_intensity
+        }
+
+    def mark_current_slot_low(self):
+        """
+        Mark the current slot as low intensity for accurate exceedance tracking.
+
+        This method should be called when the main loop overrides the controller's
+        decision to run a high slot (e.g., due to global load safety constraints).
+        It ensures that slot history accurately reflects what was actually executed.
+        """
+        with self._lock:
+            if self.current_slot_is_high:
+                self.current_slot_is_high = False
+                self.current_target_intensity = CPU_P95_BASELINE_INTENSITY
+
+    def _calculate_safety_scaled_intensity(self, current_load_avg, normal_intensity):
+        """
+        Calculate proportionally scaled intensity based on system load level.
+
+        Instead of binary baseline/high switching, this provides gradual scaling:
+        - Below SAFETY_SCALE_START (0.5): No scaling, normal behavior
+        - Between SAFETY_SCALE_START and SAFETY_SCALE_FULL: Proportional scaling
+        - Above SAFETY_SCALE_FULL (0.8): Full baseline intensity
+
+        This reduces system impact more gracefully while maintaining some CPU activity.
+        """
+        if not self.SAFETY_PROPORTIONAL_ENABLED:
+            # Fall back to binary baseline behavior
+            return CPU_P95_BASELINE_INTENSITY
+
+        if current_load_avg <= self.SAFETY_SCALE_START:
+            # Low load - no safety scaling needed
+            return normal_intensity
+        elif current_load_avg >= self.SAFETY_SCALE_FULL:
+            # Very high load - use full baseline
+            return CPU_P95_BASELINE_INTENSITY
+        else:
+            # Proportional scaling between normal and baseline
+            # Load range: SAFETY_SCALE_START to SAFETY_SCALE_FULL
+            load_range = self.SAFETY_SCALE_FULL - self.SAFETY_SCALE_START
+            load_excess = current_load_avg - self.SAFETY_SCALE_START
+            scale_progress = load_excess / load_range  # 0.0 to 1.0
+
+            # Scale from normal intensity down to minimum scaled intensity
+            # At scale_progress=0: use normal intensity
+            # At scale_progress=1: use minimum scaled intensity (e.g., 70% of normal)
+            intensity_range = normal_intensity - (normal_intensity * self.SAFETY_MIN_INTENSITY_SCALE)
+            scaled_intensity = normal_intensity - (intensity_range * scale_progress)
+
+            # Ensure we never go below baseline or above high intensity
+            return max(CPU_P95_BASELINE_INTENSITY, min(CPU_P95_HIGH_INTENSITY, scaled_intensity))
+
 # ---------------------------
 # Helpers: CPU & memory read
 # ---------------------------
 def read_proc_stat():
+    """Read CPU statistics from /proc/stat.
+
+    Returns:
+        tuple: (total_time, idle_time) in jiffies
+    """
     with open("/proc/stat", "r") as f:
         line = f.readline()
     if not line.startswith("cpu "):
@@ -930,6 +1529,15 @@ def read_proc_stat():
     return total, idle
 
 def cpu_percent_over(dt, prev=None):
+    """Calculate CPU utilization percentage over a time period.
+
+    Args:
+        dt: Time delta in seconds
+        prev: Previous CPU statistics tuple, or None to read current
+
+    Returns:
+        float: CPU utilization percentage (0.0-100.0)
+    """
     if prev is None:
         prev = read_proc_stat()
         time.sleep(dt)
@@ -952,10 +1560,12 @@ def read_meminfo() -> Tuple[int, float, int]:
     AWS CloudWatch, Azure Monitor, and Oracle's VM reclamation criteria.
 
     Returns:
-        tuple: (total_bytes, used_pct, used_bytes)
+        tuple: (total_bytes, free_bytes, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
                - total_bytes: Total system memory in bytes
-               - used_pct: Memory usage percentage excluding cache/buffers
-               - used_bytes: Memory usage in bytes excluding cache/buffers
+               - free_bytes: Free memory in bytes
+               - used_pct_excl_cache: Memory utilization percentage excluding cache/buffers
+               - used_bytes_excl_cache: Used memory in bytes excluding cache/buffers
+               - used_pct_incl_cache: Memory utilization percentage including cache/buffers
 
     Raises:
         RuntimeError: If /proc/meminfo is not readable, MemAvailable is missing,
@@ -977,26 +1587,61 @@ def read_meminfo() -> Tuple[int, float, int]:
         raise RuntimeError(f"Could not read /proc/meminfo: {e}")
 
     total = m.get("MemTotal", 0)
+
     if total <= 0:
         raise RuntimeError("MemTotal not found or is zero in /proc/meminfo")
 
+    free = m.get("MemFree", 0)
     mem_available = m.get("MemAvailable")
+
     if mem_available is None:
         raise RuntimeError("MemAvailable not found in /proc/meminfo (requires Linux 3.14+)")
 
-    # Industry-standard memory calculation using MemAvailable
-    # This is the most accurate metric used by modern monitoring tools
-    if mem_available > total:
-        # Handle corrupt data - clamp to valid range
-        used_pct = 0.0
-        used_bytes = 0
+    # ORACLE COMPLIANCE CRITICAL: Memory calculation methodology
+    # Oracle's reclamation algorithm likely follows industry standard (AWS CloudWatch, Azure Monitor)
+    # which excludes cache/buffers from utilization calculations. This approach ensures our
+    # memory measurements align with Oracle's internal monitoring for the 20% rule.
+    if mem_available >= 0 and total > 0:
+        # PREFERRED METHOD: MemAvailable (Linux 3.14+) - most accurate
+        # This field represents memory actually available to applications without swapping,
+        # accounting for reclaimable cache/buffers. Matches Oracle's likely implementation.
+        used_pct_excl_cache = (100.0 * (1.0 - mem_available / total))
+        used_bytes_excl_cache = (total - mem_available) * 1024
     else:
-        used_pct = max(0.0, min(100.0, 100.0 * (1.0 - mem_available / total)))
-        used_bytes = max(0, (total - mem_available) * 1024)
+        # FALLBACK METHOD: Manual calculation for older kernels
+        buffers = m.get("Buffers", 0)
+        cached = m.get("Cached", 0)
+        srecl = m.get("SReclaimable", 0)
+        shmem = m.get("Shmem", 0)
+        buff_cache = buffers + max(0, cached + srecl - shmem)
+        used_no_cache = max(0, total - free - buff_cache)
+        used_pct_excl_cache = (100.0 * used_no_cache / total) if total > 0 else 0.0
+        used_bytes_excl_cache = used_no_cache * 1024
 
-    return (total * 1024, used_pct, used_bytes)
+    # Also calculate including cache/buffers for comparison/debugging
+    used_incl_cache = max(0, total - free)
+    used_pct_incl_cache = (100.0 * used_incl_cache / total) if total > 0 else 0.0
+
+    # Handle corrupt data - clamp to valid range (master compatibility)
+    if mem_available > total:
+        used_pct_excl_cache = 0.0
+        used_bytes_excl_cache = 0
+    else:
+        used_pct_excl_cache = max(0.0, min(100.0, used_pct_excl_cache))
+        used_bytes_excl_cache = max(0, used_bytes_excl_cache)
+
+    return (total * 1024, free * 1024, used_pct_excl_cache, used_bytes_excl_cache, used_pct_incl_cache)
 
 def read_loadavg():
+    """Read system load averages from /proc/loadavg.
+
+    Returns:
+        tuple: (load_1min, load_5min, load_15min, per_core_load)
+               - load_1min: 1-minute load average
+               - load_5min: 5-minute load average
+               - load_15min: 15-minute load average
+               - per_core_load: 1-minute load normalized per CPU core
+    """
     # Read system load averages and return per-core load for 1-min average
     try:
         with open("/proc/loadavg", "r") as f:
@@ -1019,11 +1664,28 @@ def read_loadavg():
 # Moving average (EMA)
 # ---------------------------
 class EMA:
+    """Exponential Moving Average calculator."""
+
     def __init__(self, period_sec, step_sec, init=None):
+        """Initialize EMA with given period and step size.
+
+        Args:
+            period_sec: Time period for smoothing in seconds
+            step_sec: Update interval in seconds
+            init: Initial value, or None to use first update
+        """
         n = max(1.0, period_sec / max(0.1, step_sec))
         self.alpha = 2.0 / (n + 1.0)
         self.val = None if init is None else float(init)
     def update(self, x):
+        """Update EMA with new value.
+
+        Args:
+            x: New value to incorporate
+
+        Returns:
+            float: Updated EMA value
+        """
         x = float(x)
         if not isfinite(x):
             return self.val
@@ -1038,6 +1700,14 @@ class EMA:
 # ---------------------------
 class MetricsStorage:
     def __init__(self, db_path=None):
+        """Initialize metrics storage with SQLite database.
+
+        Args:
+            db_path: Path to SQLite database file. If None, uses /var/lib/loadshaper/metrics.db
+                    with fallback to /tmp/loadshaper_metrics.db if permission denied.
+
+        Creates database schema for 7-day metrics storage with thread-safe access.
+        """
         if db_path is None:
             # Try to use /var/lib/loadshaper, fallback to /tmp
             try:
@@ -1045,12 +1715,17 @@ class MetricsStorage:
                 db_path = "/var/lib/loadshaper/metrics.db"
             except (OSError, PermissionError):
                 db_path = "/tmp/loadshaper_metrics.db"
-        
+
         self.db_path = db_path
         self.lock = threading.Lock()
         self._init_db()
     
     def _init_db(self):
+        """Initialize database schema and handle connection errors.
+
+        Creates the metrics table if it doesn't exist and handles database
+        connectivity issues gracefully.
+        """
         with self.lock:
             try:
                 conn = sqlite3.connect(self.db_path)
@@ -1094,6 +1769,17 @@ class MetricsStorage:
                     self.db_path = None
     
     def store_sample(self, cpu_pct, mem_pct, net_pct, load_avg):
+        """Store a metrics sample in the database.
+
+        Args:
+            cpu_pct: CPU utilization percentage
+            mem_pct: Memory utilization percentage
+            net_pct: Network utilization percentage
+            load_avg: System load average
+
+        Returns:
+            bool: True if stored successfully, False otherwise
+        """
         if self.db_path is None:
             return False
         
@@ -1113,6 +1799,16 @@ class MetricsStorage:
                 return False
     
     def get_percentile(self, metric_name, percentile=95.0, days_back=7):
+        """Calculate percentile for a metric over the specified time period.
+
+        Args:
+            metric_name: Metric name ('cpu', 'mem', 'net', 'load')
+            percentile: Percentile to calculate (0-100)
+            days_back: Number of days of data to analyze
+
+        Returns:
+            float: Calculated percentile value, or None if insufficient data
+        """
         if self.db_path is None:
             return None
         
@@ -1156,9 +1852,17 @@ class MetricsStorage:
                 return None
     
     def cleanup_old(self, days_to_keep=7):
+        """Remove old metrics data from database.
+
+        Args:
+            days_to_keep: Number of days of data to retain (default: 7)
+
+        Returns:
+            int: Number of records deleted, or 0 if database unavailable
+        """
         if self.db_path is None:
             return 0
-            
+
         cutoff_time = time.time() - (days_to_keep * 24 * 3600)
         
         with self.lock:
@@ -1174,9 +1878,17 @@ class MetricsStorage:
                 return 0
     
     def get_sample_count(self, days_back=7):
+        """Get count of metrics samples within specified time period.
+
+        Args:
+            days_back: Number of days to look back (default: 7)
+
+        Returns:
+            int: Number of samples found, or 0 if database unavailable/error
+        """
         if self.db_path is None:
             return 0
-            
+
         cutoff_time = time.time() - (days_back * 24 * 3600)
         
         with self.lock:
@@ -1299,6 +2011,14 @@ def mem_nurse_thread(stop_evt: threading.Event):
 # NIC sensing helpers
 # ---------------------------
 def read_host_nic_bytes(iface: str):
+    """Read network interface byte counters from host filesystem.
+
+    Args:
+        iface: Network interface name (e.g. 'eth0')
+
+    Returns:
+        tuple: (tx_bytes, rx_bytes) or None if not available
+    """
     # Requires a bind-mount of /sys/class/net -> /host_sys_class_net
     base = f"/host_sys_class_net/{iface}/statistics"
     try:
@@ -1311,6 +2031,14 @@ def read_host_nic_bytes(iface: str):
         return None
 
 def read_container_nic_bytes(iface: str):
+    """Read network interface byte counters from /proc/net/dev.
+
+    Args:
+        iface: Network interface name (e.g. 'eth0')
+
+    Returns:
+        tuple: (tx_bytes, rx_bytes) or None if not found
+    """
     # Parse /proc/net/dev (available in all containers)
     try:
         with open("/proc/net/dev", "r") as f:
@@ -1328,6 +2056,14 @@ def read_container_nic_bytes(iface: str):
     return None
 
 def read_host_nic_speed_mbit(iface: str):
+    """Read network interface speed from host system.
+
+    Args:
+        iface: Network interface name (e.g., 'eth0')
+
+    Returns:
+        float: Interface speed in Mbit/s, or NET_LINK_MBIT if unable to read
+    """
     try:
         with open(f"/host_sys_class_net/{iface}/speed", "r") as f:
             sp = float(f.read().strip())
@@ -1338,6 +2074,17 @@ def read_host_nic_speed_mbit(iface: str):
     return NET_LINK_MBIT
 
 def nic_utilization_pct(prev, cur, dt_sec, link_mbit):
+    """Calculate network interface utilization percentage.
+
+    Args:
+        prev: Previous (tx_bytes, rx_bytes) reading
+        cur: Current (tx_bytes, rx_bytes) reading
+        dt_sec: Time delta in seconds
+        link_mbit: Link capacity in megabits per second
+
+    Returns:
+        float: Network utilization percentage (0.0-100.0)
+    """
     if prev is None or cur is None or dt_sec <= 0 or link_mbit <= 0:
         return None
     dtx = max(0, cur[0] - prev[0])
@@ -1808,6 +2555,11 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
 
     Native Python network traffic generator using token bucket
     rate limiting and socket-based packet generation.
+
+    Args:
+        stop_evt: Threading event to signal thread shutdown
+        paused_fn: Function returning True if operations should pause
+        rate_mbit_val: Shared Value containing target network rate in Mbit/s
     """
     if NET_MODE != "client":
         return
@@ -1883,8 +2635,9 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
 class HealthHandler(BaseHTTPRequestHandler):
     """HTTP request handler for health check endpoints"""
     
-    def __init__(self, *args, controller_state=None, metrics_storage=None, **kwargs):
+    def __init__(self, *args, controller_state=None, controller_state_lock=None, metrics_storage=None, **kwargs):
         self.controller_state = controller_state
+        self.controller_state_lock = controller_state_lock
         self.metrics_storage = metrics_storage
         super().__init__(*args, **kwargs)
     
@@ -1903,10 +2656,12 @@ class HealthHandler(BaseHTTPRequestHandler):
             return "Internal service error"
     
     def log_message(self, format, *args):
+        """Override to suppress HTTP access logs for reduced noise."""
         # Suppress HTTP server logs to keep output clean
         pass
     
     def do_GET(self):
+        """Handle HTTP GET requests for health check endpoints."""
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         
@@ -1918,21 +2673,27 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_error(404, "Not Found")
     
     def do_POST(self):
+        """Handle HTTP POST - not allowed for health endpoints."""
         self._send_method_not_allowed()
     
     def do_PUT(self):
+        """Handle HTTP PUT - not allowed for health endpoints."""
         self._send_method_not_allowed()
     
     def do_DELETE(self):
+        """Handle HTTP DELETE - not allowed for health endpoints."""
         self._send_method_not_allowed()
     
     def do_PATCH(self):
+        """Handle HTTP PATCH - not allowed for health endpoints."""
         self._send_method_not_allowed()
     
     def do_HEAD(self):
+        """Handle HTTP HEAD - not allowed for health endpoints."""
         self._send_method_not_allowed()
     
     def do_OPTIONS(self):
+        """Handle HTTP OPTIONS - not allowed for health endpoints."""
         self._send_method_not_allowed()
     
     def _send_method_not_allowed(self):
@@ -1959,7 +2720,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         """Handle /health endpoint requests"""
         try:
             # Get basic system info
-            uptime = time.time() - self.controller_state.get('start_time', time.time())
+            with self.controller_state_lock:
+                uptime = time.time() - self.controller_state.get('start_time', time.time())
             
             # Check if metrics storage is working
             storage_ok = self.metrics_storage is not None and self.metrics_storage.db_path is not None
@@ -1969,7 +2731,8 @@ class HealthHandler(BaseHTTPRequestHandler):
             status_checks = []
             
             # Check if system is in safety stop due to excessive load
-            paused_state = self.controller_state.get('paused', 0.0)
+            with self.controller_state_lock:
+                paused_state = self.controller_state.get('paused', 0.0)
             if paused_state == 1.0:
                 is_healthy = False
                 status_checks.append("system_paused_safety_stop")
@@ -1980,8 +2743,9 @@ class HealthHandler(BaseHTTPRequestHandler):
                 # Note: Don't mark unhealthy for storage issues, as core functionality still works
             
             # Check for extreme resource usage that might indicate issues
-            cpu_avg = self.controller_state.get('cpu_avg')
-            mem_avg = self.controller_state.get('mem_avg')
+            with self.controller_state_lock:
+                cpu_avg = self.controller_state.get('cpu_avg')
+                mem_avg = self.controller_state.get('mem_avg')
             if cpu_avg and cpu_avg > CPU_STOP_PCT:
                 status_checks.append("cpu_critical")
             if mem_avg and mem_avg > MEM_STOP_PCT:
@@ -2025,7 +2789,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "paused": cs.get('paused', 0.0) == 1.0
                 },
                 "targets": {
-                    "cpu_target": cs.get('cpu_target', CPU_TARGET_PCT),
+                    "cpu_p95_setpoint": CPU_P95_SETPOINT,
                     "memory_target": cs.get('mem_target', MEM_TARGET_PCT),
                     "network_target": cs.get('net_target', NET_TARGET_PCT)
                 },
@@ -2081,13 +2845,19 @@ class HealthHandler(BaseHTTPRequestHandler):
         }
         self._send_json_response(status_code, error_data)
 
-def health_server_thread(stop_evt: threading.Event, controller_state: dict, metrics_storage):
+def health_server_thread(stop_evt: threading.Event, controller_state: dict, controller_state_lock: threading.Lock, metrics_storage):
     """Run HTTP health check server in a separate thread"""
     if not HEALTH_ENABLED:
         return
     
     def handler_factory(*args, **kwargs):
-        return HealthHandler(*args, controller_state=controller_state, 
+        """Factory function to create HealthHandler with pre-bound context.
+
+        Returns:
+            HealthHandler: Configured handler instance with controller state and metrics
+        """
+        return HealthHandler(*args, controller_state=controller_state,
+                           controller_state_lock=controller_state_lock,
                            metrics_storage=metrics_storage, **kwargs)
     
     try:
@@ -2112,7 +2882,15 @@ def health_server_thread(stop_evt: threading.Event, controller_state: dict, metr
 # Main control loop
 # ---------------------------
 class EMA4:
+    """Container for 4-channel EMA (CPU, memory, network, load)."""
+
     def __init__(self, period, step):
+        """Initialize 4-channel EMA container.
+
+        Args:
+            period: Time period for smoothing
+            step: Update interval
+        """
         self.cpu = EMA(period, step)
         self.mem = EMA(period, step)
         self.net = EMA(period, step)
@@ -2127,8 +2905,8 @@ def validate_oracle_configuration():
     
     # Check if all targets are below Oracle's 20% threshold
     targets_below_20 = []
-    if CPU_TARGET_PCT < 20.0:
-        targets_below_20.append(f"CPU_TARGET_PCT={CPU_TARGET_PCT}%")
+    if CPU_P95_TARGET_MIN < 20.0:
+        targets_below_20.append(f"CPU_P95_TARGET_MIN={CPU_P95_TARGET_MIN}%")
     if MEM_TARGET_PCT < 20.0 and "A1.Flex" in DETECTED_SHAPE:
         targets_below_20.append(f"MEM_TARGET_PCT={MEM_TARGET_PCT}%")
     if NET_TARGET_PCT < 20.0:
@@ -2145,11 +2923,11 @@ def validate_oracle_configuration():
             warnings.append(f"   Targets below 20%: {', '.join(targets_below_20)}")
     else:
         # For E2 shapes, only CPU and NET matter (memory rule doesn't apply)
-        cpu_below = CPU_TARGET_PCT < 20.0
+        cpu_below = CPU_P95_TARGET_MIN < 20.0
         net_below = NET_TARGET_PCT < 20.0
         if cpu_below and net_below:
             warnings.append(f"⚠️  CRITICAL: Both CPU and NET targets below 20% on E2 shape! Oracle will reclaim this VM.")
-            warnings.append(f"   Fix: Set either CPU_TARGET_PCT or NET_TARGET_PCT above 20%.")
+            warnings.append(f"   Fix: Set either CPU_P95_TARGET_MIN or NET_TARGET_PCT above 20%.")
     
     # Print all warnings
     for warning in warnings:
@@ -2247,6 +3025,13 @@ class NetworkFallbackState:
         }
 
 def main():
+    """
+    Main entry point for LoadShaper - Oracle Cloud VM protection service.
+
+    Prevents Oracle Free Tier VM reclamation by maintaining CPU P95 above 20%
+    while respecting system load and resource constraints. Uses adaptive P95-driven
+    control with slot-based exceedance budget management.
+    """
     # Initialize configuration on first use
     _initialize_config()
     
@@ -2259,16 +3044,22 @@ def main():
     validate_oracle_configuration()
     
     logger.info(f"[loadshaper v2.2] starting with"
-          f" CPU_TARGET={CPU_TARGET_PCT}%, MEM_TARGET(excl-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |"
+          f" CPU_P95_TARGET={CPU_P95_TARGET_MIN:.1f}-{CPU_P95_TARGET_MAX:.1f}%, MEM_TARGET(excl-cache)={MEM_TARGET_PCT}%, NET_TARGET={NET_TARGET_PCT}% |"
           f" NET_SENSE_MODE={NET_SENSE_MODE}, {load_monitor_status}, {health_status} |"
           f" {shape_status}, {template_status}")
 
+    # CRITICAL FOR ORACLE COMPLIANCE: Run at lowest priority (nice 19)
+    # Ensures loadshaper immediately yields CPU to any legitimate workload.
+    # This prevents loadshaper from impacting real applications while still
+    # maintaining the background activity needed for Oracle compliance.
     try:
-        os.nice(19)  # run controller and workers at lowest priority
+        os.nice(19)  # Lowest priority - yield to all legitimate processes
     except Exception:
         pass
 
-    # Shared state for health endpoints
+    # Shared state for health endpoints with thread safety
+    import threading
+    controller_state_lock = threading.Lock()
     controller_state = {
         'start_time': time.time(),
         'cpu_pct': 0.0,
@@ -2281,7 +3072,6 @@ def main():
         'duty': 0.0,
         'net_rate': 0.0,
         'paused': 0.0,
-        'cpu_target': CPU_TARGET_PCT,
         'mem_target': MEM_TARGET_PCT,
         'net_target': NET_TARGET_PCT
     }
@@ -2321,13 +3111,16 @@ def main():
     metrics_storage = MetricsStorage()
     cleanup_counter = 0  # Cleanup old data periodically
 
+    # Initialize P95-driven CPU controller
+    cpu_p95_controller = CPUP95Controller(metrics_storage)
+
     # Initialize network fallback state management
     network_fallback_state = NetworkFallbackState()
 
     # Start health check server
     t_health = threading.Thread(
         target=health_server_thread,
-        args=(stop_evt, controller_state, metrics_storage),
+        args=(stop_evt, controller_state, controller_state_lock, metrics_storage),
         daemon=True
     )
     t_health.start()
@@ -2335,20 +3128,31 @@ def main():
     # Jitter
     last_jitter = 0.0
     jitter_next = time.time() + JITTER_PERIOD
-    cpu_target_now = CPU_TARGET_PCT
     mem_target_now = MEM_TARGET_PCT
     net_target_now = NET_TARGET_PCT
 
     def apply_jitter(base):
+        """Apply random jitter to a base value.
+
+        Args:
+            base: Base value to apply jitter to
+
+        Returns:
+            float: Base value with jitter applied, never below 0.0
+        """
         return max(0.0, base * (1.0 + last_jitter))
 
     def update_jitter():
-        nonlocal last_jitter, cpu_target_now, mem_target_now, net_target_now
+        """Update jitter values and recalculate memory/network targets.
+
+        Updates the global last_jitter value and applies it to memory and
+        network targets to introduce controlled randomness.
+        """
+        nonlocal last_jitter, mem_target_now, net_target_now
         if JITTER_PCT <= 0:
             last_jitter = 0.0
         else:
             last_jitter = random.uniform(-JITTER_PCT/100.0, JITTER_PCT/100.0)
-        cpu_target_now = apply_jitter(CPU_TARGET_PCT)
         mem_target_now = apply_jitter(MEM_TARGET_PCT)
         net_target_now = apply_jitter(NET_TARGET_PCT)
 
@@ -2373,8 +3177,8 @@ def main():
             cpu_avg = ema.cpu.update(cpu_pct)
 
             # MEM% (EXCLUDING cache/buffers for Oracle compliance)
-            total_b, mem_used_pct, used_b = read_meminfo()
-            mem_avg = ema.mem.update(mem_used_pct)
+            total_b, free_b, mem_used_no_cache_pct, used_bytes_no_cache, mem_used_incl_cache_pct = read_meminfo()
+            mem_avg = ema.mem.update(mem_used_no_cache_pct)
 
             # NIC utilization
             if NET_SENSE_MODE == "host":
@@ -2399,32 +3203,33 @@ def main():
 
             # Calculate network fallback status for health endpoints
             is_e2 = is_e2_shape()
-            cpu_p95 = metrics_storage.get_percentile('cpu') if metrics_storage else None
+            cpu_p95 = cpu_p95_controller.get_cpu_p95() if cpu_p95_controller else None
             fallback_debug = network_fallback_state.get_debug_info()
 
-            # Update controller state for health endpoints
-            controller_state.update({
-                'cpu_pct': cpu_pct,
-                'cpu_avg': cpu_avg,
-                'mem_pct': mem_used_pct,
-                'mem_avg': mem_avg,
-                'net_pct': nic_util,
-                'net_avg': net_avg,
-                'load_avg': load_avg,
-                'duty': duty.value,
-                'net_rate': net_rate_mbit.value,
-                'paused': paused.value,
-                'cpu_target': cpu_target_now,
-                'mem_target': mem_target_now,
-                'net_target': net_target_now,
-                'network_fallback_active': fallback_debug['active'],
-                'network_fallback_count': fallback_debug['activation_count'],
-                'is_e2_shape': is_e2,
-                'cpu_p95_7d': cpu_p95
-            })
+            # Update controller state for health endpoints (thread-safe)
+            with controller_state_lock:
+                controller_state.update({
+                    'cpu_pct': cpu_pct,
+                    'cpu_avg': cpu_avg,
+                    'mem_pct': mem_used_no_cache_pct,
+                    'mem_avg': mem_avg,
+                    'net_pct': nic_util,
+                    'net_avg': net_avg,
+                    'load_avg': load_avg,
+                    'duty': duty.value,
+                    'net_rate': net_rate_mbit.value,
+                    'paused': paused.value,
+                    'cpu_p95_controller': cpu_p95_controller.get_status(),
+                    'mem_target': mem_target_now,
+                    'net_target': net_target_now,
+                    'network_fallback_active': fallback_debug['active'],
+                    'network_fallback_count': fallback_debug['activation_count'],
+                    'is_e2_shape': is_e2,
+                    'cpu_p95_7d': cpu_p95
+                })
 
             # Store metrics sample for 7-day analysis
-            metrics_storage.store_sample(cpu_pct, mem_used_pct, nic_util, per_core_load)
+            metrics_storage.store_sample(cpu_pct, mem_used_no_cache_pct, nic_util, per_core_load)
             
             # Cleanup old data every ~1000 iterations (roughly every 1.4 hours at 5sec intervals)
             cleanup_counter += 1
@@ -2463,38 +3268,56 @@ def main():
                 set_mem_target_bytes(0)
                 net_rate_mbit.value = NET_MIN_RATE
             else:
-                resume_cpu = (cpu_avg is None) or (cpu_avg < max(0.0, CPU_TARGET_PCT - HYSTERESIS_PCT))
-                resume_mem = (mem_avg is None) or (mem_avg < max(0.0, MEM_TARGET_PCT - HYSTERESIS_PCT))
-                resume_net = (net_avg is None) or (net_avg < max(0.0, NET_TARGET_PCT - HYSTERESIS_PCT))
-                resume_load = (not LOAD_CHECK_ENABLED) or (load_avg is None) or (load_avg < LOAD_RESUME_THRESHOLD)
-                if resume_cpu and resume_mem and resume_net and resume_load:
-                    if paused.value != 0.0:
-                        logger.info("RESUME")
+                # Individual subsystem control - each operates independently unless load contention
+                global_load_ok = (not LOAD_CHECK_ENABLED) or (load_avg is None) or (load_avg < LOAD_RESUME_THRESHOLD)
+
+                # Memory control - independent of CPU/P95
+                mem_can_run = global_load_ok and (MEM_TARGET_PCT <= 0 or (mem_avg is None) or (mem_avg < max(0.0, MEM_TARGET_PCT - HYSTERESIS_PCT)))
+
+                # Network control - independent of CPU/P95
+                net_can_run = global_load_ok and (NET_TARGET_PCT <= 0 or (net_avg is None) or (net_avg < max(0.0, NET_TARGET_PCT - HYSTERESIS_PCT)))
+
+                # Resume if any subsystem was paused and now can run (CPU always delegates to controller)
+                if (global_load_ok or mem_can_run or net_can_run) and paused.value != 0.0:
+                    logger.info("RESUME (decoupled subsystem control)")
                     paused.value = 0.0
 
-            # If running, steer CPU, MEM, NET toward jittered targets
+            # Individual subsystem control - CPU always delegates to P95 controller
             if paused.value == 0.0:
-                # CPU duty
-                if cpu_avg is not None:
-                    err = cpu_target_now - cpu_avg
-                    new_duty = duty.value + KP_CPU * (err / 100.0)
-                    duty.value = min(MAX_DUTY, max(0.0, new_duty))
+                # CPU P95-driven control - always runs (controller handles all decisions)
+                # Always advance slot engine to maintain accurate history
+                cpu_p95 = cpu_p95_controller.get_cpu_p95()
+                cpu_p95_controller.update_state(cpu_p95)
+                is_high_slot, target_intensity = cpu_p95_controller.should_run_high_slot(load_avg)
 
-                # RAM target (excluding cache/buffers)
-                desired_used_b = int(total_b * (mem_target_now / 100.0))
-                need_delta_b = desired_used_b - used_b
-                # Keep some minimum free memory available
-                min_free_b = MEM_MIN_FREE_MB * 1024 * 1024
-                available_b = total_b - used_b  # Available memory from MemAvailable calculation
-                if need_delta_b > 0 and (available_b - need_delta_b) < min_free_b:
-                    need_delta_b = max(0, int(available_b - min_free_b))
-                with mem_lock:
-                    our_current = len(mem_block)
-                target_alloc = max(0, our_current + need_delta_b)
-                set_mem_target_bytes(target_alloc)
+                # Apply global load safety override if needed
+                if not global_load_ok:
+                    target_intensity = CPU_P95_BASELINE_INTENSITY
+                    # Mark the current slot as low for accurate exceedance tracking
+                    cpu_p95_controller.mark_current_slot_low()
+
+                # Convert target intensity to duty cycle
+                target_duty = target_intensity / 100.0
+                duty.value = min(MAX_DUTY, max(0.0, target_duty))
+
+                # Memory control (only if memory can run)
+                if mem_can_run and MEM_TARGET_PCT > 0:
+                    desired_used_b = int(total_b * (mem_target_now / 100.0))
+                    need_delta_b = desired_used_b - used_bytes_no_cache
+                    # Keep some real free memory
+                    min_free_b = MEM_MIN_FREE_MB * 1024 * 1024
+                    if need_delta_b > 0 and (free_b - need_delta_b) < min_free_b:
+                        need_delta_b = max(0, int(free_b - min_free_b))
+                    with mem_lock:
+                        our_current = len(mem_block)
+                    target_alloc = max(0, our_current + need_delta_b)
+                    set_mem_target_bytes(target_alloc)
+                else:
+                    # Memory cannot run - release all
+                    set_mem_target_bytes(0)
 
                 # Network fallback decision (Oracle VM protection)
-                # (reuse is_e2 and cpu_p95 calculated earlier for controller state)
+                # Integrate fallback with P95-driven control
                 fallback_active = network_fallback_state.should_activate(is_e2, cpu_p95, net_avg, mem_avg)
 
                 # Apply fallback to network target (override jittered target if needed)
@@ -2506,39 +3329,40 @@ def main():
                 elif network_fallback_state.active and not fallback_active:
                     logger.info(f"Network fallback DEACTIVATED")
 
-                # NET rate control (Mbps)
-                if net_avg is not None and NET_MODE == "client" and NET_PEERS:
+                # Network control (only if network can run)
+                if net_can_run and NET_TARGET_PCT > 0 and net_avg is not None and NET_MODE == "client" and NET_PEERS:
                     err_net = effective_net_target - net_avg
                     new_rate = float(net_rate_mbit.value) + KP_NET * (err_net)
                     net_rate_mbit.value = max(NET_MIN_RATE, min(NET_MAX_RATE, new_rate))
+                else:
+                    # Network cannot run - set to minimum
+                    net_rate_mbit.value = NET_MIN_RATE
 
             # Logging
             if cpu_avg is not None and mem_avg is not None and net_avg is not None and load_avg is not None:
-                # Get 95th percentile values for 7-day metrics
-                cpu_p95 = metrics_storage.get_percentile('cpu')
-                mem_p95 = metrics_storage.get_percentile('mem')
-                net_p95 = metrics_storage.get_percentile('net')
-                load_p95 = metrics_storage.get_percentile('load')
-                
-                # Format percentile values for display
+                # Get CPU P95 and controller status (only CPU uses P95 per Oracle rules)
+                p95_status = cpu_p95_controller.get_status()
+                cpu_p95 = p95_status['cpu_p95']
+
+                # Format CPU P95 and controller status for display
                 cpu_p95_str = f"p95={cpu_p95:5.1f}%" if cpu_p95 is not None else "p95=n/a"
-                mem_p95_str = f"p95={mem_p95:5.1f}%" if mem_p95 is not None else "p95=n/a"
-                net_p95_str = f"p95={net_p95:5.2f}%" if net_p95 is not None else "p95=n/a"
-                load_p95_str = f"p95={load_p95:.2f}" if load_p95 is not None else "p95=n/a"
+                controller_status = f"state={p95_status['state']} exceedance={p95_status['exceedance_pct']:.1f}%"
                 
-                load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f} {load_p95_str}" if LOAD_CHECK_ENABLED else "load=disabled"
+                load_status = f"load now={per_core_load:.2f} avg={load_avg:.2f}" if LOAD_CHECK_ENABLED else "load=disabled"
                 sample_count = metrics_storage.get_sample_count()
                 
-                # Memory metric display (industry standards - excludes cache/buffers)
-                mem_display = f"mem now={mem_used_pct:5.1f}% avg={mem_avg:5.1f}% {mem_p95_str}"
+                # Memory metric display (Oracle compliance - excludes cache/buffers)
+                mem_display = f"mem(excl-cache) now={mem_used_no_cache_pct:5.1f}% avg={mem_avg:5.1f}%"
+                # Optionally show both metrics for validation (add DEBUG_MEM_METRICS=true to enable)
+                if os.getenv("DEBUG_MEM_METRICS", "false").lower() == "true":
+                    mem_display += f" [incl-cache={mem_used_incl_cache_pct:5.1f}%]"
                 
-                logger.info(f"cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% {cpu_p95_str} | "
+                logger.info(f"cpu now={cpu_pct:5.1f}% avg={cpu_avg:5.1f}% {cpu_p95_str} {controller_status} | "
                            f"{mem_display} | "
                            f"nic({NET_SENSE_MODE}:{NET_IFACE if NET_SENSE_MODE=='host' else NET_IFACE_INNER}, link≈{link_mbit:.0f} Mbit) "
-                           f"now={'N/A' if nic_util is None else f'{nic_util:5.2f}%'} avg={'N/A' if net_avg is None else f'{net_avg:5.2f}%'} {net_p95_str} | "
+                           f"now={'N/A' if nic_util is None else f'{nic_util:5.2f}%'} avg={'N/A' if net_avg is None else f'{net_avg:5.2f}%'} | "
                            f"{load_status} | "
                            f"duty={duty.value:4.2f} paused={int(paused.value)} "
-                           f"targets cpu≈{cpu_target_now:.1f}% mem≈{mem_target_now:.1f}% net≈{net_target_now:.1f}% "
                            f"net_rate≈{net_rate_mbit.value:.1f} Mbit | "
                            f"samples_7d={sample_count}")
 

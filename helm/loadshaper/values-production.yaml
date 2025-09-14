@@ -107,8 +107,8 @@ startupProbe:
 # Production configuration
 config:
   # Conservative targets for production stability
-  # Network target raised to 25% to stay above Oracle's 20% reclamation threshold
-  CPU_TARGET_PCT: "25.0"
+  # P95-driven CPU control maintains above 20% Oracle reclamation threshold
+  CPU_P95_SETPOINT: "25.0"
   MEM_TARGET_PCT: "50.0"
   NET_TARGET_PCT: "25.0"
   

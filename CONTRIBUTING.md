@@ -2,6 +2,17 @@
 
 Thank you for your interest in contributing to `loadshaper`! This project helps Oracle Cloud Always Free users prevent VM reclamation through intelligent resource management.
 
+## ⚠️ Project Status: Work In Progress
+
+**This project intentionally breaks backward compatibility without providing migration paths.** This is a design choice that enables rapid iteration and prevents technical debt accumulation. Contributors should expect:
+
+- **Breaking changes** in every release
+- **No migration guides** or backward compatibility layers
+- **Rapid evolution** of APIs, configuration, and architecture
+- **Fresh implementations** that replace previous approaches entirely
+
+This approach allows us to quickly iterate toward optimal Oracle Cloud VM protection.
+
 **📖 Quick Links:**
 - [README.md](README.md) - Project overview and usage instructions
 - [AGENTS.md](AGENTS.md) - Development guidelines and testing strategies
@@ -100,6 +111,31 @@ Thank you for your interest in contributing to `loadshaper`! This project helps 
 
    # Test custom targets (optional)
    NET_PEERS=8.8.8.8:53 NET_PROTOCOL=udp docker compose up -d --build
+   ```
+
+**P95 CPU Controller Testing:**
+   ```bash
+   # Test P95 controller state machine and exceedance budget
+   docker compose up -d --build
+   docker logs -f loadshaper | grep "P95"
+
+   # Look for controller state changes (BUILDING/MAINTAINING/REDUCING)
+   # Verify exceedance percentage near target (6.5%)
+   # Check CPU P95 stays above 20% (Oracle compliance)
+
+   # Query P95 directly from database (requires direct container access)
+   docker exec -it loadshaper python3 -c "
+   import sys; sys.path.append('/app')
+   import loadshaper
+   storage = loadshaper.MetricsStorage()
+   p95 = storage.get_percentile('cpu', 95)
+   print(f'Current CPU P95: {p95:.1f}%')
+   print('Status: OK' if p95 and p95 > 20 else 'RISK: Below Oracle 20% threshold')
+   "
+
+   # Test different P95 targets
+   CPU_P95_SETPOINT=30.0 docker compose up -d --build
+   CPU_P95_EXCEEDANCE_TARGET=10.0 docker compose up -d --build
    ```
 
 3. **Safety verification:**

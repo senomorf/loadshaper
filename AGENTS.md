@@ -1,9 +1,11 @@
 # Repository Guidelines
 
+**⚠️ WIP Project:** Implementation details are subject to change without notice. Breaking changes are introduced intentionally to prevent technical debt during active development.
+
 **📖 Related Documentation:**
 - [README.md](README.md) - Project overview, usage, and configuration
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contributor setup and guidelines
-- [CHANGELOG.md](CHANGELOG.md) - Version history and release notes
+- [CHANGELOG.md](CHANGELOG.md) - Version history and breaking changes
 
 ## Architecture Overview
 
@@ -11,7 +13,7 @@
 
 ### Core Components
 - **Metric Collection**: System-level monitoring (CPU, memory, network, load average)
-- **Storage Layer**: SQLite-based 7-day rolling metrics with 95th percentile CPU calculations
+- **Storage Layer**: SQLite-based 7-day rolling metrics with CPU 95th percentile calculations
 - **Control Logic**: PID-style controllers for each resource type with hysteresis
 - **Load Workers**: Low-priority background processes for resource consumption
 - **Safety Systems**: Load average monitoring and automatic yielding to real workloads
@@ -28,23 +30,88 @@
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │   SQLite    │    │   Safety    │    │   Telemetry │
 │  Metrics    │    │  Monitors   │    │   Output    │
-│ (CPU p95 +  │    │ (Load Avg)  │    │ (Logs/UI)   │
-│  NET/MEM    │    │             │    │             │
-│  Current)   │    │             │    │             │
+│ (CPU 7d p95)│    │ (Load Avg)  │    │ (Logs/UI)   │
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
 ### Design Principles
 - **Unobtrusive**: Always yields to legitimate workloads (nice 19 priority)
-- **Adaptive**: Responds to system load and Oracle's reclamation criteria (CPU 95th percentile < 20%, network/memory current utilization < 20%)
+- **Adaptive**: Responds to system load and Oracle's reclamation criteria
 - **Resilient**: Handles storage failures, network issues, and system restarts
 - **Observable**: Rich telemetry for monitoring and debugging
-- **Fallback-oriented**: Network generation activates only when needed to prevent Oracle reclamation
+
+### P95 CPU Controller Technical Details
+
+The **CPUP95Controller** implements advanced 95th percentile targeting using a state machine approach:
+
+#### State Machine Architecture
+- **BUILDING**: Ramps up CPU intensity when P95 is below target
+- **MAINTAINING**: Sustains optimal CPU load with controlled exceedances
+- **REDUCING**: Backs off when P95 exceeds target or system load is high
+
+#### Exceedance Budget Management
+- **Slot-based tracking**: 24-hour ring buffer of configurable slot-based decisions (default 60s)
+- **Exceedance ratio**: `CPU_P95_EXCEEDANCE_TARGET` (default 6.5%) controls high-intensity slots
+- **Adaptive scaling**: Load-based intensity reduction maintains system responsiveness
+- **Cache optimization**: 300-second TTL for P95 calculations reduces database load
+
+#### Technical Implementation
+```python
+# Core algorithm: Maintain exceedance budget while achieving P95 target
+current_exceedance = high_intensity_slots / total_slots
+target_exceedance = CPU_P95_EXCEEDANCE_TARGET / 100.0
+
+if current_exceedance < target_exceedance:
+    # Room in exceedance budget - can run high intensity
+    intensity_decision = 1  # High intensity slot
+else:
+    # At budget limit - run at baseline
+    intensity_decision = 0  # Normal intensity slot
+```
+
+This approach ensures precise P95 positioning while maintaining Oracle compliance and system stability.
+
+### Network Fallback Controller Technical Details
+
+The **NetworkFallbackState** provides intelligent network generation as a backup protection mechanism when CPU-based protection alone is insufficient.
+
+#### Oracle Shape-Aware Logic
+- **E2 shapes**: Activates when CPU P95 AND network both approach Oracle's 20% threshold
+- **A1 shapes**: Activates when CPU P95, network, AND memory all approach Oracle's 20% threshold
+
+#### State Management Architecture
+```python
+# Core activation logic based on Oracle reclamation rules
+def should_activate(self, is_e2: bool, cpu_p95: float, net_avg: float, mem_avg: float):
+    if is_e2:
+        # E2: CPU + network criteria only
+        cpu_at_risk = cpu_p95 < NET_FALLBACK_START_PCT
+        net_at_risk = net_avg < NET_FALLBACK_RISK_THRESHOLD_PCT
+        return cpu_at_risk and net_at_risk
+    else:
+        # A1: CPU + network + memory criteria
+        cpu_at_risk = cpu_p95 < NET_FALLBACK_START_PCT
+        net_at_risk = net_avg < NET_FALLBACK_RISK_THRESHOLD_PCT
+        mem_at_risk = mem_avg < NET_FALLBACK_RISK_THRESHOLD_PCT
+        return cpu_at_risk and net_at_risk and mem_at_risk
+```
+
+#### Anti-Oscillation Features
+- **Debounce timing**: `NET_FALLBACK_DEBOUNCE_SEC` prevents rapid state changes
+- **Minimum on/off periods**: Ensures stable activation cycles
+- **Gradual ramp-up**: `NET_FALLBACK_RAMP_SEC` for smooth rate transitions
+- **EMA-based rate control**: Exponential moving average for stable network generation
+
+#### Implementation Benefits
+- **Oracle compliance**: Uses simple thresholds (not P95) for network measurements matching Oracle's method
+- **Minimal impact**: Only generates traffic when multiple metrics simultaneously approach danger
+- **Resource efficient**: Native Python UDP generation replaces external iperf3 dependency
+- **Shape optimized**: Different activation logic for E2 vs A1 Oracle reclamation rules
 
 ## Project Structure & Module Organization
 - `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
-- `Dockerfile` — Python 3 Alpine image; runs `loadshaper.py`.
-- `compose.yaml` — loadshaper service with configurable env vars; mounts config templates.
+- `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
+- `compose.yaml` — two services: `loadshaper` (client/loader) and `iperf3` (receiver) with configurable env vars; mounts config templates.
 - `README.md`, `LICENSE` — usage and licensing.
 - `CLAUDE.md` — additional guidance for Anthropic contributors; keep in sync with this file.
 - `config-templates/` — Oracle shape-specific configuration templates (e2-1-micro.env, e2-2-micro.env, a1-flex-1.env, a1-flex-4.env) with optimized settings for each shape.
@@ -60,7 +127,7 @@ The system automatically detects Oracle Cloud shapes via:
 - Build & run in Docker: `docker compose up -d --build`
 - Tail logs: `docker logs -f loadshaper`
 - Local run (Linux only, needs /proc): `python -u loadshaper.py`
-- Override settings at launch, e.g.: `CPU_TARGET_PCT=35 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
+- Override settings at launch, e.g.: `CPU_P95_SETPOINT=30 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
 - Run tests: `python -m pytest -q`
 
 **🔗 See also:** [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development setup and testing requirements.
@@ -68,7 +135,7 @@ The system automatically detects Oracle Cloud shapes via:
 ## Coding Style & Naming Conventions
 - Language: Python 3; 4‑space indentation; PEP 8 style.
 - Names: functions/variables `snake_case`; constants `UPPER_SNAKE_CASE` (matches existing env-backed config).
-- Keep dependencies minimal (standard library only). Avoid adding Python deps unless essential.
+- Keep dependencies minimal (standard library + `iperf3` binary). Avoid adding Python deps unless essential.
 - Prefer small, testable helpers; keep I/O at edges; maintain clear separation between sensing, control, and workers.
 
 ## Testing Guidelines
@@ -81,16 +148,7 @@ The system automatically detects Oracle Cloud shapes via:
 ### Integration Testing
 - Validate behavior by running the stack and observing `[loadshaper]` telemetry.
 - CPU/RAM only: `NET_MODE=off docker compose up -d`.
-- Network shaping uses native Python sockets; set peers (comma-separated IPs) via `NET_PEERS` or use safe RFC 2544 defaults.
-
-### Network Fallback Testing
-**Test adaptive network activation:**
-- Use `NET_ACTIVATION=adaptive` (default) to test fallback behavior
-- Monitor network utilization < 19% to trigger network activation
-- Use `NET_ACTIVATION=always` to test continuous network generation
-- Use `NET_ACTIVATION=off` to disable network generation entirely
-- Verify hysteresis prevents oscillation (start at 19%, stop at 23%)
-- Test minimum on/off times prevent rapid cycling
+- Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
 
 ### Memory Occupation Testing
 **For A1.Flex shapes (memory reclamation applies):**
@@ -100,6 +158,7 @@ The system automatically detects Oracle Cloud shapes via:
 - Test with different `MEM_STEP_MB` values (64MB default for gradual allocation)
 - Verify memory touching pauses when `LOAD_THRESHOLD` exceeded
 - Test page touching efficiency with different page sizes
+- **Memory Calculation Validation**: Enable `DEBUG_MEM_METRICS=true` to compare both metric calculations
 - **Oracle Monitoring Comparison**: If available, compare with Oracle's Instance Monitoring memory metrics
 
 ### Load Average Monitoring
@@ -166,7 +225,7 @@ ping -c 5 8.8.8.8     # Should show normal latency
 # Verify CPU load reaches targets
 docker logs loadshaper | grep -E "cpu now=[0-9.]+" | tail -10
 
-# Check 95th percentile calculations  
+# Check CPU 95th percentile calculations  
 docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db \
   "SELECT resource_type, COUNT(*), 
    ROUND(AVG(value), 2) as avg_value,

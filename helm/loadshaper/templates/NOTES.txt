@@ -38,11 +38,11 @@
 
 Oracle Cloud Always Free Compliance:
 {{- if contains "e2-micro" .Values.image.tag }}
-✅ E2.1.Micro: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.NET_TARGET_PCT }}% of 50 Mbps network
+✅ E2.1.Micro: Targeting {{ .Values.config.CPU_P95_SETPOINT }}% CPU P95, {{ .Values.config.NET_TARGET_PCT }}% of 50 Mbps network
 {{- else if contains "a1-flex" .Values.image.tag }}
-✅ A1.Flex: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
+✅ A1.Flex: Targeting {{ .Values.config.CPU_P95_SETPOINT }}% CPU P95, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
 {{- else }}
-✅ Default: Targeting {{ .Values.config.CPU_TARGET_PCT }}% CPU, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
+✅ Default: Targeting {{ .Values.config.CPU_P95_SETPOINT }}% CPU P95, {{ .Values.config.MEM_TARGET_PCT }}% memory, {{ .Values.config.NET_TARGET_PCT }}% network
 {{- end }}
 
 ⚠️  Important: loadshaper runs at lowest priority (nice 19) and automatically pauses when real workloads need resources.

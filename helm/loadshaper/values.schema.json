@@ -163,12 +163,37 @@
     },
     "config": {
       "type": "object",
-      "required": ["CPU_TARGET_PCT", "MEM_TARGET_PCT", "NET_TARGET_PCT"],
+      "required": ["CPU_P95_SETPOINT", "MEM_TARGET_PCT", "NET_TARGET_PCT"],
       "properties": {
-        "CPU_TARGET_PCT": {
+        "CPU_P95_TARGET_MIN": {
           "type": "string",
           "pattern": "^([0-9]+(\\.[0-9]+)?)$",
-          "description": "CPU target percentage (0.1-99.0)"
+          "description": "CPU P95 target minimum percentage (20.0-95.0)"
+        },
+        "CPU_P95_TARGET_MAX": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?)$",
+          "description": "CPU P95 target maximum percentage (20.0-95.0)"
+        },
+        "CPU_P95_SETPOINT": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?)$",
+          "description": "CPU P95 setpoint percentage - Oracle reclamation target (20.0-95.0)"
+        },
+        "CPU_P95_EXCEEDANCE_TARGET": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?)$",
+          "description": "CPU P95 exceedance budget percentage (1.0-20.0)"
+        },
+        "CPU_P95_BASELINE_INTENSITY": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?)$",
+          "description": "CPU P95 baseline intensity percentage (20.0-50.0)"
+        },
+        "CPU_P95_HIGH_INTENSITY": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?)$",
+          "description": "CPU P95 high intensity percentage (30.0-95.0)"
         },
         "MEM_TARGET_PCT": {
           "type": "string",

@@ -51,7 +51,7 @@ readinessProbe:
 # Development-friendly configuration
 config:
   # Higher targets for visible activity in development
-  CPU_TARGET_PCT: "40.0"
+  CPU_P95_SETPOINT: "40.0"
   MEM_TARGET_PCT: "70.0"
   NET_TARGET_PCT: "25.0"
   

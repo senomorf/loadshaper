@@ -67,7 +67,7 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 | `replicaCount` | Number of loadshaper replicas | `1` |
 | `image.repository` | Container image repository | `ghcr.io/senomorf/loadshaper` |
 | `image.tag` | Container image tag | `""` (uses Chart.AppVersion) |
-| `config.CPU_TARGET_PCT` | Target CPU utilization percentage | `"30.0"` |
+| `config.CPU_P95_SETPOINT` | Target CPU P95 percentage (Oracle compliance) | `"25.0"` |
 | `config.MEM_TARGET_PCT` | Target memory utilization percentage | `"60.0"` |
 | `config.NET_TARGET_PCT` | Target network utilization percentage | `"25.0"` |
 | `config.NET_PEERS` | Comma-separated list of peer IPs for network load | `""` |
@@ -100,7 +100,7 @@ image:
 
 # Resource utilization targets
 config:
-  CPU_TARGET_PCT: "30.0"      # Target CPU utilization %
+  CPU_P95_SETPOINT: "25.0"    # Target CPU P95 % (Oracle compliance)
   MEM_TARGET_PCT: "60.0"      # Target memory utilization %
   NET_TARGET_PCT: "25.0"      # Target network utilization % (above Oracle 20% threshold)
   
