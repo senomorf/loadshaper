@@ -200,6 +200,17 @@ class TestHealthEndpoints:
             def __init__(self):
                 self.db_path = "/tmp/test_metrics.db"  # Non-persistent path
 
+            def is_storage_degraded(self):
+                return False
+
+            def get_storage_status(self):
+                return {
+                    'consecutive_failures': 0,
+                    'is_degraded': False,
+                    'last_failure_time': None,
+                    'max_consecutive_failures': 5
+                }
+
         mock_storage = MockNonPersistentStorage()
         handler = MockHealthHandler("/health", healthy_state, mock_storage)
         handler._handle_health()

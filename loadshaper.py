@@ -1123,16 +1123,14 @@ class CPUP95Controller:
     def _get_ring_buffer_path(self):
         """Get path for ring buffer persistence file"""
         # Use same directory as metrics database for consistency
-        try:
-            # Try primary location first
-            db_dir = "/var/lib/loadshaper"
-            if os.path.exists(db_dir) and os.access(db_dir, os.W_OK):
-                return os.path.join(db_dir, "p95_ring_buffer.json")
-        except (OSError, PermissionError):
-            pass
-
-        # Fall back to temp directory
-        return "/tmp/loadshaper_p95_ring_buffer.json"
+        db_dir = self.PERSISTENT_STORAGE_PATH
+        if not os.path.isdir(db_dir):
+            raise FileNotFoundError(f"P95 ring buffer directory does not exist: {db_dir}. "
+                                    f"A persistent volume must be mounted.")
+        if not os.access(db_dir, os.W_OK):
+            raise PermissionError(f"Cannot write to P95 ring buffer directory: {db_dir}. "
+                                  f"Check volume permissions for persistent storage.")
+        return os.path.join(db_dir, "p95_ring_buffer.json")
 
     def _save_ring_buffer_state(self):
         """Save ring buffer state to disk for persistence across restarts"""
@@ -1707,6 +1705,12 @@ class MetricsStorage:
 
         self.db_path = db_path
         self.lock = threading.Lock()
+
+        # Storage degradation tracking
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 5  # Mark as degraded after 5 failures
+        self.last_failure_time = None
+
         logger.info(f"Metrics database initialized at: {self.db_path}")
         self._init_db()
     
@@ -1728,7 +1732,6 @@ class MetricsStorage:
                         load_avg REAL
                     )
                 """)
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)")
                 conn.commit()
                 conn.close()
                 logger.info(f"Metrics database schema initialized successfully")
@@ -1759,9 +1762,20 @@ class MetricsStorage:
                 )
                 conn.commit()
                 conn.close()
+
+                # Reset failure counter on success
+                self.consecutive_failures = 0
                 return True
             except Exception as e:
                 logger.error(f"Failed to store sample: {e}")
+
+                # Track consecutive failures for degradation detection
+                self.consecutive_failures += 1
+                self.last_failure_time = time.time()
+
+                if self.consecutive_failures >= self.max_consecutive_failures:
+                    logger.warning(f"Storage degraded: {self.consecutive_failures} consecutive failures")
+
                 return False
     
     def get_percentile(self, metric_name, percentile=95.0, days_back=7):
@@ -1861,6 +1875,27 @@ class MetricsStorage:
             except Exception as e:
                 logger.error(f"Failed to get sample count: {e}")
                 return 0
+
+    def is_storage_degraded(self):
+        """Check if storage is in a degraded state due to consecutive failures.
+
+        Returns:
+            bool: True if storage is degraded, False otherwise
+        """
+        return self.consecutive_failures >= self.max_consecutive_failures
+
+    def get_storage_status(self):
+        """Get detailed storage status for telemetry.
+
+        Returns:
+            dict: Storage status information
+        """
+        return {
+            'consecutive_failures': self.consecutive_failures,
+            'is_degraded': self.is_storage_degraded(),
+            'last_failure_time': self.last_failure_time,
+            'max_consecutive_failures': self.max_consecutive_failures
+        }
 
 # ---------------------------
 # CPU workers (busy/sleep)
@@ -2706,7 +2741,12 @@ class HealthHandler(BaseHTTPRequestHandler):
                 is_healthy = False
                 status_checks.append("persistence_not_available")
                 # Note: Persistence failure marks unhealthy as 7-day P95 calculations require persistent storage
-            
+
+            # Check for storage degradation
+            elif self.metrics_storage and self.metrics_storage.is_storage_degraded():
+                is_healthy = False
+                status_checks.append("storage_degraded")
+
             # Check for extreme resource usage that might indicate issues
             with self.controller_state_lock:
                 cpu_avg = self.controller_state.get('cpu_avg')
@@ -2726,6 +2766,11 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "database_path": self.metrics_storage.db_path if self.metrics_storage else None,
                 "load_generation": "paused" if paused_state == 1.0 else "active"
             }
+
+            # Add storage status details if available
+            if self.metrics_storage:
+                storage_status = self.metrics_storage.get_storage_status()
+                health_data["storage_status"] = storage_status
             
             status_code = 200 if is_healthy else 503
             self._send_json_response(status_code, health_data)

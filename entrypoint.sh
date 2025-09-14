@@ -23,7 +23,8 @@ if [ ! -d "$PERSISTENCE_DIR" ]; then
     echo "      driver: local"
     echo ""
     exit 1
-elif [ ! -w "$PERSISTENCE_DIR" ]; then
+# Test actual write capability beyond just -w check
+elif ! echo "write_test_$$" > "$PERSISTENCE_DIR/.write_test" 2>/dev/null || ! rm "$PERSISTENCE_DIR/.write_test" 2>/dev/null; then
     USER_ID=$(id -u)
     GROUP_ID=$(id -g)
     echo "[ERROR] Cannot write to $PERSISTENCE_DIR - check volume permissions"

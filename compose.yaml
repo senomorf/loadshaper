@@ -11,6 +11,7 @@ services:
     build: .
     container_name: loadshaper
     restart: ${RESTART_POLICY:-always}
+    user: "1000:1000"  # Run as non-root user matching Dockerfile
     ports:
       - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"   # health check endpoints
     volumes:
@@ -73,6 +74,7 @@ services:
       # === Health check server ===
       HEALTH_ENABLED: "${HEALTH_ENABLED:-true}"       # enable HTTP health endpoints
       HEALTH_PORT: "${HEALTH_PORT:-8080}"             # port for /health and /metrics endpoints
+      HEALTH_HOST: "${HEALTH_HOST:-0.0.0.0}"          # bind to all interfaces for Docker port mapping
 
 # Persistent volume for metrics database
 # This volume is REQUIRED for LoadShaper to function correctly
