@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2025-01-15
 
 ### ⚠️ BREAKING CHANGES
-- **Persistent volume storage now REQUIRED** ([#74](https://github.com/senomorf/loadshaper/issues/74)) - Docker Compose deployments must include persistent volume or container will not start
-- **Network generation completely rewritten** ([#75](https://github.com/senomorf/loadshaper/issues/75)) - No backwards compatibility with previous implementation
+- **Persistent volume storage now REQUIRED** - Docker Compose deployments must include persistent volume or container will not start
+- **Network generation completely rewritten** - No backwards compatibility with previous implementation
   - Default NET_PEERS changed from placeholder IPs (10.0.0.2, 10.0.0.3) to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
   - Several new network configuration variables added for reliability and validation
 - **Container security hardened** - Now runs as non-root user (uid/gid 1000) with no fallback to ephemeral storage
@@ -23,16 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Special-use IP ranges**: Added missing RFC 2544 (198.18.0.0/15), TEST-NETs, and other reserved ranges to external address validation
   - **tx_bytes validation**: Fixed packet size mismatch in validation (now tracks actual bytes sent including DNS packet sizes)
   - **External egress verification**: Fixed false positives by checking actual peer used instead of any valid peer
-- **Thread safety**: Ring buffer saves now use PID+thread temp files to prevent race conditions ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Portable mount detection**: Replaced non-portable `stat -c %d` with Python-based device detection for Alpine/busybox compatibility ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors ([#87](https://github.com/senomorf/loadshaper/pull/87))
-- **Network generation reliability** ([#75](https://github.com/senomorf/loadshaper/issues/75)): Complete rewrite fixing silent failures and Oracle E2 compliance issues
+- **Thread safety**: Ring buffer saves now use PID+thread temp files to prevent race conditions
+- **Portable mount detection**: Replaced non-portable `stat -c %d` with Python-based device detection for Alpine/busybox compatibility
+- **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors
+- **Network generation reliability**: Complete rewrite fixing silent failures and Oracle E2 compliance issues
   - Detects failed network generation via tx_bytes monitoring
   - Changed default peers from RFC2544 placeholder IPs to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
   - Validates external addresses rejecting RFC1918, loopback, and link-local for Oracle E2 compliance
   - Implements automatic fallback chain: UDP → TCP → next peer → DNS servers → local generation
   - Added debounce and min-on/min-off time controls to prevent network state oscillation
-- **Persistent volume storage** ([#74](https://github.com/senomorf/loadshaper/issues/74)): Metrics database now properly persisted in Docker Compose
+- **Persistent volume storage**: Metrics database now properly persisted in Docker Compose
   - 7-day P95 history preserved across container restarts
   - P95 calculations maintain complete history required for Oracle reclamation detection
   - Container runs as non-root user (loadshaper:1000) for security
@@ -40,17 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configuration validation**: Enhanced validation for CPU_P95_TARGET_MIN/MAX ordering and network fallback thresholds
 
 ### Added
-- **NetworkGenerator state machine** ([#75](https://github.com/senomorf/loadshaper/issues/75)): Complete state-driven network generation with reliability features
+- **NetworkGenerator state machine**: Complete state-driven network generation with reliability features
   - State progression: OFF → INITIALIZING → VALIDATING → ACTIVE_UDP → ACTIVE_TCP → DEGRADED_LOCAL → ERROR
   - Peer validation and reputation with EMA-based scoring system
   - Runtime tx_bytes monitoring for actual traffic validation
   - DNS packet generation with EDNS0 padding for fallback traffic
   - Network health scoring (0-100) based on state, reputation, and errors
-- **Persistent storage validation** ([#74](https://github.com/senomorf/loadshaper/issues/74)): Enhanced container startup checks
+- **Persistent storage validation**: Enhanced container startup checks
   - Entrypoint validation ensures persistent storage is properly mounted
   - Health endpoint shows `persistence_storage` status
   - Clear error messages guide volume configuration
-- **Performance optimizations** ([#87](https://github.com/senomorf/loadshaper/pull/87)):
+- **Performance optimizations**:
   - Ring buffer batching with configurable `CPU_P95_RING_BUFFER_BATCH_SIZE`
   - ENOSPC degraded mode for disk full scenarios
   - Thread-safe operations with PID+thread temp files
@@ -71,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Network telemetry**: Enhanced to include state machine status, peer health, and validation metrics
 - **Performance**: Ring buffer state saves batched to reduce I/O frequency (60s → 600s default)
 - **Robustness**: Database corruption detection now runs on startup and during operations
-- **Test patterns**: Updated for thread-safe temp file naming conventions ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Test patterns**: Updated for thread-safe temp file naming conventions
 
 ### Migration Required
 Existing Docker Compose users must update their configuration:
@@ -95,7 +95,7 @@ volumes:
 - **Configuration templates**: All shape-specific templates updated with new defaults
 - **No backwards compatibility**: Old network implementation completely removed
 
-## [3.0.0] - P95 CPU Control Implementation (#73)
+## [3.0.0] - P95 CPU Control Implementation
 
 ### ⚠️ BREAKING CHANGES
 - **New P95-driven CPU control system** - replaces previous implementation completely
@@ -125,7 +125,7 @@ volumes:
 
 ### Fixed
 - **Critical Oracle compliance issue**: CPU control now uses 95th percentile matching Oracle's exact reclamation criteria
-- **Issue #73**: LoadShaper now uses P95 values for control decisions, not just telemetry display
+- **LoadShaper now uses P95 values for control decisions, not just telemetry display**
 - **Critical memory unpacking bug**: Fixed variable unpacking mismatch preventing runtime crashes
 - **P95 cache fallback logic**: Fixed fallback to return cached values when database reads fail
 - **Safety scaling efficiency**: Optimized method signatures to prevent redundant calculations
@@ -145,17 +145,17 @@ volumes:
 ## [2.2.0] - Previous Version
 
 ### Added
-- **Native Python network generator** (#71): Complete replacement of iperf3 with native socket-based implementation
+- **Native Python network generator**: Complete replacement of iperf3 with native socket-based implementation
   - RFC 2544 default addresses for serverless operation
   - Token bucket rate limiting with 5ms precision
   - IPv4/IPv6 support with TTL safety controls
   - Pre-allocated buffers for zero-copy packet generation
-- **Health monitoring endpoints** (#18): HTTP server with /health and /metrics endpoints
+- **Health monitoring endpoints**: HTTP server with /health and /metrics endpoints
   - Configurable via HEALTH_ENABLED, HEALTH_PORT, HEALTH_HOST
   - Docker health check integration ready
   - Security-first binding (defaults to localhost-only)
-- **Graceful shutdown** (partial #12): Signal handling for SIGTERM/SIGINT with clean resource cleanup
-- **Intelligent network fallback** (#26): Adaptive network generation based on Oracle reclamation rules
+- **Graceful shutdown** (partial): Signal handling for SIGTERM/SIGINT with clean resource cleanup
+- **Intelligent network fallback**: Adaptive network generation based on Oracle reclamation rules
   - Shape-aware logic (E2 vs A1 different criteria)
   - Hysteresis and debounce to prevent oscillation
   - NET_ACTIVATION modes: adaptive, always, off
