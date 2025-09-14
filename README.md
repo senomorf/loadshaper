@@ -210,6 +210,23 @@ services:
       - no-new-privileges:true        # Prevent privilege escalation
 ```
 
+### Optional Security Hardening
+
+For security-conscious environments, you can add additional hardening to your Docker Compose deployment:
+
+```yaml
+services:
+  loadshaper:
+    # ... existing configuration ...
+    read_only: true                    # Read-only root filesystem
+    tmpfs:
+      - /tmp                          # Allow temporary files in memory
+    cap_drop:
+      - ALL                           # Drop all Linux capabilities
+    security_opt:
+      - no-new-privileges:true        # Prevent privilege escalation
+```
+
 **📖 More Information:**
 - [Configuration Reference](#configuration-reference) - Detailed environment variable options
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Development setup and contribution guidelines

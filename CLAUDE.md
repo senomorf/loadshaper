@@ -102,6 +102,8 @@ sudo chmod -R 755 /var/lib/loadshaper
 ## Testing Guidelines
 **P95 CPU Control**: Validate state machine and exceedance budget; run `tests/test_cpu_p95_controller.py`, `tests/test_p95_integration.py`
 **Ring Buffer Batching**: Test I/O optimization with different batch sizes; see `tests/test_ring_buffer_batching.py`
+**Thread Safety**: Validate race condition prevention in ring buffer saves with PID+thread temp files; see `tests/test_runtime_failure_handling.py`
+**ENOSPC Degraded Mode**: Test comprehensive disk full scenarios and graceful degradation; see `tests/test_runtime_failure_handling.py` (3 new test methods)
 **Configuration Validation**: Test cross-parameter consistency checks; see `tests/test_configuration_consistency.py`
 **Database Corruption**: Test detection and recovery mechanisms; see `tests/test_database_corruption_handling.py`
 **Memory Management**: Enable `DEBUG_MEM_METRICS=true` and compare excl/incl cache; see `tests/test_memory_occupation.py`
@@ -110,6 +112,7 @@ sudo chmod -R 755 /var/lib/loadshaper
 **Persistence**: Confirm `/var/lib/loadshaper/metrics.db` is writable; see `tests/test_metrics_storage.py`, `tests/test_runtime_failure_handling.py`
 **Health Endpoints**: Validate `/health` and `/metrics` endpoints; see `tests/test_health_endpoints.py`
 **Container Setup**: Test entrypoint validation and permission handling; see `tests/test_entrypoint_validation.py`
+**Portable Mount Detection**: Verify Python-based device detection works across Alpine/busybox; see entrypoint validation tests
 
 ## Documentation Synchronization Requirement
 **CRITICAL**: When implementing changes or adjusting documentation, you MUST update all relevant files:

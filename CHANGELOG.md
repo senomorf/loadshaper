@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metrics database persistence**: 7-day P95 history now preserved across container restarts
 - **Oracle compliance**: P95 calculations maintain complete history required for reclamation detection
 - **Container security**: Application now runs as non-root user (loadshaper:1000)
+- **Thread safety**: Ring buffer saves now use PID+thread temp files to prevent race conditions ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Portable mount detection**: Replaced non-portable `stat -c %d` with Python-based device detection for Alpine/busybox compatibility ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors ([#87](https://github.com/senomorf/loadshaper/pull/87))
 - **CRITICAL**: Network generation reliability completely fixed ([#75](https://github.com/senomorf/loadshaper/issues/75))
 - **Silent network failures**: Now detects failed network generation via tx_bytes monitoring
 - **Unreachable default peers**: Changed from RFC2544 placeholder IPs to public DNS servers
@@ -53,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Database size monitoring**: Monitors metrics database size with growth projections
 - **Configuration validation**: Comprehensive cross-parameter consistency checks at startup
 - **Database corruption handling**: Automatic backup and recovery for corrupted metrics database
+- **ENOSPC degraded mode tests**: Comprehensive test coverage for disk full scenarios and degraded mode behavior ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Network fallback documentation**: Enhanced state machine documentation with named timing constants and clear transitions ([#87](https://github.com/senomorf/loadshaper/pull/87))
 - **Enhanced documentation**: Detailed P95 controller state machine documentation
 - **Migration guide**: Breaking changes philosophy and deployment requirements
 - **Network fallback examples**: Five detailed configuration examples for different use cases
@@ -72,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Network telemetry**: Now includes state machine status, peer health, and validation metrics
 - **Performance**: Ring buffer state saves batched to reduce I/O frequency (60s → 600s default)
 - **Robustness**: Database corruption detection runs on startup and during operations
+- **Test patterns**: Updated ring buffer batching tests to handle new thread-safe temp file naming conventions ([#87](https://github.com/senomorf/loadshaper/pull/87))
 
 ### Migration Required
 Existing Docker Compose users must update their configuration:
