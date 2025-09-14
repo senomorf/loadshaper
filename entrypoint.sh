@@ -25,8 +25,33 @@ if [ ! -d "$PERSISTENCE_DIR" ]; then
     echo "      driver: local"
     echo ""
     exit 1
-# Test actual write capability beyond just -w check (with secure temp file creation)
-elif ! (umask 077; echo "write_test_$$" > "$PERSISTENCE_DIR/.write_test.$$") 2>/dev/null || ! rm "$PERSISTENCE_DIR/.write_test.$$" 2>/dev/null; then
+# Check if the persistence directory is actually a mount point
+# This prevents using the image's built-in directory which would lose data on restart
+elif [ -d "$PERSISTENCE_DIR" ] && [ "$(stat -c %d "$PERSISTENCE_DIR" 2>/dev/null)" = "$(stat -c %d "$PERSISTENCE_DIR/.." 2>/dev/null)" ]; then
+    echo "[ERROR] $PERSISTENCE_DIR exists but is NOT a mount point"
+    echo "[ERROR] LoadShaper requires a persistent volume to be mounted at this path"
+    echo "[ERROR] Data stored in the container's filesystem will be lost on restart"
+    echo ""
+    echo "This typically means:"
+    echo "  - No volume is mounted to the container"
+    echo "  - The directory exists in the Docker image (should not happen)"
+    echo ""
+    echo "Required Docker Compose configuration:"
+    echo "  services:"
+    echo "    loadshaper:"
+    echo "      volumes:"
+    echo "        - loadshaper-metrics:/var/lib/loadshaper"
+    echo ""
+    echo "  volumes:"
+    echo "    loadshaper-metrics:"
+    echo "      driver: local"
+    echo ""
+    echo "To verify mount status inside container:"
+    echo "  docker exec loadshaper mount | grep $PERSISTENCE_DIR"
+    echo ""
+    exit 1
+# Test actual write capability using mktemp for better security
+elif ! TMPFILE=$(mktemp "$PERSISTENCE_DIR/.write_test.XXXXXX" 2>/dev/null); then
     USER_ID=$(id -u)
     GROUP_ID=$(id -g)
     echo "[ERROR] Cannot write to $PERSISTENCE_DIR - check volume permissions"
@@ -50,7 +75,9 @@ elif ! (umask 077; echo "write_test_$$" > "$PERSISTENCE_DIR/.write_test.$$") 2>/
     echo ""
     exit 1
 else
-    echo "[INFO] Persistent storage verified at $PERSISTENCE_DIR"
+    # Clean up the temp file immediately after successful creation
+    rm -f "$TMPFILE" 2>/dev/null || true
+    echo "[INFO] Persistent storage verified at $PERSISTENCE_DIR (mount point confirmed)"
     echo "[INFO] Running as user $(id -u):$(id -g)"
     echo "[INFO] Metrics database will maintain 7-day P95 history across container restarts"
 fi

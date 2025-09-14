@@ -2,11 +2,9 @@ FROM python:3-alpine
 
 RUN apk add --no-cache procps coreutils curl
 
-# Create non-root user and prepare persistent storage directory
+# Create non-root user (do NOT create storage directory - must be mounted)
 RUN addgroup -g 1000 loadshaper && \
-    adduser -D -u 1000 -G loadshaper loadshaper && \
-    mkdir -p /var/lib/loadshaper && \
-    chown -R loadshaper:loadshaper /var/lib/loadshaper
+    adduser -D -u 1000 -G loadshaper loadshaper
 
 WORKDIR /app
 COPY loadshaper.py /app/

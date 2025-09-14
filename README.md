@@ -1172,18 +1172,46 @@ docker logs -f loadshaper | grep "nic("
 docker logs loadshaper
 
 # Common entrypoint issues:
-# 1. "Permission denied" - persistent storage mount point permissions
-docker exec loadshaper ls -ld /var/lib/loadshaper || echo "Mount point not accessible"
-sudo chown -R 1000:1000 ./persistent-storage/  # Fix host permissions
+# 1. "NOT a mount point" - NEW: Container now verifies persistent volume is actually mounted
+docker exec loadshaper mount | grep /var/lib/loadshaper || echo "No volume mounted - container will not start"
+# Fix: Ensure docker-compose.yaml has the volume configured:
+#   volumes:
+#     - loadshaper-metrics:/var/lib/loadshaper
 
-# 2. "Write test failed" - storage not writable
+# 2. "Permission denied" - persistent storage mount point permissions
+docker exec loadshaper ls -ld /var/lib/loadshaper || echo "Mount point not accessible"
+# Fix for named volumes:
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+# Fix for bind mounts:
+sudo chown -R 1000:1000 ./persistent-storage/
+
+# 3. "Write test failed" - storage not writable (uses mktemp for security)
 docker exec loadshaper touch /var/lib/loadshaper/test && docker exec loadshaper rm /var/lib/loadshaper/test || echo "Storage not writable"
 
-# 3. "Database migration failed" - corrupted or incompatible database
+# 4. "Database migration failed" - corrupted or incompatible database
 docker exec loadshaper rm -f /var/lib/loadshaper/metrics.db && docker restart loadshaper
 
-# 4. Verify compose configuration includes persistent volume
+# 5. Verify compose configuration includes persistent volume
 docker compose config | grep -A5 volumes || echo "No volumes configured - add persistent storage"
+```
+
+**Mount Point Verification (NEW in v2.0.0):**
+```shell
+# Container now requires /var/lib/loadshaper to be a mount point
+# This prevents accidental use of container's filesystem which loses data on restart
+
+# Verify mount inside container:
+docker exec loadshaper sh -c 'stat -c "%d" /var/lib/loadshaper; stat -c "%d" /var/lib'
+# Different device IDs = properly mounted; Same IDs = NOT mounted (container won't start)
+
+# For Kubernetes users - avoid emptyDir:
+# emptyDir volumes are NOT persistent across pod restarts
+# Use PersistentVolumeClaim (PVC) instead for true persistence
+
+# Debug mount issues:
+docker inspect loadshaper | jq '.[0].Mounts'  # Show all mounts
+docker volume ls                               # List volumes
+docker volume inspect loadshaper-metrics       # Check volume details
 ```
 
 **CPU not reaching target percentage:**

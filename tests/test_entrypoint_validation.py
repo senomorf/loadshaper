@@ -57,37 +57,39 @@ class TestEntrypointValidation(unittest.TestCase):
             try:
                 result = self.run_entrypoint(test_dir)
                 self.assertEqual(result.returncode, 1, "Should exit with code 1 when directory not writable")
-                self.assertIn("Cannot write to", result.stdout)
-                self.assertIn("check volume permissions", result.stdout)
+                # Now the entrypoint first checks if it's a mount point, so we'll see that error first
+                # since test directories are not mount points
+                self.assertIn("NOT a mount point", result.stdout)
             finally:
                 # Restore permissions to allow cleanup
                 os.chmod(test_dir, stat.S_IRWXU)
 
-    def test_entrypoint_directory_success(self):
-        """Test entrypoint behavior when persistence directory exists and is writable."""
+    def test_entrypoint_directory_not_mount(self):
+        """Test entrypoint behavior when persistence directory exists but is not a mount point."""
         with tempfile.TemporaryDirectory() as tmpdir:
             test_dir = os.path.join(tmpdir, "loadshaper_ok")
             os.makedirs(test_dir)
 
             result = self.run_entrypoint(test_dir)
 
-            self.assertEqual(result.returncode, 0, f"Should exit with code 0 on success. Stderr: {result.stderr}")
-            self.assertIn("Persistent storage verified", result.stdout)
-            self.assertIn("success", result.stdout)  # Check that the main command was executed
+            # Should fail because it's not a mount point
+            self.assertEqual(result.returncode, 1, f"Should exit with code 1 when not a mount point. Stdout: {result.stdout}")
+            self.assertIn("NOT a mount point", result.stdout)
+            self.assertIn("persistent volume", result.stdout.lower())
 
-    def test_entrypoint_write_test_cleanup(self):
-        """Test that the entrypoint script properly cleans up its write test files."""
+    def test_entrypoint_messages_contain_required_info(self):
+        """Test that error messages contain helpful information for users."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            test_dir = os.path.join(tmpdir, "loadshaper_cleanup_test")
+            test_dir = os.path.join(tmpdir, "loadshaper_test")
             os.makedirs(test_dir)
 
-            # Run entrypoint script
+            # Run entrypoint script (will fail due to not being a mount)
             result = self.run_entrypoint(test_dir)
 
-            # Check that no write test files remain
-            test_files = [f for f in os.listdir(test_dir) if f.startswith('.write_test')]
-            self.assertEqual(len(test_files), 0, "Write test files should be cleaned up")
-            self.assertEqual(result.returncode, 0, "Script should succeed with proper cleanup")
+            # Check that error messages contain Docker Compose configuration example
+            self.assertIn("volumes:", result.stdout)
+            self.assertIn("loadshaper-metrics", result.stdout)
+            self.assertIn("/var/lib/loadshaper", result.stdout)
 
 if __name__ == '__main__':
     unittest.main()

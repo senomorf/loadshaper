@@ -2089,6 +2089,26 @@ class MetricsStorage:
             raise PermissionError(f"Cannot write to metrics directory: {db_dir}. "
                                   f"Check volume permissions for persistent storage.")
 
+        # Additional mount point verification for Linux systems
+        # This provides defense-in-depth if entrypoint validation is bypassed
+        if platform.system() == 'Linux' and os.path.exists('/proc/self/mountinfo'):
+            try:
+                # Check if db_dir is a mount point by comparing device IDs
+                # Same device ID as parent means it's not a separate mount
+                db_stat = os.stat(db_dir)
+                parent_stat = os.stat(os.path.dirname(db_dir))
+                if db_stat.st_dev == parent_stat.st_dev:
+                    # Not a mount point - warn but don't fail (for local testing)
+                    logger.warning(f"CRITICAL: {db_dir} is NOT a mount point - data will be lost on container restart!")
+                    logger.warning("LoadShaper requires persistent volume for 7-day P95 calculations")
+                    logger.warning("Without persistent storage, Oracle VM reclamation detection will fail")
+                    # In production, this should be a fatal error, but allow for testing
+                    if os.getenv('LOADSHAPER_STRICT_MOUNT_CHECK', 'false').lower() == 'true':
+                        raise RuntimeError(f"{db_dir} must be a mount point for persistent storage")
+            except (OSError, IOError) as e:
+                # If we can't verify, log but continue
+                logger.debug(f"Could not verify mount status: {e}")
+
         self.db_path = db_path
         self.lock = threading.Lock()
 

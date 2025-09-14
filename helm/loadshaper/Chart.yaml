@@ -2,8 +2,8 @@ apiVersion: v2
 name: loadshaper
 description: Oracle Cloud Always Free VM Keeper - Intelligent baseline load generator
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 2.0.0  # Breaking change: Mandatory persistent storage requirement
+appVersion: "2.0.0"
 kubeVersion: ">=1.20.0-0"
 keywords:
   - oracle-cloud
