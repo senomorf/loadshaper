@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Network configuration variables** - Several new variables added for reliability and validation
 
 ### Fixed
+- **CRITICAL POST-MERGE FIX**: NetworkGenerator ENV integration missing - Fixed environment variables not being applied to NetworkGenerator instances, restoring Oracle E2 compliance
+- **Configuration validation**: Added validation for CPU_P95_TARGET_MIN/MAX ordering and network fallback thresholds to prevent misconfiguration
+- **Test coverage gaps**: Implemented missing network state machine tests for debounce and hysteresis timing controls
+- **Network state stability**: Fixed critical untested debounce and min-on/min-off time controls that prevent network state oscillation
 - **CRITICAL**: Added persistent volume storage for metrics database in Docker Compose ([#74](https://github.com/senomorf/loadshaper/issues/74))
 - **Metrics database persistence**: 7-day P95 history now preserved across container restarts
 - **Oracle compliance**: P95 calculations maintain complete history required for reclamation detection

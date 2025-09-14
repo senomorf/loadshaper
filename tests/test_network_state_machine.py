@@ -121,51 +121,87 @@ class TestNetworkStateMachine(unittest.TestCase):
     def test_state_transition_debounce(self):
         """Test state transition debouncing prevents rapid changes."""
         # Mock time to control debounce timing
-        with unittest.mock.patch('time.time') as mock_time:
+        with unittest.mock.patch('time.monotonic') as mock_time:
             mock_time.return_value = 1000.0
 
             # Initialize in a valid state
             with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
                 self.generator.start(["8.8.8.8"])
 
+            # Force into ACTIVE state and record initial state
+            self.generator.state = loadshaper.NetworkState.ACTIVE_UDP
+            self.generator.state_start_time = mock_time.return_value
+            self.generator.last_transition_time = mock_time.return_value
             initial_state = self.generator.state
 
             # Try to transition too quickly (within debounce time)
-            mock_time.return_value = 1000.1  # 100ms later (< debounce threshold)
+            mock_time.return_value = 1000.1  # 100ms later (< 5s debounce threshold)
 
             # Attempt transition should be blocked by debounce
-            old_transition_time = getattr(self.generator, 'last_transition_time', 0)
             self.generator._transition_state(loadshaper.NetworkState.ERROR, "test transition")
 
-            # Should have debounce protection
-            if hasattr(self.generator, 'state_debounce_sec') and self.generator.state_debounce_sec > 0:
-                # If debounce is implemented, state shouldn't change immediately
-                pass  # State change behavior depends on implementation
+            # State should remain unchanged due to debounce protection
+            self.assertEqual(self.generator.state, initial_state,
+                           "State transition should be blocked by debounce timing")
+
+            # Wait longer than both debounce period AND min-on time
+            mock_time.return_value = 1020.0  # 20 seconds later (> 5s debounce and > 15s min-on)
+
+            # Try transitioning to OFF state (which is always valid)
+            self.generator._transition_state(loadshaper.NetworkState.OFF, "test transition after debounce")
+
+            # Now transition should succeed
+            self.assertEqual(self.generator.state, loadshaper.NetworkState.OFF,
+                           "State transition should succeed after debounce and min-on periods")
 
     def test_min_on_time_hysteresis(self):
         """Test minimum on-time prevents premature state exits."""
-        with unittest.mock.patch('time.time') as mock_time:
+        with unittest.mock.patch('time.monotonic') as mock_time:
             mock_time.return_value = 1000.0
 
             # Initialize generator
             with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
                 self.generator.start(["8.8.8.8"])
 
-            # Attempt to transition away too quickly
-            mock_time.return_value = 1000.1  # 100ms later
-
+            # Force into ACTIVE_UDP state (which has min-on time restrictions)
+            self.generator.state = loadshaper.NetworkState.ACTIVE_UDP
+            self.generator.state_start_time = mock_time.return_value
+            self.generator.last_transition_time = mock_time.return_value - 10.0  # Set debounce clear
             initial_state = self.generator.state
 
-            # Try to force transition to different state
-            try:
-                self.generator._transition_state(loadshaper.NetworkState.ERROR, "premature transition")
-            except:
-                pass  # May fail due to validation
+            # Attempt to transition away too quickly (within min-on time)
+            mock_time.return_value = 1005.0  # 5 seconds later (< 15s min-on time)
 
-            # Min-on time should prevent rapid transitions in active states
-            if hasattr(self.generator, 'state_min_on_sec'):
-                # Implementation-specific behavior
-                pass
+            # Try to force transition to different state
+            self.generator._transition_state(loadshaper.NetworkState.ERROR, "premature transition")
+
+            # State should remain unchanged due to min-on time protection
+            self.assertEqual(self.generator.state, initial_state,
+                           "Active state transition should be blocked by min-on time hysteresis")
+
+            # Wait longer than min-on time and try again
+            mock_time.return_value = 1020.0  # 20 seconds later (> 15s min-on time)
+
+            self.generator._transition_state(loadshaper.NetworkState.ERROR, "transition after min-on time")
+
+            # Now transition should succeed
+            self.assertEqual(self.generator.state, loadshaper.NetworkState.ERROR,
+                           "State transition should succeed after min-on time period")
+
+            # Test min-off time for inactive states
+            mock_time.return_value = 1021.0
+            self.generator.state = loadshaper.NetworkState.OFF
+            self.generator.state_start_time = mock_time.return_value
+            self.generator.last_transition_time = mock_time.return_value - 10.0
+
+            # Try to transition away from OFF state too quickly (< 20s min-off time)
+            mock_time.return_value = 1025.0  # 4 seconds later (< 20s min-off)
+
+            self.generator._transition_state(loadshaper.NetworkState.INITIALIZING, "premature off transition")
+
+            # Should remain in OFF state
+            self.assertEqual(self.generator.state, loadshaper.NetworkState.OFF,
+                           "Inactive state transition should be blocked by min-off time hysteresis")
 
     def test_peer_validation_state_changes(self):
         """Test peer validation affects state transitions."""

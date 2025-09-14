@@ -884,6 +884,13 @@ def _validate_p95_config():
     global CPU_P95_SLOT_DURATION, CONTROL_PERIOD
     global CPU_P95_BASELINE_INTENSITY, CPU_P95_HIGH_INTENSITY
 
+    # Validate that target minimum is less than target maximum
+    if CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MAX is not None:
+        if CPU_P95_TARGET_MIN >= CPU_P95_TARGET_MAX:
+            logger.warning(f"CPU_P95_TARGET_MIN={CPU_P95_TARGET_MIN}% must be less than "
+                          f"CPU_P95_TARGET_MAX={CPU_P95_TARGET_MAX}%. Swapping values.")
+            CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX = CPU_P95_TARGET_MAX, CPU_P95_TARGET_MIN
+
     # Validate that setpoint falls within target range
     if CPU_P95_SETPOINT is not None and CPU_P95_TARGET_MIN is not None and CPU_P95_TARGET_MAX is not None:
         # Add safety margin to avoid edge cases
@@ -913,6 +920,39 @@ def _validate_p95_config():
                           f"CPU_P95_HIGH_INTENSITY={CPU_P95_HIGH_INTENSITY}%. Adjusting high intensity.")
             CPU_P95_HIGH_INTENSITY = max(CPU_P95_HIGH_INTENSITY, CPU_P95_BASELINE_INTENSITY + 1.0)
             logger.info(f"Adjusted CPU_P95_HIGH_INTENSITY to {CPU_P95_HIGH_INTENSITY:.1f}%")
+
+
+def _validate_network_fallback_config():
+    """
+    Validate network fallback configuration values.
+
+    Ensures proper ordering of fallback thresholds and prevents configuration errors
+    that could cause oscillation or improper fallback behavior.
+    """
+    global NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
+
+    # Validate that start threshold is less than stop threshold
+    if NET_FALLBACK_START_PCT is not None and NET_FALLBACK_STOP_PCT is not None:
+        if NET_FALLBACK_START_PCT >= NET_FALLBACK_STOP_PCT:
+            logger.warning(f"NET_FALLBACK_START_PCT={NET_FALLBACK_START_PCT}% must be less than "
+                          f"NET_FALLBACK_STOP_PCT={NET_FALLBACK_STOP_PCT}%. Adjusting thresholds.")
+            # Ensure at least 2% hysteresis gap
+            gap = max(2.0, (NET_FALLBACK_STOP_PCT + NET_FALLBACK_START_PCT) * 0.1)
+            mid_point = (NET_FALLBACK_START_PCT + NET_FALLBACK_STOP_PCT) / 2.0
+            NET_FALLBACK_START_PCT = mid_point - gap / 2.0
+            NET_FALLBACK_STOP_PCT = mid_point + gap / 2.0
+            logger.info(f"Adjusted fallback thresholds: START={NET_FALLBACK_START_PCT:.1f}% "
+                       f"STOP={NET_FALLBACK_STOP_PCT:.1f}%")
+
+    # Validate risk threshold is within reasonable bounds
+    if NET_FALLBACK_RISK_THRESHOLD_PCT is not None:
+        if NET_FALLBACK_START_PCT is not None and NET_FALLBACK_STOP_PCT is not None:
+            if not (NET_FALLBACK_START_PCT <= NET_FALLBACK_RISK_THRESHOLD_PCT <= NET_FALLBACK_STOP_PCT):
+                new_risk_threshold = (NET_FALLBACK_START_PCT + NET_FALLBACK_STOP_PCT) / 2.0
+                logger.warning(f"NET_FALLBACK_RISK_THRESHOLD_PCT={NET_FALLBACK_RISK_THRESHOLD_PCT}% "
+                              f"should be between START and STOP thresholds. "
+                              f"Adjusting to {new_risk_threshold:.1f}%.")
+                NET_FALLBACK_RISK_THRESHOLD_PCT = new_risk_threshold
 
 
 # ---------------------------
@@ -3409,10 +3449,18 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
                     protocol=NET_PROTOCOL,
                     ttl=NET_TTL,
                     packet_size=NET_PACKET_SIZE,
-                    port=NET_PORT
+                    port=NET_PORT,
+                    require_external=NET_REQUIRE_EXTERNAL or is_e2_shape(),
+                    validate_startup=NET_VALIDATE_STARTUP
                 )
 
-                # Start generator with configured peers or RFC 2544 defaults
+                # Apply timing and DNS configuration from ENV variables
+                generator.state_debounce_sec = NET_STATE_DEBOUNCE_SEC
+                generator.state_min_on_sec = NET_STATE_MIN_ON_SEC
+                generator.state_min_off_sec = NET_STATE_MIN_OFF_SEC
+                generator.dns_qps_max = NET_DNS_QPS_MAX
+
+                # Start generator with configured peers or DNS defaults
                 generator.start(NET_PEERS if NET_PEERS else [])
                 last_rate = current_rate
                 logger.debug(f"Network generator started: {current_rate:.1f} Mbps, {NET_PROTOCOL.upper()}")
