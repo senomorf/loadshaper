@@ -590,6 +590,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `CPU_P95_SLOT_DURATION_SEC` | `60.0` | Duration of each control slot (seconds) |
 | `CPU_P95_HIGH_INTENSITY` | `35.0` | CPU utilization during high-intensity slots (%) |
 | `CPU_P95_BASELINE_INTENSITY` | `20.0` | CPU utilization during normal slots (minimum for Oracle compliance) |
+| `CPU_P95_RING_BUFFER_BATCH_SIZE` | `10` | Number of slots between ring buffer state saves (performance optimization) |
 
 ### Load Average Monitoring
 
@@ -1001,8 +1002,77 @@ A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STO
 **Q: Network traffic isn't being generated**  
 A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify peer instances are reachable and firewall rules allow traffic on `NET_PORT`.
 
-**Q: Memory usage isn't increasing on A1.Flex**  
+**Q: Memory usage isn't increasing on A1.Flex**
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
+
+## Custom Persistent Storage Path
+
+By default, LoadShaper uses `/var/lib/loadshaper` as its persistent storage directory. You can customize this location using the `PERSISTENCE_DIR` environment variable if needed.
+
+### Docker Compose Override
+
+To use a custom storage path with Docker Compose:
+
+```yaml
+# compose.override.yaml
+services:
+  loadshaper:
+    environment:
+      - PERSISTENCE_DIR=/data/loadshaper  # Custom path inside container
+    volumes:
+      - loadshaper-metrics:/data/loadshaper  # Mount volume to custom path
+```
+
+### Kubernetes ConfigMap
+
+For Kubernetes deployments with custom paths:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadshaper-config
+data:
+  PERSISTENCE_DIR: "/data/loadshaper"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loadshaper-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadshaper
+spec:
+  template:
+    spec:
+      containers:
+      - name: loadshaper
+        envFrom:
+        - configMapRef:
+            name: loadshaper-config
+        volumeMounts:
+        - name: storage
+          mountPath: /data/loadshaper  # Must match PERSISTENCE_DIR
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: loadshaper-storage
+```
+
+### Important Notes
+
+- **Path consistency**: The `PERSISTENCE_DIR` environment variable must match the volume mount path
+- **Volume permissions**: The directory must be owned by UID/GID 1000 (LoadShaper user)
+- **Single instance**: Only one LoadShaper instance can use a given storage path
+- **Migration**: When changing storage paths, historical metrics will not be migrated automatically
 
 ## Contributing
 

@@ -117,9 +117,6 @@ spec:
               subPath: class/net
               readOnly: true
             {{- end }}
-            # Add tmpfs for any temporary files since root filesystem is read-only
-            - name: tmp
-              mountPath: /tmp
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -134,11 +131,6 @@ spec:
           # Set persistence.enabled=true to enable proper Oracle compliance
           emptyDir: {}
           {{- end }}
-        # tmpfs volume for temporary files (read-only root filesystem)
-        - name: tmp
-          emptyDir:
-            medium: Memory
-            sizeLimit: 64Mi
         {{- if .Values.security.procHostMountEnabled }}
         - name: proc
           hostPath:

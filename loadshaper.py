@@ -2092,6 +2092,11 @@ class MetricsStorage:
         self.db_path = db_path
         self.lock = threading.Lock()
 
+        # Instance lock file to prevent multiple LoadShaper instances
+        self.lock_file_path = os.path.join(db_dir, "loadshaper.lock")
+        self.lock_file_handle = None
+        self._acquire_instance_lock()
+
         # Storage degradation tracking
         self.consecutive_failures = 0
         self.max_consecutive_failures = 5  # Mark as degraded after 5 failures
@@ -2106,7 +2111,74 @@ class MetricsStorage:
             if not self.recover_from_corruption():
                 logger.error("Failed to recover from database corruption on startup")
                 # Continue anyway - metrics storage is degraded but not fatal
-    
+
+    def _acquire_instance_lock(self):
+        """Acquire exclusive lock to prevent multiple LoadShaper instances.
+
+        Uses file-based locking to ensure only one instance can access the
+        persistent storage directory at a time. This prevents P95 calculation
+        corruption and database conflicts.
+        """
+        # Skip locking during tests to allow multiple test instances
+        if os.environ.get('PYTEST_CURRENT_TEST'):
+            return
+
+        try:
+            import fcntl
+
+            # Open or create lock file
+            self.lock_file_handle = open(self.lock_file_path, 'w')
+
+            # Try to acquire exclusive lock (non-blocking)
+            fcntl.flock(self.lock_file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            # Write PID to lock file for debugging
+            self.lock_file_handle.write(f"{os.getpid()}\n")
+            self.lock_file_handle.flush()
+
+            logger.info(f"Acquired exclusive instance lock: {self.lock_file_path}")
+
+        except BlockingIOError:
+            # Another instance holds the lock
+            if self.lock_file_handle:
+                self.lock_file_handle.close()
+
+            # Try to read PID of other instance
+            try:
+                with open(self.lock_file_path, 'r') as f:
+                    other_pid = f.read().strip()
+                    error_msg = (f"Another LoadShaper instance (PID {other_pid}) is already running "
+                               f"using storage at {os.path.dirname(self.db_path)}. "
+                               f"Only one instance per storage directory is allowed.")
+            except:
+                error_msg = (f"Another LoadShaper instance is already running "
+                           f"using storage at {os.path.dirname(self.db_path)}. "
+                           f"Only one instance per storage directory is allowed.")
+
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        except ImportError:
+            # fcntl not available (Windows)
+            logger.warning("File locking not available on this platform - cannot prevent multiple instances")
+        except Exception as e:
+            logger.warning(f"Failed to acquire instance lock: {e}")
+            # Non-fatal - continue without lock protection
+
+    def _release_instance_lock(self):
+        """Release the instance lock on cleanup."""
+        if hasattr(self, 'lock_file_handle') and self.lock_file_handle:
+            try:
+                import fcntl
+                fcntl.flock(self.lock_file_handle, fcntl.LOCK_UN)
+                self.lock_file_handle.close()
+                # Remove lock file
+                if os.path.exists(self.lock_file_path):
+                    os.remove(self.lock_file_path)
+                logger.info("Released instance lock")
+            except Exception as e:
+                logger.warning(f"Error releasing instance lock: {e}")
+
     def _init_db(self):
         """Initialize database schema for persistent storage.
 
@@ -2235,6 +2307,10 @@ class MetricsStorage:
                 logger.error(f"Failed to get percentile: {e}")
                 return None
     
+    def __del__(self):
+        """Cleanup on object destruction."""
+        self._release_instance_lock()
+
     def cleanup_old(self, days_to_keep=7):
         """Remove old metrics data from database.
 
@@ -2388,8 +2464,7 @@ class MetricsStorage:
                 "bytes_per_sample": bytes_per_sample,
                 "data_age_days": data_age_days,
                 "expected_max_mb": expected_max_mb,
-                "size_health": size_health,
-                "database_path": self.db_path
+                "size_health": size_health
             }
 
         except Exception as e:
@@ -2492,7 +2567,7 @@ class MetricsStorage:
         Returns:
             bool: True if recovery successful, False otherwise
         """
-        logger.warning("Attempting database corruption recovery...")
+        logger.warning("Attempting database corruption recovery. 7-day P95 history will be reset.")
 
         backup_path = None  # Initialize to handle exception logging
         try:
@@ -2508,7 +2583,7 @@ class MetricsStorage:
 
             # Step 3: Recreate database with fresh schema
             self._init_db()
-            logger.info("Database recreated successfully after corruption recovery")
+            logger.info("Database recreated successfully. Note: 7-day P95 history has been reset.")
 
             # Step 4: Verify new database is healthy
             if not self.detect_database_corruption():
@@ -3477,7 +3552,6 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "checks": status_checks if status_checks else ["all_systems_operational"],
                 "metrics_storage": "available" if storage_ok else "failed",
                 "persistence_storage": "available" if persistence_ok else "not_mounted",
-                "database_path": self.metrics_storage.db_path if self.metrics_storage else None,
                 "load_generation": "paused" if paused_state == 1.0 else "active"
             }
 
