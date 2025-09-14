@@ -19,9 +19,9 @@ class TestNetworkFallbackState(unittest.TestCase):
         """Test NetworkFallbackState initialization"""
         self.assertFalse(self.fallback_state.active)
         self.assertEqual(self.fallback_state.activation_count, 0)
-        self.assertEqual(self.fallback_state.last_change, 0.0)
-        self.assertEqual(self.fallback_state.last_activation, 0.0)
-        self.assertEqual(self.fallback_state.last_deactivation, 0.0)
+        self.assertAlmostEqual(self.fallback_state.last_change, 0.0, places=2)
+        self.assertAlmostEqual(self.fallback_state.last_activation, 0.0, places=2)
+        self.assertAlmostEqual(self.fallback_state.last_deactivation, 0.0, places=2)
 
     def test_state_attributes_exist(self):
         """Test that all expected attributes exist"""

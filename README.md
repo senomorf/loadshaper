@@ -44,6 +44,7 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 **📋 Prerequisites:**
 - Docker and Docker Compose installed
 - **Persistent storage required** - LoadShaper needs persistent volume for 7-day P95 metrics
+- **Single instance only** - Run only one LoadShaper process per system to avoid conflicts
 
 **1. Clone and deploy:**
 ```bash
@@ -66,6 +67,24 @@ docker logs loadshaper | grep "\[loadshaper\]" | tail -5
 ```
 
 That's it! `loadshaper` will automatically detect your Oracle Cloud shape and start maintaining appropriate resource utilization.
+
+### Kubernetes/Helm Deployment
+
+For Kubernetes deployments, Helm charts are available in the `charts/` directory:
+
+```bash
+# Install with default values
+helm install loadshaper ./charts/loadshaper
+
+# Or with custom configuration
+helm install loadshaper ./charts/loadshaper -f custom-values.yaml
+```
+
+Key Kubernetes considerations:
+- **Persistent Volume required** for 7-day P95 metrics storage
+- **Resource requests/limits** should align with Oracle Free Tier constraints
+- **Single replica only** - LoadShaper must not run multiple instances per node
+- **Node affinity** recommended to ensure consistent VM assignment
 
 **📖 More Information:**
 - [Configuration Reference](#configuration-reference) - Detailed environment variable options
@@ -325,9 +344,9 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 
 | Variable | Auto-Configured Values | Description | E2.1.Micro | E2.2.Micro | A1.Flex-1 | A1.Flex-2 | A1.Flex-3 | A1.Flex-4 |
 |----------|---------|-------------|------------|------------|------------|------------|------------|------------|
-| `CPU_P95_SETPOINT` | **23.5**, 28.5, 28.5, 28.5, 28.5, 30.0 | Target CPU P95 (7-day window) | 23.5% | 28.5% | 28.5% | 28.5% | 28.5% | 30.0% |
+| `CPU_P95_SETPOINT` | **23.5**, 25.0, 25.0, 25.0, 25.0, 30.0 | Target CPU P95 (7-day window) | 23.5% | 25.0% | 25.0% | 25.0% | 25.0% | 30.0% |
 | `MEM_TARGET_PCT` | **0**, 0, 30, 30, 30, 30 | Target memory utilization (%) | 0% (disabled) | 0% (disabled) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) |
-| `NET_TARGET_PCT` | **15**, 15, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
+| `NET_TARGET_PCT` | **15**, 25, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 25% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
 
 ### Safety Thresholds
 
@@ -387,12 +406,15 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_PORT` | `15201` | TCP port for network communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
+| `NET_TTL` | `1` | IP TTL for generated packets |
+| `NET_PACKET_SIZE` | `8900` | Packet size (bytes) for UDP/TCP generator |
 
 ### Network Interface Detection
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NET_SENSE_MODE` | `container` | Detection mode: `container`, `host` |
+| `NET_IFACE` | `ens3` | Host interface name (required when `NET_SENSE_MODE=host`) |
 | `NET_IFACE_INNER` | `eth0` | Container interface name |
 | `NET_LINK_MBIT` | `1000` | Fallback link speed (Mbps) |
 | `NET_MIN_RATE_MBIT` | `1` | Minimum traffic generation rate |
@@ -519,7 +541,14 @@ Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid r
   "timestamp": 1705234567.89,
   "checks": ["all_systems_operational"],
   "metrics_storage": "available",
-  "load_generation": "active"
+  "persistence_storage": "available",
+  "database_path": "/var/lib/loadshaper/metrics.db",
+  "load_generation": "active",
+  "storage_status": {
+    "disk_usage_mb": 45.2,
+    "oldest_sample": "2024-01-01T12:00:00Z",
+    "sample_count": 120960
+  }
 }
 ```
 
@@ -540,13 +569,25 @@ Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid r
     "paused": false
   },
   "targets": {
-    "cpu_target": 25.0,
+    "cpu_p95_setpoint": 25.0,
     "memory_target": 0.0,
     "network_target": 15.0
   },
+  "configuration": {
+    "cpu_stop_threshold": 95.0,
+    "memory_stop_threshold": 95.0,
+    "network_stop_threshold": 95.0,
+    "load_threshold": 0.6,
+    "worker_count": 4,
+    "control_period": 10.0,
+    "averaging_window": 60.0
+  },
   "percentiles_7d": {
     "cpu_p95": 48.3,
-    "sample_count_7d": 98547
+    "memory_p95": 52.1,
+    "network_p95": 14.8,
+    "load_p95": 0.35,
+    "sample_count_7d": 120960
   }
 }
 ```
@@ -844,6 +885,26 @@ docker logs -f loadshaper | grep "nic("
 
 ### Common Issues
 
+**Container startup failures:**
+```shell
+# Check container logs for entrypoint errors
+docker logs loadshaper
+
+# Common entrypoint issues:
+# 1. "Permission denied" - persistent storage mount point permissions
+docker exec loadshaper ls -ld /var/lib/loadshaper || echo "Mount point not accessible"
+sudo chown -R 1000:1000 ./persistent-storage/  # Fix host permissions
+
+# 2. "Write test failed" - storage not writable
+docker exec loadshaper touch /var/lib/loadshaper/test && docker exec loadshaper rm /var/lib/loadshaper/test || echo "Storage not writable"
+
+# 3. "Database migration failed" - corrupted or incompatible database
+docker exec loadshaper rm -f /var/lib/loadshaper/metrics.db && docker restart loadshaper
+
+# 4. Verify compose configuration includes persistent volume
+docker compose config | grep -A5 volumes || echo "No volumes configured - add persistent storage"
+```
+
 **CPU not reaching target percentage:**
 - Check if `LOAD_THRESHOLD` is too low (workers pause when system load is high)
 - Verify `CPU_STOP_PCT` isn't triggering premature shutdown
@@ -880,16 +941,11 @@ LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 docker compose up -d
 
 ### Network Generator Troubleshooting
 
-**Connection timeout errors:**
+**Network connectivity issues:**
 ```shell
-# Increase TCP connection timeout if networks are slow
-TCP_CONNECTION_TIMEOUT=2.0 docker compose up -d --build
-```
-
-**IPv6 connectivity issues:**
-```shell
-# Disable IPv6 if not supported by network
-NET_IPV6_ENABLED=false docker compose up -d --build
+# Check firewall rules allow traffic on NET_PORT (default 15201)
+# Verify NET_PEERS addresses are reachable
+# For E2 shapes, ensure peers are external (not internal/localhost)
 ```
 
 **DNS resolution failures:**
@@ -900,12 +956,12 @@ docker exec loadshaper nslookup 198.18.0.1
 NET_PEERS=203.0.113.1:15201 docker compose up -d --build
 ```
 
-**TCP connection pool issues:**
+**Network generation issues:**
 ```shell
-# Enable debug logging to see connection details
-LOG_LEVEL=DEBUG docker compose up -d --build
-# Look for "TCP connection pool" messages
-docker logs loadshaper | grep "TCP connection"
+# Check container logs for network errors
+docker logs loadshaper | grep -i network
+# Look for peer connectivity issues
+docker logs loadshaper | grep -i peer
 ```
 
 **High network CPU usage:**
@@ -931,7 +987,6 @@ CPU_P95_SETPOINT=22.0
 MEM_TARGET_PCT=0
 NET_TARGET_PCT=22
 LOAD_THRESHOLD=0.4
-TCP_CONNECTION_TIMEOUT=1.0
 docker compose up -d --build
 ```
 

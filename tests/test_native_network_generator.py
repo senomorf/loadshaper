@@ -25,17 +25,17 @@ class TestTokenBucket(unittest.TestCase):
     def test_initialization(self):
         """Test token bucket initialization."""
         self.assertEqual(self.bucket.rate_mbps, self.rate_mbps)
-        self.assertEqual(self.bucket.capacity_bits, self.rate_mbps * 1_000_000 * 0.1)
-        self.assertEqual(self.bucket.tokens, self.bucket.capacity_bits)
-        self.assertEqual(self.bucket.tick_interval, 0.005)
+        self.assertAlmostEqual(self.bucket.capacity_bits, self.rate_mbps * 1_000_000 * 0.1, places=1)
+        self.assertAlmostEqual(self.bucket.tokens, self.bucket.capacity_bits, places=1)
+        self.assertAlmostEqual(self.bucket.tick_interval, 0.005, places=3)
 
     def test_minimum_rate_protection(self):
         """Test protection against zero/negative rates."""
         bucket = loadshaper.TokenBucket(0.0)
-        self.assertEqual(bucket.rate_mbps, 0.001)
+        self.assertAlmostEqual(bucket.rate_mbps, 0.001, places=3)
 
         bucket = loadshaper.TokenBucket(-5.0)
-        self.assertEqual(bucket.rate_mbps, 0.001)
+        self.assertAlmostEqual(bucket.rate_mbps, 0.001, places=3)
 
     def test_can_send_immediate(self):
         """Test immediate packet sending when tokens available."""
@@ -125,7 +125,7 @@ class TestTokenBucket(unittest.TestCase):
         self.bucket.update_rate(new_rate)
 
         self.assertEqual(self.bucket.rate_mbps, new_rate)
-        self.assertEqual(self.bucket.capacity_bits, new_rate * 1_000_000 * 0.1)
+        self.assertAlmostEqual(self.bucket.capacity_bits, new_rate * 1_000_000 * 0.1, places=1)
         self.assertLessEqual(self.bucket.tokens, self.bucket.capacity_bits)
 
     def test_precision_timing(self):

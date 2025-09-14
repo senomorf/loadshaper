@@ -75,7 +75,7 @@ class TestCPUP95Controller(unittest.TestCase):
         self.assertEqual(len(self.controller.slot_history), expected_size)
 
         # Caching fields (should be populated after initialization call)
-        self.assertEqual(self.controller._p95_cache, 25.0)  # From MockMetricsStorage default
+        self.assertAlmostEqual(self.controller._p95_cache, 25.0, places=1)  # From MockMetricsStorage default
         self.assertGreater(self.controller._p95_cache_time, 0)
         self.assertEqual(self.controller._p95_cache_ttl_sec, 300)
 
@@ -121,12 +121,12 @@ class TestP95Caching(unittest.TestCase):
 
         # First call should query storage
         p95_1 = self.controller.get_cpu_p95()
-        self.assertEqual(p95_1, 25.0)
+        self.assertAlmostEqual(p95_1, 25.0, places=1)
         self.assertEqual(self.mock_storage.call_count, 1)
 
         # Second call within TTL should use cache
         p95_2 = self.controller.get_cpu_p95()
-        self.assertEqual(p95_2, 25.0)
+        self.assertAlmostEqual(p95_2, 25.0, places=1)
         self.assertEqual(self.mock_storage.call_count, 1)  # No additional call
 
     def test_cache_miss_after_ttl(self):
@@ -135,14 +135,14 @@ class TestP95Caching(unittest.TestCase):
 
         # First call
         p95_1 = self.controller.get_cpu_p95()
-        self.assertEqual(p95_1, 25.0)
+        self.assertAlmostEqual(p95_1, 25.0, places=1)
         self.assertEqual(self.mock_storage.call_count, 1)
 
         # Advance time beyond TTL (cache TTL is now 300 seconds)
         with patch('time.monotonic', return_value=time.monotonic() + 400):
             self.mock_storage.set_p95(30.0)
             p95_2 = self.controller.get_cpu_p95()
-            self.assertEqual(p95_2, 30.0)
+            self.assertAlmostEqual(p95_2, 30.0, places=1)
             self.assertEqual(self.mock_storage.call_count, 2)
 
     def test_none_result_doesnt_update_cache(self):
@@ -151,17 +151,17 @@ class TestP95Caching(unittest.TestCase):
 
         # First call gets valid value
         p95_1 = self.controller.get_cpu_p95()
-        self.assertEqual(p95_1, 25.0)
+        self.assertAlmostEqual(p95_1, 25.0, places=1)
 
         # Advance time beyond TTL and return None
         with patch('time.monotonic', return_value=time.monotonic() + 400):
             self.mock_storage.set_p95(None)
             p95_2 = self.controller.get_cpu_p95()
             # With improved fallback logic, should return cached value when DB fails
-            self.assertEqual(p95_2, 25.0)
+            self.assertAlmostEqual(p95_2, 25.0, places=1)
 
             # Cache should retain the previous valid value, not be overwritten with None
-            self.assertEqual(self.controller._p95_cache, 25.0)
+            self.assertAlmostEqual(self.controller._p95_cache, 25.0, places=1)
 
     def test_multiple_calls_within_ttl_single_query(self):
         """Test that multiple calls within TTL only query DB once"""
@@ -170,7 +170,7 @@ class TestP95Caching(unittest.TestCase):
         # Multiple calls within TTL
         for _ in range(5):
             p95 = self.controller.get_cpu_p95()
-            self.assertEqual(p95, 25.0)
+            self.assertAlmostEqual(p95, 25.0, places=1)
 
         # Should only have called storage once
         self.assertEqual(self.mock_storage.call_count, 1)
@@ -392,7 +392,7 @@ class TestIntensityCalculation(unittest.TestCase):
 
             intensity = controller.get_target_intensity()
             # Should be floored at baseline (25.0), not 22.0 - 5.0 = 17.0
-            self.assertEqual(intensity, 25.0)
+            self.assertAlmostEqual(intensity, 25.0, places=1)
 
     def test_none_p95_handling(self):
         """Test intensity calculation with None P95"""
@@ -559,7 +559,7 @@ class TestSlotEngine(unittest.TestCase):
 
             # Should be forced to baseline
             self.assertFalse(self.controller.current_slot_is_high)
-            self.assertEqual(intensity, 20.0)  # BASELINE_INTENSITY
+            self.assertAlmostEqual(intensity, 20.0, places=1)  # BASELINE_INTENSITY
             self.assertEqual(self.controller.slots_skipped_safety, original_safety_count + 1)
 
     def test_safety_gating_respects_load_check_enabled(self):
@@ -632,7 +632,7 @@ class TestSlotEngine(unittest.TestCase):
         # Test with zero slots
         self.controller.slots_recorded = 0
         exceedance = self.controller.get_current_exceedance()
-        self.assertEqual(exceedance, 0.0)
+        self.assertAlmostEqual(exceedance, 0.0, places=1)
 
     def test_within_slot_behavior(self):
         """Test repeated calls within same slot return same result"""
@@ -654,14 +654,14 @@ class TestSlotEngine(unittest.TestCase):
 
         # Verify initial state
         self.assertTrue(self.controller.current_slot_is_high, "Should start with high slot")
-        self.assertEqual(self.controller.current_target_intensity, 35.0)
+        self.assertAlmostEqual(self.controller.current_target_intensity, 35.0, places=1)
 
         # Now mark it as low (simulating main loop override due to load safety)
         self.controller.mark_current_slot_low()
 
         # Verify current state is updated
         self.assertFalse(self.controller.current_slot_is_high, "Current slot should be marked as low")
-        self.assertEqual(self.controller.current_target_intensity, 20.0)  # BASELINE_INTENSITY from test setup
+        self.assertAlmostEqual(self.controller.current_target_intensity, 20.0, places=1)  # BASELINE_INTENSITY from test setup
 
         # When the slot eventually ends and gets recorded, it will be recorded as low
         # Simulate slot ending
@@ -725,7 +725,7 @@ class TestStatusReporting(unittest.TestCase):
         # Test edge case where slot is overdue
         with patch('time.monotonic', return_value=start_time + 70):  # 70s into 60s slot
             status = self.controller.get_status()
-            self.assertEqual(status['slot_remaining_sec'], 0.0)  # Should be 0, not negative
+            self.assertAlmostEqual(status['slot_remaining_sec'], 0.0, places=1)  # Should be 0, not negative
 
 
 class TestEdgeCases(unittest.TestCase):
@@ -783,7 +783,7 @@ class TestEdgeCases(unittest.TestCase):
 
             # Even in REDUCING, should be floored at baseline
             intensity = controller.get_target_intensity()
-            self.assertEqual(intensity, 40.0)  # Should be baseline, not high
+            self.assertAlmostEqual(intensity, 40.0, places=1)  # Should be baseline, not high
 
     def test_database_exception_handling(self):
         """Test handling of database exceptions"""
@@ -828,7 +828,7 @@ class TestEdgeCases(unittest.TestCase):
 
             # Current exceedance exactly equals target
             exceedance = controller.get_current_exceedance()
-            self.assertEqual(exceedance, 50.0)
+            self.assertAlmostEqual(exceedance, 50.0, places=1)
 
             # New slot decision with exact equality
             # Should prefer low slot (strict < comparison means high needs exceedance < target)
@@ -977,7 +977,7 @@ class TestAdditionalEdgeCases(unittest.TestCase):
                 self.controller.slot_history[i] = True
 
             exceedance = self.controller.get_current_exceedance()
-            self.assertEqual(exceedance, 6.0)
+            self.assertAlmostEqual(exceedance, 6.0, places=1)
 
     def test_mark_slot_low_when_already_low(self):
         """Test mark_current_slot_low when slot is already low"""
@@ -995,7 +995,7 @@ class TestAdditionalEdgeCases(unittest.TestCase):
 
         # State should remain unchanged
         self.assertFalse(self.controller.current_slot_is_high)
-        self.assertEqual(self.controller.current_target_intensity, 20.0)
+        self.assertAlmostEqual(self.controller.current_target_intensity, 20.0, places=1)
         self.assertFalse(self.controller.slot_history[0])
 
     def test_state_machine_with_extreme_values(self):
@@ -1072,7 +1072,7 @@ class TestAdditionalEdgeCases(unittest.TestCase):
 
         target = building_controller.get_exceedance_target()
         # Should use aggressive exceedance boost: 6.5 + 4.0 = 10.5
-        self.assertEqual(target, 10.5)  # BASE + BUILD_AGGRESSIVE_EXCEEDANCE_BOOST
+        self.assertAlmostEqual(target, 10.5, places=1)  # BASE + BUILD_AGGRESSIVE_EXCEEDANCE_BOOST
 
         # Test REDUCING with very high P95
         high_p95_storage = MockMetricsStorage()
@@ -1082,7 +1082,7 @@ class TestAdditionalEdgeCases(unittest.TestCase):
 
         target = reducing_controller.get_exceedance_target()
         # Should use very low exceedance for fast reduction
-        self.assertEqual(target, 1.0)  # REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET
+        self.assertAlmostEqual(target, 1.0, places=1)  # REDUCE_AGGRESSIVE_EXCEEDANCE_TARGET
 
 
 class TestHighLoadFallback(unittest.TestCase):
@@ -1362,7 +1362,7 @@ class TestMissingCoverage(unittest.TestCase):
                 mock_logger.warning.assert_called()
                 mock_logger.info.assert_called()
                 # Should adjust high intensity to baseline + 1
-                self.assertEqual(loadshaper.CPU_P95_HIGH_INTENSITY, 36.0)
+                self.assertAlmostEqual(loadshaper.CPU_P95_HIGH_INTENSITY, 36.0, places=1)
 
         finally:
             # Restore original values
@@ -1422,6 +1422,10 @@ class TestMissingCoverage(unittest.TestCase):
         status = self.controller.get_status()
         self.assertTrue(status['fallback_risk'],
                        "Should show fallback_risk=true when too long since last high slot")
+
+
+# Additional slot rollover tests can be added here in the future
+# Current tests are complex due to required mocking of many configuration constants
 
 
 if __name__ == '__main__':

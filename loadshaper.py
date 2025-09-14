@@ -949,7 +949,7 @@ def _initialize_config():
     NET_IDLE_SEC      = getenv_int_with_template("NET_IDLE_SEC", 10, CONFIG_TEMPLATE)
     NET_PROTOCOL      = getenv_with_template("NET_PROTOCOL", "udp", CONFIG_TEMPLATE).strip().lower()
 
-    # New: how we "sense" NIC bytes
+    # NIC bytes sensing configuration
     NET_SENSE_MODE    = getenv_with_template("NET_SENSE_MODE", "container", CONFIG_TEMPLATE).strip().lower()  # container|host
     NET_IFACE         = getenv_with_template("NET_IFACE", "ens3", CONFIG_TEMPLATE).strip()        # for host mode (requires /sys mount)
     NET_IFACE_INNER   = getenv_with_template("NET_IFACE_INNER", "eth0", CONFIG_TEMPLATE).strip()  # for container mode (/proc/net/dev)
@@ -1070,6 +1070,10 @@ class CPUP95Controller:
 
         Sets up state machine, slot tracking, and initializes 24-hour ring buffer
         for fast exceedance budget control based on Oracle compliance requirements.
+
+        IMPORTANT: This controller assumes only one LoadShaper process runs per system.
+        Multiple concurrent instances would create race conditions in the ring buffer
+        file writes and could corrupt P95 state persistence.
         """
         self.metrics_storage = metrics_storage
         self._lock = threading.RLock()  # Thread-safe access to shared state
@@ -1156,6 +1160,7 @@ class CPUP95Controller:
 
         try:
             ring_buffer_path = self._get_ring_buffer_path()
+            temp_path = ring_buffer_path + '.tmp'
             state = {
                 'slot_history': self.slot_history,
                 'slot_history_index': self.slot_history_index,
@@ -1164,13 +1169,24 @@ class CPUP95Controller:
                 'timestamp': time.time()  # Use wall clock time for persistence
             }
 
-            with open(ring_buffer_path, 'w') as f:
+            # Write to temporary file first for atomic operation
+            with open(temp_path, 'w') as f:
                 json.dump(state, f)
+
+            # Atomically replace the target file
+            os.replace(temp_path, ring_buffer_path)
 
             logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
 
         except (OSError, PermissionError, ValueError, TypeError) as e:
             logger.warning(f"Failed to save P95 ring buffer state: {e}")
+            # Clean up temp file if it exists
+            try:
+                temp_path = self._get_ring_buffer_path() + '.tmp'
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except Exception:
+                pass  # Ignore cleanup errors
             # Non-fatal error - continue operation without persistence
 
     def _load_ring_buffer_state(self):
@@ -1269,7 +1285,7 @@ class CPUP95Controller:
                 else:
                     computed = CPU_P95_HIGH_INTENSITY - self.REDUCE_MODERATE_INTENSITY_CUT  # Moderate reduction
             else:  # MAINTAINING
-                # CRITICAL FIX: Tie high intensity to setpoint for accurate P95 targeting
+                # High intensity targeting aligns with P95 setpoint for precise control
                 # When exceedance > 5%, P95 collapses to high intensity value, so we want
                 # high intensity to equal our target setpoint to achieve precise control
                 setpoint = CPU_P95_SETPOINT if CPU_P95_SETPOINT is not None else (CPU_P95_TARGET_MIN + CPU_P95_TARGET_MAX) / 2
@@ -1332,7 +1348,9 @@ class CPUP95Controller:
             # Handle multiple slot rollovers if process stalled
             while now >= (self.current_slot_start + CPU_P95_SLOT_DURATION):
                 self._end_current_slot()
-                self._start_new_slot(current_load_avg)
+                # Advance slot start time by duration to properly account for missed slots
+                self.current_slot_start += CPU_P95_SLOT_DURATION
+                self._start_new_slot(current_load_avg, self.current_slot_start)
 
             return self.current_slot_is_high, self.current_target_intensity
 
@@ -1351,10 +1369,18 @@ class CPUP95Controller:
             self._save_ring_buffer_state()
             self.slots_since_last_save = 0
 
-    def _start_new_slot(self, current_load_avg):
-        """Start new slot and determine its type"""
-        self.current_slot_start = time.monotonic()
-        now = self.current_slot_start
+    def _start_new_slot(self, current_load_avg, slot_start_time=None):
+        """Start new slot and determine its type
+
+        Args:
+            current_load_avg: Current system load average
+            slot_start_time: Optional explicit start time (for rollover scenarios)
+        """
+        if slot_start_time is not None:
+            self.current_slot_start = slot_start_time
+        else:
+            self.current_slot_start = time.monotonic()
+        now = time.monotonic()
 
         # Check if we need to force a high slot due to sustained blocking
         time_since_high_slot = now - self.last_high_slot_time
@@ -1621,7 +1647,7 @@ def read_meminfo() -> Tuple[int, int, float, int, float]:
     used_incl_cache = max(0, total - free)
     used_pct_incl_cache = (100.0 * used_incl_cache / total) if total > 0 else 0.0
 
-    # Handle corrupt data - clamp to valid range (master compatibility)
+    # Handle corrupt data - clamp to valid range for robustness
     if mem_available > total:
         used_pct_excl_cache = 0.0
         used_bytes_no_cache = 0
@@ -1738,18 +1764,20 @@ class MetricsStorage:
         """
         with self.lock:
             try:
-                conn = sqlite3.connect(self.db_path)
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS metrics (
-                        timestamp REAL PRIMARY KEY,
-                        cpu_pct REAL,
-                        mem_pct REAL,
-                        net_pct REAL,
-                        load_avg REAL
-                    )
-                """)
-                conn.commit()
-                conn.close()
+                with sqlite3.connect(self.db_path, timeout=10) as conn:
+                    # Enable WAL mode for better concurrency
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS metrics (
+                            timestamp REAL PRIMARY KEY,
+                            cpu_pct REAL,
+                            mem_pct REAL,
+                            net_pct REAL,
+                            load_avg REAL
+                        )
+                    """)
+                    conn.commit()
                 logger.info(f"Metrics database schema initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize metrics database at {self.db_path}: {e}")
@@ -1770,14 +1798,13 @@ class MetricsStorage:
         """
         with self.lock:
             try:
-                conn = sqlite3.connect(self.db_path)
-                timestamp = time.time()
-                conn.execute(
-                    "INSERT OR REPLACE INTO metrics (timestamp, cpu_pct, mem_pct, net_pct, load_avg) VALUES (?, ?, ?, ?, ?)",
-                    (timestamp, cpu_pct, mem_pct, net_pct, load_avg)
-                )
-                conn.commit()
-                conn.close()
+                with sqlite3.connect(self.db_path, timeout=10) as conn:
+                    timestamp = time.time()
+                    conn.execute(
+                        "INSERT OR REPLACE INTO metrics (timestamp, cpu_pct, mem_pct, net_pct, load_avg) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, cpu_pct, mem_pct, net_pct, load_avg)
+                    )
+                    conn.commit()
 
                 # Reset failure counter on success
                 self.consecutive_failures = 0
@@ -1821,17 +1848,16 @@ class MetricsStorage:
         
         with self.lock:
             try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.execute(
-                    f"SELECT {column} FROM metrics WHERE timestamp >= ? AND {column} IS NOT NULL ORDER BY {column}",
-                    (cutoff_time,)
-                )
-                values = [row[0] for row in cursor.fetchall()]
-                conn.close()
-                
+                with sqlite3.connect(self.db_path, timeout=10) as conn:
+                    cursor = conn.execute(
+                        f"SELECT {column} FROM metrics WHERE timestamp >= ? AND {column} IS NOT NULL ORDER BY {column}",
+                        (cutoff_time,)
+                    )
+                    values = [row[0] for row in cursor.fetchall()]
+
                 if not values:
                     return None
-                
+
                 # Calculate percentile manually (no numpy dependency)
                 index = (percentile / 100.0) * (len(values) - 1)
                 if index == int(index):
@@ -1840,7 +1866,7 @@ class MetricsStorage:
                     lower = values[int(index)]
                     upper = values[int(index) + 1]
                     return lower + (upper - lower) * (index - int(index))
-                    
+
             except Exception as e:
                 logger.error(f"Failed to get percentile: {e}")
                 return None
@@ -1859,11 +1885,10 @@ class MetricsStorage:
         
         with self.lock:
             try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.execute("DELETE FROM metrics WHERE timestamp < ?", (cutoff_time,))
-                deleted = cursor.rowcount
-                conn.commit()
-                conn.close()
+                with sqlite3.connect(self.db_path, timeout=10) as conn:
+                    cursor = conn.execute("DELETE FROM metrics WHERE timestamp < ?", (cutoff_time,))
+                    deleted = cursor.rowcount
+                    conn.commit()
                 return deleted
             except Exception as e:
                 logger.error(f"Failed to cleanup old data: {e}")
@@ -1883,10 +1908,9 @@ class MetricsStorage:
         
         with self.lock:
             try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.execute("SELECT COUNT(*) FROM metrics WHERE timestamp >= ?", (cutoff_time,))
-                count = cursor.fetchone()[0]
-                conn.close()
+                with sqlite3.connect(self.db_path, timeout=10) as conn:
+                    cursor = conn.execute("SELECT COUNT(*) FROM metrics WHERE timestamp >= ?", (cutoff_time,))
+                    count = cursor.fetchone()[0]
                 return count
             except Exception as e:
                 logger.error(f"Failed to get sample count: {e}")

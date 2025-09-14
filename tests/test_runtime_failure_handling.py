@@ -12,7 +12,7 @@ import tempfile
 import os
 import time
 import threading
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, Mock
 import unittest
 
 # Import LoadShaper modules
@@ -284,7 +284,8 @@ class TestDatabaseCorruptionRecovery:
             # Simulate disk full error during write
             with patch('sqlite3.connect') as mock_connect:
                 mock_conn = MagicMock()
-                mock_connect.return_value = mock_conn
+                mock_connect.return_value.__enter__ = Mock(return_value=mock_conn)
+                mock_connect.return_value.__exit__ = Mock(return_value=None)
                 mock_conn.execute.side_effect = sqlite3.OperationalError("database or disk is full")
 
                 result = storage.store_sample(25.0, 50.0, 15.0, 0.5)

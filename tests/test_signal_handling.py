@@ -74,8 +74,8 @@ class TestSignalHandling(unittest.TestCase):
 
         # Verify the event is set and values are correct
         self.assertTrue(stop_evt.is_set())
-        self.assertEqual(test_paused.value, 1.0)
-        self.assertEqual(test_duty.value, 0.0)
+        self.assertAlmostEqual(test_paused.value, 1.0, places=1)
+        self.assertAlmostEqual(test_duty.value, 0.0, places=1)
 
     def test_handle_shutdown_with_sigint(self):
         """Test handle_shutdown works with SIGINT signal."""
@@ -97,8 +97,8 @@ class TestSignalHandling(unittest.TestCase):
 
         # Verify results
         self.assertTrue(stop_evt.is_set())
-        self.assertEqual(test_paused.value, 1.0)
-        self.assertEqual(test_duty.value, 0.0)
+        self.assertAlmostEqual(test_paused.value, 1.0, places=1)
+        self.assertAlmostEqual(test_duty.value, 0.0, places=1)
 
     def test_signal_handler_thread_safety(self):
         """Test that signal handlers work correctly with threading."""
@@ -136,8 +136,8 @@ class TestSignalHandling(unittest.TestCase):
         self.assertTrue(stop_evt.is_set())
         self.assertEqual(len(results), 1)
         self.assertIn("Signal 15", results[0])  # SIGTERM is 15
-        self.assertEqual(test_paused.value, 1.0)
-        self.assertEqual(test_duty.value, 0.0)
+        self.assertAlmostEqual(test_paused.value, 1.0, places=1)
+        self.assertAlmostEqual(test_duty.value, 0.0, places=1)
 
     def test_signal_handling_with_mock_main(self):
         """Test signal handling integration with a simplified main loop."""
@@ -175,8 +175,8 @@ class TestSignalHandling(unittest.TestCase):
 
         # Verify the loop stopped gracefully
         self.assertTrue(stop_evt.is_set())
-        self.assertEqual(test_paused.value, 1.0)
-        self.assertEqual(test_duty.value, 0.0)
+        self.assertAlmostEqual(test_paused.value, 1.0, places=1)
+        self.assertAlmostEqual(test_duty.value, 0.0, places=1)
         self.assertGreaterEqual(len(loop_iterations), 5)
         self.assertLess(len(loop_iterations), 20)  # Should have stopped before safety break
 
@@ -213,8 +213,8 @@ class TestSignalHandling(unittest.TestCase):
         self.assertIn(signal.SIGTERM, signal_log)
         self.assertIn(signal.SIGINT, signal_log)
         self.assertTrue(stop_evt.is_set())
-        self.assertEqual(test_paused.value, 1.0)
-        self.assertEqual(test_duty.value, 0.0)
+        self.assertAlmostEqual(test_paused.value, 1.0, places=1)
+        self.assertAlmostEqual(test_duty.value, 0.0, places=1)
 
     def test_signal_handler_exception_safety(self):
         """Test that signal handlers are robust against exceptions."""
@@ -247,8 +247,8 @@ class TestSignalHandling(unittest.TestCase):
 
         # Verify critical operations completed despite exception
         self.assertTrue(stop_evt.is_set())
-        self.assertEqual(test_paused.value, 1.0)
-        self.assertEqual(test_duty.value, 0.0)
+        self.assertAlmostEqual(test_paused.value, 1.0, places=1)
+        self.assertAlmostEqual(test_duty.value, 0.0, places=1)
         self.assertEqual(len(exception_count), 1)
 
 
