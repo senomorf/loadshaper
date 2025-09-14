@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Container security hardened** - Now runs as non-root user (uid/gid 1000) with no fallback to ephemeral storage
 
 ### Fixed
+- **Critical bug fixes in issue #75 implementation**:
+  - **State machine initialization**: Fixed debounce blocking first transition from OFF→INITIALIZING, preventing network generation startup
+  - **CGNAT detection**: Fixed incomplete 100.64.0.0/10 range check (was only detecting 100.64.x.x, now properly detects entire 100.64.0.0-100.127.255.255)
+  - **Special-use IP ranges**: Added missing RFC 2544 (198.18.0.0/15), TEST-NETs, and other reserved ranges to external address validation
+  - **tx_bytes validation**: Fixed packet size mismatch in validation (now tracks actual bytes sent including DNS packet sizes)
+  - **External egress verification**: Fixed false positives by checking actual peer used instead of any valid peer
 - **Thread safety**: Ring buffer saves now use PID+thread temp files to prevent race conditions ([#87](https://github.com/senomorf/loadshaper/pull/87))
 - **Portable mount detection**: Replaced non-portable `stat -c %d` with Python-based device detection for Alpine/busybox compatibility ([#87](https://github.com/senomorf/loadshaper/pull/87))
 - **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors ([#87](https://github.com/senomorf/loadshaper/pull/87))

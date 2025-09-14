@@ -63,27 +63,56 @@ def is_external_address(address: str) -> bool:
 
         # Reject IPv4 private/special addresses
         if isinstance(ip, ipaddress.IPv4Address):
-            return not (
-                ip.is_private or           # RFC 1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+            # Check special-use ranges explicitly
+            if (ip.is_private or           # RFC 1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
                 ip.is_loopback or          # 127.0.0.0/8
                 ip.is_link_local or        # 169.254.0.0/16
                 ip.is_multicast or         # 224.0.0.0/4
                 ip.is_reserved or          # Various reserved ranges
-                ip.is_unspecified or       # 0.0.0.0
-                str(ip).startswith('100.64.')  # CGN: 100.64.0.0/10
-            )
+                ip.is_unspecified):        # 0.0.0.0
+                return False
+
+            # Check CGNAT range properly (100.64.0.0/10)
+            if ip in ipaddress.ip_network('100.64.0.0/10'):
+                return False
+
+            # Check RFC 2544 benchmarking range (198.18.0.0/15)
+            if ip in ipaddress.ip_network('198.18.0.0/15'):
+                return False
+
+            # Check TEST-NET ranges
+            if (ip in ipaddress.ip_network('192.0.2.0/24') or     # TEST-NET-1
+                ip in ipaddress.ip_network('198.51.100.0/24') or  # TEST-NET-2
+                ip in ipaddress.ip_network('203.0.113.0/24')):    # TEST-NET-3
+                return False
+
+            # Check other special-use ranges
+            if (ip in ipaddress.ip_network('192.0.0.0/24') or     # IETF Protocol Assignments
+                ip in ipaddress.ip_network('192.88.99.0/24') or   # Deprecated 6to4 relay
+                ip in ipaddress.ip_network('240.0.0.0/4')):       # Reserved for future use
+                return False
+
+            return True
 
         # Reject IPv6 private/special addresses
         elif isinstance(ip, ipaddress.IPv6Address):
-            return not (
-                ip.is_private or           # fc00::/7 (ULA)
+            if (ip.is_private or           # fc00::/7 (ULA)
                 ip.is_loopback or          # ::1
                 ip.is_link_local or        # fe80::/10
                 ip.is_multicast or         # ff00::/8
                 ip.is_reserved or          # Various reserved ranges
-                ip.is_unspecified or       # ::
-                str(ip).startswith('2001:db8:')  # Documentation: 2001:db8::/32
-            )
+                ip.is_unspecified):        # ::
+                return False
+
+            # Check documentation range properly
+            if ip in ipaddress.ip_network('2001:db8::/32'):
+                return False
+
+            # Check ORCHIDv2 range
+            if ip in ipaddress.ip_network('2001:10::/28'):
+                return False
+
+            return True
 
         return False
     except ValueError:
@@ -3224,7 +3253,6 @@ class NetworkGenerator:
 
     # Default public DNS servers for reliable external traffic
     DEFAULT_DNS_SERVERS = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
-    RFC2544_ADDRESSES = ["198.18.0.1", "198.19.255.254"]  # Fallback benchmarking addresses
 
     # PEER REPUTATION SYSTEM CONSTANTS
     # Reputation range: 0.0 (blacklisted) to 100.0 (perfect peer)
@@ -3307,6 +3335,7 @@ class NetworkGenerator:
         # Peer management
         self.peers = {}  # {address: PeerInfo}
         self.current_peer_index = 0
+        self.last_used_peer = None  # Track the last peer we actually sent to
         self.fallback_dns_servers = self.DEFAULT_DNS_SERVERS.copy()
         self.local_fallback = "127.0.0.1"
 
@@ -3560,24 +3589,29 @@ class NetworkGenerator:
         current_time = time.monotonic()
         time_in_state = current_time - self.state_start_time
 
-        # Check debounce timing - prevent rapid state changes
-        if hasattr(self, 'last_transition_time'):
-            time_since_last_transition = current_time - self.last_transition_time
-            if time_since_last_transition < self.state_debounce_sec:
-                logger.debug(f"State transition blocked by debounce: {time_since_last_transition:.1f}s < {self.state_debounce_sec}s")
-                return
+        # Allow first transition from OFF state without timing restrictions (startup)
+        is_first_transition = (self.state == NetworkState.OFF and
+                               len(self.state_transitions) == 0)
 
-        # Check hysteresis rules - minimum time in active states
-        if self.state in [NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP]:
-            if time_in_state < self.state_min_on_sec:
-                logger.debug(f"State transition blocked by min-on time: {time_in_state:.1f}s < {self.state_min_on_sec}s")
-                return
+        if not is_first_transition:
+            # Check debounce timing - prevent rapid state changes
+            if hasattr(self, 'last_transition_time'):
+                time_since_last_transition = current_time - self.last_transition_time
+                if time_since_last_transition < self.state_debounce_sec:
+                    logger.debug(f"State transition blocked by debounce: {time_since_last_transition:.1f}s < {self.state_debounce_sec}s")
+                    return
 
-        # Check minimum off time for inactive states
-        if self.state in [NetworkState.OFF, NetworkState.ERROR, NetworkState.DEGRADED_LOCAL]:
-            if time_in_state < self.state_min_off_sec:
-                logger.debug(f"State transition blocked by min-off time: {time_in_state:.1f}s < {self.state_min_off_sec}s")
-                return
+            # Check hysteresis rules - minimum time in active states
+            if self.state in [NetworkState.ACTIVE_UDP, NetworkState.ACTIVE_TCP]:
+                if time_in_state < self.state_min_on_sec:
+                    logger.debug(f"State transition blocked by min-on time: {time_in_state:.1f}s < {self.state_min_on_sec}s")
+                    return
+
+            # Check minimum off time for inactive states (but not for initial startup)
+            if self.state in [NetworkState.OFF, NetworkState.ERROR, NetworkState.DEGRADED_LOCAL]:
+                if time_in_state < self.state_min_off_sec:
+                    logger.debug(f"State transition blocked by min-off time: {time_in_state:.1f}s < {self.state_min_off_sec}s")
+                    return
 
         # Record transition
         self.state_transitions.append({
@@ -3671,7 +3705,12 @@ class NetworkGenerator:
 
         peer = valid_peers[self.current_peer_index]
         self.current_peer_index = (self.current_peer_index + 1) % len(valid_peers)
+        self.last_used_peer = peer  # Track for tx_bytes validation
         return peer
+
+    def _get_current_peer(self) -> Optional[str]:
+        """Get the last peer that was actually used for sending."""
+        return self.last_used_peer
 
     def _handle_no_valid_peers(self):
         """Handle situation when no valid peers are available."""
@@ -3765,13 +3804,21 @@ class NetworkGenerator:
         tx_before = self._get_tx_bytes()
 
         packets_sent = 0
+        bytes_sent = 0  # Track actual bytes sent for accurate validation
         start_time = time.time()
         send_attempts = 0
 
         while (time.time() - start_time) < duration_seconds:
+            # Determine actual packet size based on state and target
+            peer = self._get_next_valid_peer()
+            if peer and peer in self.fallback_dns_servers:
+                actual_packet_size = self.dns_packet_size
+            else:
+                actual_packet_size = self.packet_size
+
             # Check if we can send a packet
-            if not self.bucket.can_send(self.packet_size):
-                wait_time = self.bucket.wait_time(self.packet_size)
+            if not self.bucket.can_send(actual_packet_size):
+                wait_time = self.bucket.wait_time(actual_packet_size)
                 if wait_time > 0:
                     # Sleep for the actual wait time needed, but cap at 10ms to stay responsive
                     # This prevents busy-waiting while still maintaining reasonable burst control
@@ -3792,7 +3839,8 @@ class NetworkGenerator:
 
                 if success:
                     packets_sent += 1
-                    self.bucket.consume(self.packet_size)
+                    bytes_sent += actual_packet_size
+                    self.bucket.consume(actual_packet_size)
 
             except Exception as e:
                 logger.debug(f"Send error in state {self.state.value}: {e}")
@@ -3801,8 +3849,8 @@ class NetworkGenerator:
             if send_attempts % self.CPU_YIELD_INTERVAL == 0:
                 time.sleep(self.CPU_YIELD_DURATION)
 
-        # Validate transmission effectiveness
-        self._validate_transmission_effectiveness(tx_before, packets_sent, send_attempts)
+        # Validate transmission effectiveness with actual bytes sent
+        self._validate_transmission_effectiveness(tx_before, bytes_sent, send_attempts)
 
         # Check for peer recovery periodically
         self._check_peer_recovery()
@@ -3940,8 +3988,14 @@ class NetworkGenerator:
         except (socket.error, OSError):
             return None
 
-    def _validate_transmission_effectiveness(self, tx_before: Optional[int], packets_sent: int, attempts: int):
-        """Validate that transmission actually increased tx_bytes."""
+    def _validate_transmission_effectiveness(self, tx_before: Optional[int], bytes_sent: int, attempts: int):
+        """Validate that transmission actually increased tx_bytes.
+
+        Args:
+            tx_before: tx_bytes count before burst
+            bytes_sent: Actual bytes sent during burst
+            attempts: Number of send attempts made
+        """
         if self.network_interface is None:
             logger.debug("No network interface available for tx_bytes validation, using DNS fallback")
             self._trigger_dns_fallback_if_needed()
@@ -3954,16 +4008,18 @@ class NetworkGenerator:
             return
 
         tx_delta = tx_after - tx_before
-        expected_bytes = packets_sent * self.packet_size
+        expected_bytes = bytes_sent  # Use actual bytes sent, not estimated
 
         # Update EMA
         self.tx_bytes_ema = (self.tx_bytes_alpha * tx_delta +
                            (1 - self.tx_bytes_alpha) * self.tx_bytes_ema)
 
         # Verify external egress for E2 compliance
+        # Only mark as verified if we actually sent to external peers
         if tx_delta > expected_bytes * 0.6:  # 60% threshold for validation
-            if any(self.peers[peer]['is_external'] for peer in self.peers
-                  if self.peers[peer]['state'] == PeerState.VALID):
+            # Check if the last peer we actually sent to was external
+            peer = self._get_current_peer()
+            if peer and self.peers.get(peer, {}).get('is_external', False):
                 self.external_egress_verified = True
         else:
             logger.debug(f"Low tx_bytes delta: {tx_delta} bytes vs {expected_bytes} expected")

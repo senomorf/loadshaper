@@ -405,7 +405,7 @@ NET_FALLBACK_MIN_ON_SEC=60           # Standard minimum on time
 NET_ACTIVATION=always
 NET_TARGET_PCT=25.0                  # Consistent 25% network utilization
 NET_MODE=client                      # Client mode for outbound traffic
-NET_PEERS=198.18.0.1,198.18.0.2    # RFC 2544 test addresses
+NET_PEERS=8.8.8.8,1.1.1.1          # Public DNS servers for external traffic
 ```
 **Use case:** Development environments, network performance testing, bandwidth validation.
 
@@ -1441,7 +1441,7 @@ echo "=== Recent Logs ==="
 docker logs --tail 50 loadshaper
 
 echo "=== Network Connectivity ==="
-docker exec loadshaper ping -c 3 198.18.0.1 2>/dev/null || echo "Benchmark address unreachable"
+docker exec loadshaper ping -c 3 8.8.8.8 2>/dev/null || echo "External DNS unreachable"
 
 echo "=== Resource Usage ==="
 docker stats --no-stream loadshaper
