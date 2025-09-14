@@ -51,7 +51,5 @@
     ],
     "deny": [],
     "ask": []
-  },
-  "defaultMode": "plan",
-  "model": "opusplan"
+  }
 }
