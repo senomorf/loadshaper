@@ -721,6 +721,7 @@ def _validate_network_fallback_config():
         ("NET_FALLBACK_DEBOUNCE_SEC", 30),
         ("NET_FALLBACK_MIN_ON_SEC", 60),
         ("NET_FALLBACK_MIN_OFF_SEC", 30),
+        ("NET_FALLBACK_RAMP_SEC", 10),
     ]:
         if var_name in global_vars:
             var_value = global_vars[var_name]
@@ -857,6 +858,7 @@ NET_FALLBACK_RISK_THRESHOLD_PCT = None
 NET_FALLBACK_DEBOUNCE_SEC = None
 NET_FALLBACK_MIN_ON_SEC = None
 NET_FALLBACK_MIN_OFF_SEC = None
+NET_FALLBACK_RAMP_SEC = None
 
 # Control shared variables
 paused = None
@@ -879,7 +881,7 @@ def _initialize_config():
     global CPU_P95_TARGET_MIN, CPU_P95_TARGET_MAX, CPU_P95_SETPOINT, CPU_P95_EXCEEDANCE_TARGET
     global CPU_P95_SLOT_DURATION, CPU_P95_HIGH_INTENSITY, CPU_P95_BASELINE_INTENSITY
     global NET_ACTIVATION, NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
-    global NET_FALLBACK_DEBOUNCE_SEC, NET_FALLBACK_MIN_ON_SEC, NET_FALLBACK_MIN_OFF_SEC
+    global NET_FALLBACK_DEBOUNCE_SEC, NET_FALLBACK_MIN_ON_SEC, NET_FALLBACK_MIN_OFF_SEC, NET_FALLBACK_RAMP_SEC
     global NET_MODE, NET_PEERS, NET_PORT, NET_BURST_SEC, NET_IDLE_SEC, NET_PROTOCOL
     global NET_SENSE_MODE, NET_IFACE, NET_IFACE_INNER, NET_LINK_MBIT
     global NET_MIN_RATE, NET_MAX_RATE
@@ -960,6 +962,7 @@ def _initialize_config():
     NET_FALLBACK_DEBOUNCE_SEC = getenv_int_with_template("NET_FALLBACK_DEBOUNCE_SEC", 30, CONFIG_TEMPLATE)
     NET_FALLBACK_MIN_ON_SEC = getenv_int_with_template("NET_FALLBACK_MIN_ON_SEC", 60, CONFIG_TEMPLATE)
     NET_FALLBACK_MIN_OFF_SEC = getenv_int_with_template("NET_FALLBACK_MIN_OFF_SEC", 30, CONFIG_TEMPLATE)
+    NET_FALLBACK_RAMP_SEC = getenv_int_with_template("NET_FALLBACK_RAMP_SEC", 10, CONFIG_TEMPLATE)
 
     # Validate final configuration values (including environment overrides)
     _validate_final_config()
@@ -1118,8 +1121,18 @@ class CPUP95Controller:
             return p95
 
     def _get_ring_buffer_path(self):
-        """Get path for ring buffer persistence file in persistent storage"""
-        return os.path.join(self.PERSISTENT_STORAGE_PATH, "p95_ring_buffer.json")
+        """Get path for ring buffer persistence file"""
+        # Use same directory as metrics database for consistency
+        try:
+            # Try primary location first
+            db_dir = "/var/lib/loadshaper"
+            if os.path.exists(db_dir) and os.access(db_dir, os.W_OK):
+                return os.path.join(db_dir, "p95_ring_buffer.json")
+        except (OSError, PermissionError):
+            pass
+
+        # Fall back to temp directory
+        return "/tmp/loadshaper_p95_ring_buffer.json"
 
     def _save_ring_buffer_state(self):
         """Save ring buffer state to disk for persistence across restarts"""
