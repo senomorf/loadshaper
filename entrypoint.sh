@@ -1,12 +1,13 @@
 #!/bin/sh
-set -Eeuo pipefail
+set -euo pipefail
 # LoadShaper Container Entrypoint
 # Validates that persistent storage is properly mounted before starting the application
 
 echo "[INFO] LoadShaper container starting..."
 
 # Check persistent storage directory
-PERSISTENCE_DIR="/var/lib/loadshaper"
+# Allow override for testing, default to production path
+PERSISTENCE_DIR="${PERSISTENCE_DIR:-/var/lib/loadshaper}"
 
 if [ ! -d "$PERSISTENCE_DIR" ]; then
     echo "[ERROR] Persistent storage directory does not exist: $PERSISTENCE_DIR"

@@ -70,20 +70,22 @@ That's it! `loadshaper` will automatically detect your Oracle Cloud shape and st
 
 ### Kubernetes/Helm Deployment
 
-For Kubernetes deployments, Helm charts are available in the `charts/` directory:
+For Kubernetes deployments, Helm charts are available in the `helm/` directory:
 
 ```bash
 # Install with default values
-helm install loadshaper ./charts/loadshaper
+helm install loadshaper ./helm/loadshaper
 
 # Or with custom configuration
-helm install loadshaper ./charts/loadshaper -f custom-values.yaml
+helm install loadshaper ./helm/loadshaper -f custom-values.yaml
 ```
 
 Key Kubernetes considerations:
 - **Persistent Volume required** for 7-day P95 metrics storage
-- **Resource requests/limits** should align with Oracle Free Tier constraints
+- **Resource limits included** - Default CPU/memory limits configured for Oracle Free Tier
+- **Security hardened** - Read-only root filesystem and non-root user configured
 - **Single replica only** - LoadShaper must not run multiple instances per node
+- **Multiple configurations** - Production, security-hardened, and shape-specific value files included
 - **Node affinity** recommended to ensure consistent VM assignment
 
 **📖 More Information:**
@@ -272,6 +274,18 @@ Where:
 - Thread-safe for concurrent access
 - Gracefully handles storage failures (continues with existing behavior)
 
+## Local Development Setup
+
+For local runs outside of Docker, you must first create the persistent storage directory:
+
+```shell
+# Create persistent storage directory with correct permissions
+sudo mkdir -p /var/lib/loadshaper
+sudo chown $USER:$USER /var/lib/loadshaper
+```
+
+**Note**: LoadShaper requires persistent storage at `/var/lib/loadshaper` to maintain the 7-day P95 CPU history needed for Oracle compliance. Without this directory, the application will fail to start.
+
 ## Overriding detection and thresholds
 
 Environment variables can override shape detection and contention limits:
@@ -366,6 +380,8 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 ## Configuration Reference
 
 > **⚠️ CRITICAL:** For Oracle Free Tier VM protection, ensure **at least one metric target is above 20%**. Setting all targets below 20% will cause Oracle to reclaim your VM. Oracle checks if ALL metrics are below 20% - if so, the VM is reclaimed.
+>
+> **🚨 SINGLE INSTANCE REQUIREMENT:** Only run **ONE LoadShaper instance per system**. Multiple instances will corrupt the P95 calculation database and cause Oracle VM reclamation. Each instance requires exclusive access to the persistent storage directory.
 
 ### Resource Targets
 

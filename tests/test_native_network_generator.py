@@ -512,6 +512,12 @@ class TestNetworkClientThread(unittest.TestCase):
         self.original_net_idle_sec = getattr(loadshaper, 'NET_IDLE_SEC', None)
         self.original_net_min_rate = getattr(loadshaper, 'NET_MIN_RATE', None)
         self.original_net_max_rate = getattr(loadshaper, 'NET_MAX_RATE', None)
+        self.original_net_require_external = getattr(loadshaper, 'NET_REQUIRE_EXTERNAL', None)
+        self.original_net_validate_startup = getattr(loadshaper, 'NET_VALIDATE_STARTUP', None)
+        self.original_net_state_debounce_sec = getattr(loadshaper, 'NET_STATE_DEBOUNCE_SEC', None)
+        self.original_net_state_min_on_sec = getattr(loadshaper, 'NET_STATE_MIN_ON_SEC', None)
+        self.original_net_state_min_off_sec = getattr(loadshaper, 'NET_STATE_MIN_OFF_SEC', None)
+        self.original_net_state_ramp_up_sec = getattr(loadshaper, 'NET_STATE_RAMP_UP_SEC', None)
 
         # Set test configuration
         loadshaper.NET_MODE = "client"
@@ -524,6 +530,12 @@ class TestNetworkClientThread(unittest.TestCase):
         loadshaper.NET_IDLE_SEC = 1
         loadshaper.NET_MIN_RATE = 0.1
         loadshaper.NET_MAX_RATE = 100.0
+        loadshaper.NET_REQUIRE_EXTERNAL = True
+        loadshaper.NET_VALIDATE_STARTUP = False
+        loadshaper.NET_STATE_DEBOUNCE_SEC = 5.0
+        loadshaper.NET_STATE_MIN_ON_SEC = 10.0
+        loadshaper.NET_STATE_MIN_OFF_SEC = 10.0
+        loadshaper.NET_STATE_RAMP_UP_SEC = 30.0
 
     def tearDown(self):
         """Restore original configuration."""
@@ -537,6 +549,12 @@ class TestNetworkClientThread(unittest.TestCase):
         loadshaper.NET_IDLE_SEC = self.original_net_idle_sec
         loadshaper.NET_MIN_RATE = self.original_net_min_rate
         loadshaper.NET_MAX_RATE = self.original_net_max_rate
+        loadshaper.NET_REQUIRE_EXTERNAL = self.original_net_require_external
+        loadshaper.NET_VALIDATE_STARTUP = self.original_net_validate_startup
+        loadshaper.NET_STATE_DEBOUNCE_SEC = self.original_net_state_debounce_sec
+        loadshaper.NET_STATE_MIN_ON_SEC = self.original_net_state_min_on_sec
+        loadshaper.NET_STATE_MIN_OFF_SEC = self.original_net_state_min_off_sec
+        loadshaper.NET_STATE_RAMP_UP_SEC = self.original_net_state_ramp_up_sec
 
     def test_thread_respects_stop_event(self):
         """Test that network thread respects stop event."""

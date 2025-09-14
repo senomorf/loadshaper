@@ -9,12 +9,12 @@
 
 ## Architecture Overview
 
-`loadshaper` is designed as a single-process monitoring and load generation system with clear separation of concerns:
+`loadshaper` is designed as a single-service monitoring and load generation system with internal worker processes and clear separation of concerns:
 
 ### Core Components
 - **Metric Collection**: System-level monitoring (CPU, memory, network, load average)
 - **Storage Layer**: SQLite-based 7-day rolling metrics with CPU 95th percentile calculations
-- **Control Logic**: PID-style controllers for each resource type with hysteresis
+- **Control Logic**: P95 CPU controller with state machine, memory nurse thread, and network fallback with hysteresis
 - **Load Workers**: Low-priority background processes for resource consumption
 - **Safety Systems**: Load average monitoring and automatic yielding to real workloads
 
@@ -108,7 +108,7 @@ def should_activate(self, is_e2: bool, cpu_p95: float, net_avg: float, mem_avg: 
 - **Shape optimized**: Different activation logic for E2 vs A1 Oracle reclamation rules
 
 ## Project Structure & Module Organization
-- `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
+- `loadshaper.py` — single-service controller with internal worker processes that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
 - `Dockerfile` — Python 3 Alpine image with minimal dependencies; runs `loadshaper.py`.
 - `compose.yaml` — single service: `loadshaper` (client/loader) with configurable env vars; mounts config templates and persistent storage.
 - `README.md`, `LICENSE` — usage and licensing.
