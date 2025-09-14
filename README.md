@@ -8,11 +8,105 @@
 
 ## ⚠️ Work In Progress - Breaking Changes Expected
 
-> **🚧 This project is under active development.** Breaking changes are introduced frequently
-> without migration paths **by design**. No backward compatibility or migration guides are provided
-> as we iterate rapidly toward the optimal Oracle Cloud VM protection solution. This approach
-> prevents technical debt accumulation and enables rapid innovation. Always review the CHANGELOG
-> before updating.
+> **🚧 WORK IN PROGRESS: BREAKING CHANGES BY DESIGN**
+>
+> **Current Status:** Persistent storage is now **MANDATORY**. All fallback to `/tmp` has been completely removed.
+> Containers will **NOT START** without proper persistent volumes. This is an intentional breaking change.
+>
+> **Development Philosophy:** Breaking changes are introduced frequently without migration paths **by design**.
+> This approach prevents technical debt accumulation and enables rapid innovation toward the optimal
+> Oracle Cloud VM protection solution.
+
+### Migration Guide
+
+**Latest Breaking Change: Mandatory Persistent Storage (Current Version)**
+
+As of the current version, **persistent storage is mandatory**. The container will fail to start without proper volume configuration:
+
+#### ✅ **Required Setup**
+```yaml
+# Docker Compose
+volumes:
+  - /var/lib/loadshaper:/var/lib/loadshaper
+
+# Kubernetes
+volumeMounts:
+  - name: loadshaper-data
+    mountPath: /var/lib/loadshaper
+```
+
+#### ❌ **What No Longer Works**
+- Running without persistent volumes
+- Fallback to `/tmp` storage (completely removed)
+- Containers starting without writable `/var/lib/loadshaper`
+
+#### 🔧 **Volume Permission Setup (User Responsibility)**
+
+**LoadShaper requires proper volume permissions BEFORE starting** - no automatic fixes are provided for security reasons.
+
+**Error**: "Cannot write to /var/lib/loadshaper - check volume permissions"
+
+**REQUIRED: Pre-deployment Volume Setup**
+
+For **Docker named volumes** (recommended):
+```bash
+# One-time setup: Create volume with correct permissions
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+
+# Then start LoadShaper
+docker compose up -d
+```
+
+For **bind mounts**:
+```bash
+# Create and set permissions on host directory
+sudo mkdir -p /var/lib/loadshaper
+sudo chown -R 1000:1000 /var/lib/loadshaper
+sudo chmod -R 755 /var/lib/loadshaper
+
+# Update compose.yaml to use bind mount
+volumes:
+  - /var/lib/loadshaper:/var/lib/loadshaper
+```
+
+For **Kubernetes/OpenShift**:
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000  # Ensures volume has correct group ownership
+```
+
+**Verification**:
+```bash
+# Check container logs - should show success
+docker logs loadshaper
+
+# Verify volume ownership
+docker run --rm -v loadshaper-metrics:/test alpine:latest ls -la /test
+```
+
+#### **Why This Change?**
+- **Oracle Compliance**: 7-day P95 CPU calculations require persistent metrics database
+- **Data Integrity**: Prevents silent failures that could cause VM reclamation
+- **Performance**: Eliminates temporary storage overhead and reliability issues
+
+**Next Breaking Changes:** Additional Oracle compliance improvements planned. Always check `CHANGELOG.md` before updating.
+
+### Rootless Container Philosophy
+
+LoadShaper follows **strict rootless container principles** for maximum security:
+
+- **Never runs as root** - Container always executes as user `loadshaper` (UID/GID 1000)
+- **No privilege escalation** - No automatic permission fixing or root operations
+- **User responsibility** - Volume permissions must be configured correctly before deployment
+- **Security first** - Prevents container breakout and follows container security best practices
+
+**Why Rootless?**
+- Eliminates container security vulnerabilities
+- Follows least-privilege principle
+- Compatible with security-conscious environments (Kubernetes, OpenShift)
+- Prevents accidental host system modifications
 
 **Modern native network generator implementation** - Uses Python sockets instead of external dependencies for maximum efficiency and control. Requires **Linux 3.14+ (March 2014)** with kernel MemAvailable support.
 
@@ -41,14 +135,32 @@ Oracle Cloud Always Free compute instances are automatically reclaimed if they r
 
 ## Quick Start
 
-**1. Clone and deploy:**
+**📋 Prerequisites:**
+- Docker and Docker Compose installed
+- **Persistent storage required** - LoadShaper needs persistent volume for 7-day P95 metrics
+- **Single instance only** - Run only one LoadShaper process per system to avoid conflicts
+- **Rootless container setup** - LoadShaper follows security best practices (non-root user)
+
+**1. Clone and setup:**
 ```bash
 git clone https://github.com/senomorf/loadshaper.git
 cd loadshaper
+```
+
+**2. REQUIRED: Setup volume permissions (one-time):**
+```bash
+# Create volume with correct permissions for rootless container
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+```
+
+**3. Deploy:**
+```bash
 docker compose up -d --build
 ```
 
-**2. Monitor activity:**
+> **⚠️ Important**: LoadShaper follows rootless container security principles. Volume permissions MUST be configured correctly before starting the container - no automatic fixes are provided.
+
+**4. Monitor activity:**
 ```bash
 docker logs -f loadshaper
 ```
@@ -60,6 +172,42 @@ docker logs loadshaper | grep "\[loadshaper\]" | tail -5
 ```
 
 That's it! `loadshaper` will automatically detect your Oracle Cloud shape and start maintaining appropriate resource utilization.
+
+### Kubernetes/Helm Deployment
+
+For Kubernetes deployments, Helm charts are available in the `helm/` directory:
+
+```bash
+# Install with default values
+helm install loadshaper ./helm/loadshaper
+
+# Or with custom configuration
+helm install loadshaper ./helm/loadshaper -f custom-values.yaml
+```
+
+Key Kubernetes considerations:
+- **Persistent Volume required** for 7-day P95 metrics storage
+- **Resource limits included** - Default CPU/memory limits configured for Oracle Free Tier
+- **Security hardened** - Read-only root filesystem and non-root user configured
+- **Single replica only** - LoadShaper must not run multiple instances per node
+- **Multiple configurations** - Production, security-hardened, and shape-specific value files included
+
+### Optional Security Hardening
+
+For security-conscious environments, you can add additional hardening to your Docker Compose deployment:
+
+```yaml
+services:
+  loadshaper:
+    # ... existing configuration ...
+    read_only: true                    # Read-only root filesystem
+    tmpfs:
+      - /tmp                          # Allow temporary files in memory
+    cap_drop:
+      - ALL                           # Drop all Linux capabilities
+    security_opt:
+      - no-new-privileges:true        # Prevent privilege escalation
+```
 
 **📖 More Information:**
 - [Configuration Reference](#configuration-reference) - Detailed environment variable options
@@ -88,25 +236,52 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 
 ## Architecture
 
-`loadshaper` operates as a lightweight monitoring and control system with three main components:
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           LoadShaper                                │
+├─────────────────┬─────────────────┬─────────────────┬───────────────┤
+│  Metrics        │   P95 CPU       │  Load           │   Health      │
+│  Collector      │   Controller    │  Generators     │   Server      │
+│                 │                 │                 │               │
+│ ┌─────────────┐ │ ┌─────────────┐ │ ┌─────────────┐ │ ┌───────────┐ │
+│ │ /proc/stat  │ │ │ Ring Buffer │ │ │ CPU Workers │ │ │ /health   │ │
+│ │ /proc/mem   │─┼─│ SQLite DB   │─┼─│ Mem Alloc   │ │ │ /metrics  │ │
+│ │ /proc/net   │ │ │ State Mach  │ │ │ Net Traffic │ │ │ :8080     │ │
+│ │ /loadavg    │ │ │ Slot Timing │ │ │             │ │ │           │ │
+│ └─────────────┘ │ └─────────────┘ │ └─────────────┘ │ └───────────┘ │
+└─────────────────┴─────────────────┴─────────────────┴───────────────┘
+         │                   │                   │              │
+         │                   │                   │              │
+         ▼                   ▼                   ▼              ▼
+    5s samples         7-day P95           Oracle VM        Docker/K8s
+    EMA averages      calculations        protection        monitoring
+```
 
-### 1. **Metric Collection**
+`loadshaper` operates as a lightweight monitoring and control system with four main components:
+
+### 1. **Metrics Collector**
 - **CPU utilization**: Read from `/proc/stat` (system-wide percentage)
 - **Memory utilization**: Read from `/proc/meminfo` using industry-standard calculation (see [Memory Calculation](#memory-calculation))
 - **Network utilization**: Read from `/proc/net/dev` with automatic speed detection
 - **Load average**: Monitor from `/proc/loadavg` to detect CPU contention
 
-### 2. **7-Day Metrics Storage**
-- **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis
+### 2. **P95 CPU Controller**
+- **SQLite database**: Stores samples every 5 seconds for rolling 7-day analysis in persistent storage (`/var/lib/loadshaper/metrics.db`)
 - **95th percentile calculation**: CPU only (mirrors Oracle's measurement method)
 - **Automatic cleanup**: Removes data older than 7 days
-- **Storage locations**: `/var/lib/loadshaper/metrics.db` (preferred) or `/tmp/loadshaper_metrics.db` (fallback)
+- **Persistent storage requirement**: Database must be stored at `/var/lib/loadshaper/metrics.db` for 7-day history preservation
 
-### 3. **Intelligent Load Generation**
+### 3. **Load Generators**
 - **CPU stress**: Low-priority workers (nice 19) with arithmetic operations
 - **Memory occupation**: Gradual allocation with periodic page touching for A1.Flex shapes  
-- **Network traffic**: iperf3-based bursts to peer instances when needed
+- **Network traffic**: Native Python network bursts to peer instances when needed
 - **Load balancing**: Automatic pausing when real workloads need resources
+
+### 4. **Health Server**
+- **HTTP endpoints**: `/health` and `/metrics` on port 8080 (configurable)
+- **Docker integration**: Provides health checks for container orchestration
+- **Monitoring support**: Real-time metrics for external monitoring systems
+- **Security**: Binds to localhost by default, configurable for external access
 
 ### Operation Flow
 ```
@@ -180,6 +355,65 @@ CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is design
 - CPU-only protection mode
 - Recommended only when network generation is not desired
 
+### Network Fallback Configuration Examples
+
+#### 🔥 **Conservative Setup (Minimal Network Usage)**
+*Activates network fallback only in extreme risk scenarios*
+```bash
+NET_ACTIVATION=adaptive
+NET_FALLBACK_START_PCT=15.0          # Very low threshold
+NET_FALLBACK_STOP_PCT=25.0           # Higher deactivation threshold
+NET_FALLBACK_RISK_THRESHOLD_PCT=19.0 # More conservative risk level
+NET_FALLBACK_DEBOUNCE_SEC=60         # Longer debounce to avoid rapid changes
+NET_FALLBACK_MIN_ON_SEC=120          # Stay active longer once triggered
+```
+**Use case:** Environments where network activity should be minimized but Oracle compliance is critical.
+
+#### ⚡ **Aggressive Setup (Maximum Oracle Compliance)**
+*Maximizes protection against VM reclamation with active network generation*
+```bash
+NET_ACTIVATION=adaptive
+NET_FALLBACK_START_PCT=22.0          # Higher activation threshold
+NET_FALLBACK_STOP_PCT=28.0           # Higher deactivation threshold
+NET_FALLBACK_RISK_THRESHOLD_PCT=24.0 # Proactive risk management
+NET_FALLBACK_DEBOUNCE_SEC=15         # Quick response to changes
+NET_FALLBACK_MIN_ON_SEC=60           # Standard minimum on time
+```
+**Use case:** Critical workloads where VM reclamation must be avoided at all costs.
+
+#### 🧪 **Testing/Development Setup**
+*Always-on network generation for testing network bandwidth and validation*
+```bash
+NET_ACTIVATION=always
+NET_TARGET_PCT=25.0                  # Consistent 25% network utilization
+NET_MODE=client                      # Client mode for outbound traffic
+NET_PEERS=198.18.0.1,198.18.0.2    # RFC 2544 test addresses
+```
+**Use case:** Development environments, network performance testing, bandwidth validation.
+
+#### 🚫 **CPU-Only Setup (No Network Generation)**
+*Disables network fallback completely, relies only on CPU P95 control*
+```bash
+NET_ACTIVATION=off
+NET_TARGET_PCT=0                     # No network generation
+CPU_P95_TARGET_MIN=25.0             # Higher CPU target to compensate
+CPU_P95_TARGET_MAX=30.0             # Adjusted range for CPU-only protection
+```
+**Use case:** Environments where network generation is prohibited or impossible.
+
+#### 🏢 **Enterprise Setup (Balanced Protection)**
+*Optimal balance between resource usage and Oracle compliance*
+```bash
+NET_ACTIVATION=adaptive
+NET_FALLBACK_START_PCT=20.0          # Oracle threshold-based
+NET_FALLBACK_STOP_PCT=25.0           # Safe deactivation level
+NET_FALLBACK_RISK_THRESHOLD_PCT=22.0 # Standard risk threshold
+NET_FALLBACK_DEBOUNCE_SEC=30         # Balanced response time
+NET_FALLBACK_MIN_ON_SEC=60           # Standard minimum active period
+NET_FALLBACK_RAMP_SEC=15            # Smooth transitions
+```
+**Use case:** Production environments requiring reliable Oracle compliance with reasonable resource usage.
+
 ## Load average monitoring
 
 `loadshaper` monitors system load average to detect CPU contention from other
@@ -201,8 +435,7 @@ at each control period (default 5 seconds) and automatically cleaned up after
 7 days.
 
 **Storage location:**
-- Primary: `/var/lib/loadshaper/metrics.db` (if writable)
-- Fallback: `/tmp/loadshaper_metrics.db`
+- Required: `/var/lib/loadshaper/metrics.db` (persistent storage required)
 
 **Telemetry output format:**
 ```
@@ -220,6 +453,18 @@ Where:
 - Estimated database size: 10-20 MB for 7 days of data
 - Thread-safe for concurrent access
 - Gracefully handles storage failures (continues with existing behavior)
+
+## Local Development Setup
+
+For local runs outside of Docker, you must first create the persistent storage directory:
+
+```shell
+# Create persistent storage directory with correct permissions
+sudo mkdir -p /var/lib/loadshaper
+sudo chown $USER:$USER /var/lib/loadshaper
+```
+
+**Note**: LoadShaper requires persistent storage at `/var/lib/loadshaper` to maintain the 7-day P95 CPU history needed for Oracle compliance. Without this directory, the application will fail to start.
 
 ## Overriding detection and thresholds
 
@@ -315,14 +560,21 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 ## Configuration Reference
 
 > **⚠️ CRITICAL:** For Oracle Free Tier VM protection, ensure **at least one metric target is above 20%**. Setting all targets below 20% will cause Oracle to reclaim your VM. Oracle checks if ALL metrics are below 20% - if so, the VM is reclaimed.
+>
+> **🚨 CRITICAL: SINGLE INSTANCE ONLY:** Only run **ONE LoadShaper instance per system**. Multiple instances create race conditions in:
+> - **P95 ring buffer state** - Concurrent writes corrupt slot history tracking
+> - **Metrics database** - SQLite locks and data corruption
+> - **Resource calculations** - Conflicting load measurements
+>
+> **Result:** Oracle VM reclamation due to broken P95 calculations. Each LoadShaper instance requires **exclusive access** to `/var/lib/loadshaper/` persistent storage.
 
 ### Resource Targets
 
 | Variable | Auto-Configured Values | Description | E2.1.Micro | E2.2.Micro | A1.Flex-1 | A1.Flex-2 | A1.Flex-3 | A1.Flex-4 |
 |----------|---------|-------------|------------|------------|------------|------------|------------|------------|
-| `CPU_P95_SETPOINT` | **23.5**, 28.5, 28.5, 28.5, 28.5, 30.0 | Target CPU P95 (7-day window) | 23.5% | 28.5% | 28.5% | 28.5% | 28.5% | 30.0% |
+| `CPU_P95_SETPOINT` | **23.5**, 25.0, 25.0, 25.0, 25.0, 30.0 | Target CPU P95 (7-day window) | 23.5% | 25.0% | 25.0% | 25.0% | 25.0% | 30.0% |
 | `MEM_TARGET_PCT` | **0**, 0, 30, 30, 30, 30 | Target memory utilization (%) | 0% (disabled) | 0% (disabled) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) | 30% (above 20% rule) |
-| `NET_TARGET_PCT` | **15**, 15, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 15% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
+| `NET_TARGET_PCT` | **15**, 25, 25, 25, 25, 30 | Target network utilization (%) | 15% (50 Mbps) | 25% (50 Mbps) | 25% (1 Gbps) | 25% (2 Gbps) | 25% (3 Gbps) | 30% (4 Gbps) |
 
 ### Safety Thresholds
 
@@ -339,7 +591,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `CONTROL_PERIOD_SEC` | `5` | Seconds between control decisions |
 | `AVG_WINDOW_SEC` | `300` | Exponential moving average window for memory/network (5 min) |
 | `HYSTERESIS_PCT` | `5` | Percentage hysteresis to prevent oscillation |
-| `JITTER_PCT` | `15` | Random jitter in load generation (%) |
+| `JITTER_PCT` | `10` | Random jitter in load generation (%) |
 | `JITTER_PERIOD_SEC` | `5` | Seconds between jitter adjustments |
 
 ### P95 Controller Configuration
@@ -355,6 +607,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `CPU_P95_SLOT_DURATION_SEC` | `60.0` | Duration of each control slot (seconds) |
 | `CPU_P95_HIGH_INTENSITY` | `35.0` | CPU utilization during high-intensity slots (%) |
 | `CPU_P95_BASELINE_INTENSITY` | `20.0` | CPU utilization during normal slots (minimum for Oracle compliance) |
+| `CPU_P95_RING_BUFFER_BATCH_SIZE` | `10` | Number of slots between ring buffer state saves (performance optimization) |
 
 ### Load Average Monitoring
 
@@ -379,15 +632,18 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
 | `NET_PEERS` | `10.0.0.2,10.0.0.3` | Comma-separated peer IP addresses or hostnames |
-| `NET_PORT` | `15201` | iperf3 port for communication |
+| `NET_PORT` | `15201` | TCP port for network communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
+| `NET_TTL` | `1` | IP TTL for generated packets |
+| `NET_PACKET_SIZE` | `8900` | Packet size (bytes) for UDP/TCP generator |
 
 ### Network Interface Detection
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NET_SENSE_MODE` | `container` | Detection mode: `container`, `host` |
+| `NET_IFACE` | `ens3` | Host interface name (required when `NET_SENSE_MODE=host`) |
 | `NET_IFACE_INNER` | `eth0` | Container interface name |
 | `NET_LINK_MBIT` | `1000` | Fallback link speed (Mbps) |
 | `NET_MIN_RATE_MBIT` | `1` | Minimum traffic generation rate |
@@ -514,7 +770,13 @@ Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid r
   "timestamp": 1705234567.89,
   "checks": ["all_systems_operational"],
   "metrics_storage": "available",
-  "load_generation": "active"
+  "persistence_storage": "available",
+  "load_generation": "active",
+  "storage_status": {
+    "disk_usage_mb": 45.2,
+    "oldest_sample": "2024-01-01T12:00:00Z",
+    "sample_count": 120960
+  }
 }
 ```
 
@@ -535,13 +797,25 @@ Oracle shape detection results are cached for 5 minutes (300 seconds) to avoid r
     "paused": false
   },
   "targets": {
-    "cpu_target": 25.0,
+    "cpu_p95_setpoint": 25.0,
     "memory_target": 0.0,
     "network_target": 15.0
   },
+  "configuration": {
+    "cpu_stop_threshold": 95.0,
+    "memory_stop_threshold": 95.0,
+    "network_stop_threshold": 95.0,
+    "load_threshold": 0.6,
+    "worker_count": 4,
+    "control_period": 10.0,
+    "averaging_window": 60.0
+  },
   "percentiles_7d": {
     "cpu_p95": 48.3,
-    "sample_count_7d": 98547
+    "memory_p95": 52.1,
+    "network_p95": 14.8,
+    "load_p95": 0.35,
+    "sample_count_7d": 120960
   }
 }
 ```
@@ -731,7 +1005,7 @@ A: E2 shapes only have 1GB RAM and memory isn't counted in Oracle's reclamation 
 A: Watch the telemetry output: `docker logs -f loadshaper`. You'll see current, average, and CPU 95th percentile values.
 
 **Q: What happens if I restart the container?**  
-A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` or `/tmp/`). The 7-day rolling window continues from where it left off.
+A: Metrics history is preserved in the SQLite database (stored in `/var/lib/loadshaper/` on persistent storage). The 7-day rolling window continues from where it left off.
 
 **Q: Can I run this alongside other applications?**  
 A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist peacefully with any workload.
@@ -742,10 +1016,79 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
 **Q: Network traffic isn't being generated**  
-A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify iperf3 servers are running on peer instances and firewall rules allow traffic on `NET_PORT`.
+A: Ensure you have `NET_MODE=client` and valid `NET_PEERS` IP addresses. Verify peer instances are reachable and firewall rules allow traffic on `NET_PORT`.
 
-**Q: Memory usage isn't increasing on A1.Flex**  
+**Q: Memory usage isn't increasing on A1.Flex**
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
+
+## Custom Persistent Storage Path
+
+By default, LoadShaper uses `/var/lib/loadshaper` as its persistent storage directory. You can customize this location using the `PERSISTENCE_DIR` environment variable if needed.
+
+### Docker Compose Override
+
+To use a custom storage path with Docker Compose:
+
+```yaml
+# compose.override.yaml
+services:
+  loadshaper:
+    environment:
+      - PERSISTENCE_DIR=/data/loadshaper  # Custom path inside container
+    volumes:
+      - loadshaper-metrics:/data/loadshaper  # Mount volume to custom path
+```
+
+### Kubernetes ConfigMap
+
+For Kubernetes deployments with custom paths:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadshaper-config
+data:
+  PERSISTENCE_DIR: "/data/loadshaper"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loadshaper-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadshaper
+spec:
+  template:
+    spec:
+      containers:
+      - name: loadshaper
+        envFrom:
+        - configMapRef:
+            name: loadshaper-config
+        volumeMounts:
+        - name: storage
+          mountPath: /data/loadshaper  # Must match PERSISTENCE_DIR
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: loadshaper-storage
+```
+
+### Important Notes
+
+- **Path consistency**: The `PERSISTENCE_DIR` environment variable must match the volume mount path
+- **Volume permissions**: The directory must be owned by UID/GID 1000 (LoadShaper user)
+- **Single instance**: Only one LoadShaper instance can use a given storage path
+- **Migration**: When changing storage paths, historical metrics will not be migrated automatically
 
 ## Contributing
 
@@ -839,6 +1182,54 @@ docker logs -f loadshaper | grep "nic("
 
 ### Common Issues
 
+**Container startup failures:**
+```shell
+# Check container logs for entrypoint errors
+docker logs loadshaper
+
+# Common entrypoint issues:
+# 1. "NOT a mount point" - NEW: Container now verifies persistent volume is actually mounted
+docker exec loadshaper mount | grep /var/lib/loadshaper || echo "No volume mounted - container will not start"
+# Fix: Ensure docker-compose.yaml has the volume configured:
+#   volumes:
+#     - loadshaper-metrics:/var/lib/loadshaper
+
+# 2. "Permission denied" - persistent storage mount point permissions
+docker exec loadshaper ls -ld /var/lib/loadshaper || echo "Mount point not accessible"
+# Fix for named volumes:
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+# Fix for bind mounts:
+sudo chown -R 1000:1000 ./persistent-storage/
+
+# 3. "Write test failed" - storage not writable (uses mktemp for security)
+docker exec loadshaper touch /var/lib/loadshaper/test && docker exec loadshaper rm /var/lib/loadshaper/test || echo "Storage not writable"
+
+# 4. "Database migration failed" - corrupted or incompatible database
+docker exec loadshaper rm -f /var/lib/loadshaper/metrics.db && docker restart loadshaper
+
+# 5. Verify compose configuration includes persistent volume
+docker compose config | grep -A5 volumes || echo "No volumes configured - add persistent storage"
+```
+
+**Mount Point Verification (NEW in v2.0.0):**
+```shell
+# Container now requires /var/lib/loadshaper to be a mount point
+# This prevents accidental use of container's filesystem which loses data on restart
+
+# Verify mount inside container:
+docker exec loadshaper sh -c 'stat -c "%d" /var/lib/loadshaper; stat -c "%d" /var/lib'
+# Different device IDs = properly mounted; Same IDs = NOT mounted (container won't start)
+
+# For Kubernetes users - avoid emptyDir:
+# emptyDir volumes are NOT persistent across pod restarts
+# Use PersistentVolumeClaim (PVC) instead for true persistence
+
+# Debug mount issues:
+docker inspect loadshaper | jq '.[0].Mounts'  # Show all mounts
+docker volume ls                               # List volumes
+docker volume inspect loadshaper-metrics       # Check volume details
+```
+
 **CPU not reaching target percentage:**
 - Check if `LOAD_THRESHOLD` is too low (workers pause when system load is high)
 - Verify `CPU_STOP_PCT` isn't triggering premature shutdown
@@ -851,14 +1242,20 @@ docker logs -f loadshaper | grep "nic("
 
 **Network traffic not generating:**
 - Confirm `NET_MODE=client` and `NET_PEERS` are set correctly
-- Verify peers are running iperf3 servers on the specified port
+- Verify peers are reachable on the specified port
 - Check firewall rules between instances
 - Try `NET_PROTOCOL=tcp` if UDP traffic is filtered
 
 **Database storage issues:**
 ```shell
-# Check if metrics database is working
-docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Using fallback /tmp storage"
+# Check if persistent metrics storage is working
+docker exec loadshaper ls -la /var/lib/loadshaper/ 2>/dev/null || echo "Persistent storage not mounted - container will fail"
+
+# If database corrupted, remove and restart (7-day P95 history will reset)
+docker exec loadshaper rm -f /var/lib/loadshaper/metrics.db && docker restart loadshaper
+
+# Check disk space and verify write permissions
+docker exec loadshaper df -h /var/lib/loadshaper && docker exec loadshaper touch /var/lib/loadshaper/test && docker exec loadshaper rm /var/lib/loadshaper/test
 ```
 
 **Load average causing frequent pauses:**
@@ -869,16 +1266,11 @@ LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 docker compose up -d
 
 ### Network Generator Troubleshooting
 
-**Connection timeout errors:**
+**Network connectivity issues:**
 ```shell
-# Increase TCP connection timeout if networks are slow
-TCP_CONNECTION_TIMEOUT=2.0 docker compose up -d --build
-```
-
-**IPv6 connectivity issues:**
-```shell
-# Disable IPv6 if not supported by network
-NET_IPV6_ENABLED=false docker compose up -d --build
+# Check firewall rules allow traffic on NET_PORT (default 15201)
+# Verify NET_PEERS addresses are reachable
+# For E2 shapes, ensure peers are external (not internal/localhost)
 ```
 
 **DNS resolution failures:**
@@ -889,12 +1281,12 @@ docker exec loadshaper nslookup 198.18.0.1
 NET_PEERS=203.0.113.1:15201 docker compose up -d --build
 ```
 
-**TCP connection pool issues:**
+**Network generation issues:**
 ```shell
-# Enable debug logging to see connection details
-LOG_LEVEL=DEBUG docker compose up -d --build
-# Look for "TCP connection pool" messages
-docker logs loadshaper | grep "TCP connection"
+# Check container logs for network errors
+docker logs loadshaper | grep -i network
+# Look for peer connectivity issues
+docker logs loadshaper | grep -i peer
 ```
 
 **High network CPU usage:**
@@ -920,7 +1312,6 @@ CPU_P95_SETPOINT=22.0
 MEM_TARGET_PCT=0
 NET_TARGET_PCT=22
 LOAD_THRESHOLD=0.4
-TCP_CONNECTION_TIMEOUT=1.0
 docker compose up -d --build
 ```
 
@@ -1007,20 +1398,19 @@ sys.path.append('/app')
 import loadshaper
 
 # Check database exists
-db_paths = ['/var/lib/loadshaper/metrics.db', '/tmp/loadshaper_metrics.db']
-db_path = next((p for p in db_paths if os.path.exists(p)), None)
-if not db_path:
-    print('No metrics database found')
+db_path = '/var/lib/loadshaper/metrics.db'
+if not os.path.exists(db_path):
+    print('Persistent metrics database not found - volume not mounted correctly')
     exit(1)
 
 # Check recent metrics
-tracker = loadshaper.MetricsTracker(db_path)
-stats = tracker.get_7day_stats('cpu_p95')
-print(f'CPU 95th percentile: {stats[\"p95\"]:.1f}% (need >20%)')
+storage = loadshaper.MetricsStorage()
+cpu_p95 = storage.get_percentile('cpu')
+print(f'CPU 95th percentile: {cpu_p95:.1f}% (need >20%)' if cpu_p95 else 'CPU P95 not available')
 
 try:
-    net_stats = tracker.get_7day_stats('network_current')
-    print(f'Network current: {net_stats[\"current\"]:.1f}% (need >20%)')
+    print(f'Network samples available: {storage.get_sample_count()}')
+    print('Check /metrics endpoint for current utilization levels')
 except:
     print('Network metrics not available')
 
@@ -1028,8 +1418,8 @@ if loadshaper.is_e2_shape():
     print('E2 shape: CPU and network must be >20%')
 else:
     try:
-        mem_stats = tracker.get_7day_stats('memory_current')
-        print(f'Memory current: {mem_stats[\"current\"]:.1f}% (need >20% for A1)')
+        print('Memory tracking active for A1 shapes')
+        print('Check /metrics endpoint for current memory utilization')
     except:
         print('Memory metrics not available')
     print('A1 shape: CPU, network, AND memory must all be >20%')

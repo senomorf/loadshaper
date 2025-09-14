@@ -1,0 +1,6 @@
+# LoadShaper runtime dependencies
+#
+# LoadShaper is designed to use Python standard library only
+# This ensures minimal attack surface and easy deployment
+#
+# No runtime dependencies required

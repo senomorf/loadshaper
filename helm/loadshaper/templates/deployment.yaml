@@ -76,7 +76,7 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - "test -f /var/lib/loadshaper/metrics.db || test -f /tmp/loadshaper_metrics.db"
+                - "test -f /var/lib/loadshaper/metrics.db"
             {{- end }}
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
@@ -117,9 +117,6 @@ spec:
               subPath: class/net
               readOnly: true
             {{- end }}
-            # Add tmpfs for any temporary files since root filesystem is read-only
-            - name: tmp
-              mountPath: /tmp
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -129,13 +126,11 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (include "loadshaper.fullname" .) }}
           {{- else }}
+          # WARNING: emptyDir storage will cause container to fail startup validation
+          # LoadShaper requires persistent storage for 7-day P95 CPU calculations
+          # Set persistence.enabled=true to enable proper Oracle compliance
           emptyDir: {}
           {{- end }}
-        # tmpfs volume for temporary files (read-only root filesystem)
-        - name: tmp
-          emptyDir:
-            medium: Memory
-            sizeLimit: 64Mi
         {{- if .Values.security.procHostMountEnabled }}
         - name: proc
           hostPath:

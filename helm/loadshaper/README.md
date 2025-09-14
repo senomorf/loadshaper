@@ -15,6 +15,7 @@ This Helm chart deploys `loadshaper` on a Kubernetes cluster. `loadshaper` is de
 - Kubernetes 1.19+
 - Helm 3.0+
 - Oracle Cloud Always Free compute instances (E2.1.Micro or A1.Flex)
+- **CRITICAL**: Persistent storage volume (LoadShaper will NOT start without it)
 
 ## Installation
 
@@ -71,8 +72,8 @@ The chart includes shape-specific values files optimized for Oracle Cloud comput
 | `config.MEM_TARGET_PCT` | Target memory utilization percentage | `"60.0"` |
 | `config.NET_TARGET_PCT` | Target network utilization percentage | `"25.0"` |
 | `config.NET_PEERS` | Comma-separated list of peer IPs for network load | `""` |
-| `persistence.enabled` | Enable persistent storage for metrics | `true` |
-| `persistence.size` | Size of persistent volume | `1Gi` |
+| `persistence.enabled` | **MANDATORY** - Must be `true` for LoadShaper to start | `true` |
+| `persistence.size` | Size of persistent volume for 7-day metrics | `1Gi` |
 
 ### Oracle Cloud Shape Optimization
 
@@ -126,11 +127,11 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-# Storage for 7-day metrics
+# Storage for 7-day metrics (MANDATORY - container will fail without persistent storage)
 persistence:
-  enabled: true
+  enabled: true  # MUST be true - LoadShaper requires persistent storage for Oracle compliance
   size: 1Gi
-  storageClass: ""
+  storageClass: ""  # Leave empty for default storage class
 
 # Monitoring integration
 serviceMonitor:
@@ -144,7 +145,7 @@ networkPolicy:
   enabled: false
   
 podSecurityContext:
-  fsGroup: 2000
+  fsGroup: 1000
   
 securityContext:
   runAsNonRoot: true
@@ -220,7 +221,7 @@ securityContext:
     type: RuntimeDefault          # Default seccomp profile
 
 podSecurityContext:
-  fsGroup: 2000
+  fsGroup: 1000
   fsGroupChangePolicy: OnRootMismatch  # Efficient volume permissions
 
 serviceAccount:

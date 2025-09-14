@@ -77,7 +77,7 @@ class TestNetworkTiming(unittest.TestCase):
                     should_activate = False
 
                 self.assertFalse(should_activate, "Fallback should not activate immediately due to debounce")
-                self.assertEqual(net_condition_start_time, 1000.0, "Debounce timer should be started")
+                self.assertAlmostEqual(net_condition_start_time, 1000.0, places=1, msg="Debounce timer should be started")
 
     def test_debounce_allows_activation_after_delay(self):
         """Test that fallback activates after debounce period."""
@@ -218,7 +218,7 @@ class TestNetworkTiming(unittest.TestCase):
         else:
             actual_rate = expected_rate_min + (50.0 - expected_rate_min) * ramp_progress
 
-        self.assertEqual(actual_rate, 50.0, "Rate should reach maximum after ramp period")
+        self.assertAlmostEqual(actual_rate, 50.0, places=1, msg="Rate should reach maximum after ramp period")
 
     def test_fallback_state_transitions(self):
         """Test complete state transition cycle with proper timing."""

@@ -4,6 +4,7 @@ import time
 import tempfile
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -28,12 +29,12 @@ class TestMetricsStorage:
         assert storage.db_path == temp_db
         assert os.path.exists(temp_db)
 
-    def test_init_fallback_to_tmp_on_permission_error(self):
-        """Test that MetricsStorage falls back to /tmp when /var/lib is not writable."""
+    def test_init_fails_on_permission_error(self):
+        """Test that MetricsStorage fails when path is not writable (no fallback)."""
         # Try to create storage with a non-existent/non-writable path
-        storage = MetricsStorage("/non/existent/path/metrics.db")
-        # Should fallback to /tmp
-        assert storage.db_path == "/tmp/loadshaper_metrics.db"
+        with pytest.raises(FileNotFoundError) as exc_info:
+            MetricsStorage("/non/existent/path/metrics.db")
+        assert "A persistent volume must be mounted" in str(exc_info.value)
 
     def test_store_sample_basic(self, temp_db):
         """Test basic sample storage functionality."""
@@ -219,31 +220,25 @@ class TestMetricsStorage:
     def test_database_init_failure_handling(self):
         """Test handling of database initialization failures."""
         # Try to create storage with invalid path that will fail
-        storage = MetricsStorage("/dev/null/invalid")
-        
-        # Should fallback to /tmp successfully
-        assert storage.db_path == "/tmp/loadshaper_metrics.db"
-        
-        # Operations should work with fallback
-        assert storage.store_sample(50.0, 70.0, 15.5, 0.8) is True
-        assert storage.get_percentile('cpu') is not None
+        with pytest.raises(FileNotFoundError) as exc_info:
+            MetricsStorage("/dev/null/invalid")
+        assert "A persistent volume must be mounted" in str(exc_info.value)
         
     def test_complete_database_failure_handling(self):
-        """Test handling when even fallback fails."""
-        # Mock the sqlite3.connect to always fail
-        import unittest.mock
-        
-        with unittest.mock.patch('sqlite3.connect', side_effect=Exception("Mock database failure")):
-            storage = MetricsStorage("/some/path")
-            
-            # Database should be disabled when all attempts fail
-            assert storage.db_path is None
-            
-            # Operations should gracefully fail
-            assert storage.store_sample(50.0, 70.0, 15.5, 0.8) is False
-            assert storage.get_percentile('cpu') is None
-            assert storage.cleanup_old() == 0
-            assert storage.get_sample_count() == 0
+        """Test handling when database creation fails completely."""
+        # Try with non-writable directory to trigger file not found error first
+        with pytest.raises(FileNotFoundError):
+            MetricsStorage("/some/path")
+
+        # For corruption/access issues, it should raise RuntimeError during _init_db
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import unittest.mock
+
+            # Mock only the database creation to fail, not directory access
+            with unittest.mock.patch('sqlite3.connect', side_effect=Exception("Mock database failure")):
+                with pytest.raises(RuntimeError) as exc_info:
+                    MetricsStorage(os.path.join(tmpdir, "test.db"))
+                assert "Cannot create metrics database" in str(exc_info.value)
 
     def test_percentile_edge_cases(self, temp_db):
         """Test percentile calculation edge cases."""
@@ -285,3 +280,16 @@ class TestMetricsStorage:
         # Metric with NULL should return None
         mem_p95 = storage.get_percentile('mem')
         assert mem_p95 is None
+
+    def test_default_path_requires_persistent_directory(self):
+        """Test that MetricsStorage() with default path requires persistent directory."""
+        # Mock os.path.isdir to return False for the persistent directory
+        with patch('os.path.isdir') as mock_isdir:
+            mock_isdir.return_value = False
+
+            with pytest.raises(FileNotFoundError) as exc_info:
+                MetricsStorage()  # Use default path
+
+            # Should check for the persistent directory
+            mock_isdir.assert_called_with('/var/lib/loadshaper')
+            assert "A persistent volume must be mounted" in str(exc_info.value)

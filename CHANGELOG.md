@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **📖 Related Documentation:** [README.md](README.md) | [CONTRIBUTING.md](CONTRIBUTING.md) | [AGENTS.md](AGENTS.md)
 
+## [Unreleased] - 2025-01-15
+
+### ⚠️ BREAKING CHANGES - CRITICAL FIX
+- **Persistent volume storage now REQUIRED** - Docker Compose deployments must include persistent volume or container will not start
+- **Container now runs as non-root user** (uid/gid 1000) for security
+- **No fallback to ephemeral storage** - LoadShaper requires persistent storage for Oracle compliance
+
+### Fixed
+- **CRITICAL**: Added persistent volume storage for metrics database in Docker Compose ([#74](https://github.com/senomorf/loadshaper/issues/74))
+- **Metrics database persistence**: 7-day P95 history now preserved across container restarts
+- **Oracle compliance**: P95 calculations maintain complete history required for reclamation detection
+- **Container security**: Application now runs as non-root user (loadshaper:1000)
+- **Thread safety**: Ring buffer saves now use PID+thread temp files to prevent race conditions ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Portable mount detection**: Replaced non-portable `stat -c %d` with Python-based device detection for Alpine/busybox compatibility ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Code quality**: Fixed trailing comma inconsistency in network fallback validation list
+- **Code formatting**: Corrected comment alignment in network fallback configuration
+- **Database corruption**: Added detection and automatic recovery for SQLite corruption
+- **Configuration errors**: Enhanced validation prevents invalid parameter combinations
+
+### Added
+- **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
+- **Health endpoint enhancement**: Added `persistence_storage` status field (removed `database_path` for security)
+- **Clear error messages**: Detailed guidance when persistent volume configuration is missing
+- **Ring buffer batching**: Configurable batch size (`CPU_P95_RING_BUFFER_BATCH_SIZE`) reduces I/O overhead
+- **Memory usage monitoring**: Tracks P95 cache memory consumption with detailed logging
+- **Database size monitoring**: Monitors metrics database size with growth projections
+- **Configuration validation**: Comprehensive cross-parameter consistency checks at startup
+- **Database corruption handling**: Automatic backup and recovery for corrupted metrics database
+- **ENOSPC degraded mode tests**: Comprehensive test coverage for disk full scenarios and degraded mode behavior ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Network fallback documentation**: Enhanced state machine documentation with named timing constants and clear transitions ([#87](https://github.com/senomorf/loadshaper/pull/87))
+- **Enhanced documentation**: Detailed P95 controller state machine documentation
+- **Migration guide**: Breaking changes philosophy and deployment requirements
+- **Network fallback examples**: Five detailed configuration examples for different use cases
+
+### Changed
+- **BREAKING**: Docker Compose now requires `loadshaper-metrics` named volume
+- **BREAKING**: Container exits if `/var/lib/loadshaper` is not writable
+- **BREAKING**: Removed all fallback logic to `/tmp` storage paths
+- **Configuration**: Default `NET_MIN_RATE_MBIT` changed from 0 to 1 Mbps to ensure minimum network activity
+- **Dockerfile**: Added non-root user setup and entrypoint script
+- **Health checks**: Now validate persistence status explicitly
+- **Performance**: Ring buffer state saves batched to reduce I/O frequency (60s → 600s default)
+- **Robustness**: Database corruption detection runs on startup and during operations
+- **Test patterns**: Updated ring buffer batching tests to handle new thread-safe temp file naming conventions ([#87](https://github.com/senomorf/loadshaper/pull/87))
+
+### Migration Required
+Existing Docker Compose users must update their configuration:
+
+```yaml
+services:
+  loadshaper:
+    volumes:
+      - loadshaper-metrics:/var/lib/loadshaper
+      - ./config-templates:/app/config-templates:ro
+
+volumes:
+  loadshaper-metrics:
+    driver: local
+```
+
 ## [3.0.0] - P95 CPU Control Implementation (#73)
 
 ### ⚠️ BREAKING CHANGES
@@ -102,7 +163,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **iperf3 dependency**: Completely eliminated from codebase and Docker images
 - **iperf3 service**: Removed from Docker Compose configuration
 - **Legacy memory calculation**: Removed support for kernels without MemAvailable
-- **DEBUG_MEM_METRICS**: Removed debug environment variable and dual metric display
 
 ### Fixed
 - **Network fallback logic**: Corrected A1 shape logic (AND instead of OR for risk conditions)
@@ -152,7 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Resource detection**: More accurate network interface speed detection
 
 ### Technical Details
-- Database location: `/var/lib/loadshaper/metrics.db` (primary) or `/tmp/loadshaper_metrics.db` (fallback)
+- Database location: `/var/lib/loadshaper/metrics.db` (primary) or `/tmp/loadshaper_metrics.db` (fallback - removed in later versions)
 - Sample frequency: Every 5 seconds (≈120,960 samples per week)
 - Database size: 10-20MB for 7 days of data
 - Default load thresholds: 0.6 (pause) / 0.4 (resume)

@@ -9,12 +9,12 @@
 
 ## Architecture Overview
 
-`loadshaper` is designed as a single-process monitoring and load generation system with clear separation of concerns:
+`loadshaper` is designed as a single-service monitoring and load generation system with internal worker processes and clear separation of concerns:
 
 ### Core Components
 - **Metric Collection**: System-level monitoring (CPU, memory, network, load average)
 - **Storage Layer**: SQLite-based 7-day rolling metrics with CPU 95th percentile calculations
-- **Control Logic**: PID-style controllers for each resource type with hysteresis
+- **Control Logic**: P95 CPU controller with state machine, memory nurse thread, and network fallback with hysteresis
 - **Load Workers**: Low-priority background processes for resource consumption
 - **Safety Systems**: Load average monitoring and automatic yielding to real workloads
 
@@ -34,11 +34,47 @@
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
+### Security Architecture
+
+LoadShaper implements **strict rootless container security** throughout:
+
+#### Container Security Model
+- **Never runs as root**: Container executes as user `loadshaper` (UID/GID 1000)
+- **No privilege escalation**: Entrypoint validation fails immediately without attempting automatic fixes
+- **Volume permissions**: User responsibility to configure persistent storage permissions BEFORE deployment
+- **Least-privilege principle**: Minimal attack surface with no unnecessary capabilities
+
+#### Storage Security
+- **Configurable paths**: `PERSISTENCE_DIR` environment variable supports custom storage locations
+- **Permission validation**: Pre-flight checks ensure write access without granting it
+- **No fallback paths**: Eliminates `/tmp` fallback that could mask permission issues
+- **Fail-fast validation**: Container exits immediately if storage requirements not met
+
+#### Why Rootless?
+- **Container breakout prevention**: Non-root execution prevents privilege escalation attacks
+- **Host protection**: Cannot modify host system files or permissions
+- **Compliance ready**: Compatible with security-conscious environments (OpenShift, hardened Kubernetes)
+- **Audit friendly**: Clear security posture with no ambiguous privilege usage
+
+#### Required Setup
+```bash
+# Docker named volumes (recommended)
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+
+# Kubernetes security context
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+```
+
 ### Design Principles
 - **Unobtrusive**: Always yields to legitimate workloads (nice 19 priority)
 - **Adaptive**: Responds to system load and Oracle's reclamation criteria
-- **Resilient**: Handles storage failures, network issues, and system restarts
+- **Resilient**: Handles storage failures, network issues, database corruption, and system restarts
 - **Observable**: Rich telemetry for monitoring and debugging
+- **Self-validating**: Comprehensive configuration validation prevents operational issues
+- **Security-first**: Rootless container execution with no privilege escalation or automatic permission fixes
 
 ### P95 CPU Controller Technical Details
 
@@ -69,7 +105,17 @@ else:
     intensity_decision = 0  # Normal intensity slot
 ```
 
-This approach ensures precise P95 positioning while maintaining Oracle compliance and system stability.
+#### Performance Optimizations
+- **Ring buffer batching**: `CPU_P95_RING_BUFFER_BATCH_SIZE` (default: 10) batches state saves to reduce I/O frequency
+- **Memory monitoring**: Tracks P95 cache memory usage with detailed logging for optimization
+- **Database monitoring**: Monitors SQLite database size and growth patterns for capacity planning
+
+#### Reliability Features
+- **Configuration validation**: Cross-parameter consistency checks prevent invalid configurations
+- **Database corruption detection**: PRAGMA quick_check with automatic backup and recovery
+- **Graceful shutdown**: Ring buffer state saved on shutdown to prevent data loss
+
+This approach ensures precise P95 positioning while maintaining Oracle compliance, system stability, and operational reliability.
 
 ### Network Fallback Controller Technical Details
 
@@ -99,19 +145,18 @@ def should_activate(self, is_e2: bool, cpu_p95: float, net_avg: float, mem_avg: 
 #### Anti-Oscillation Features
 - **Debounce timing**: `NET_FALLBACK_DEBOUNCE_SEC` prevents rapid state changes
 - **Minimum on/off periods**: Ensures stable activation cycles
-- **Gradual ramp-up**: `NET_FALLBACK_RAMP_SEC` for smooth rate transitions
 - **EMA-based rate control**: Exponential moving average for stable network generation
 
 #### Implementation Benefits
 - **Oracle compliance**: Uses simple thresholds (not P95) for network measurements matching Oracle's method
 - **Minimal impact**: Only generates traffic when multiple metrics simultaneously approach danger
-- **Resource efficient**: Native Python UDP generation replaces external iperf3 dependency
+- **Resource efficient**: Native Python socket-based network generation
 - **Shape optimized**: Different activation logic for E2 vs A1 Oracle reclamation rules
 
 ## Project Structure & Module Organization
-- `loadshaper.py` — single-process controller that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
-- `Dockerfile` — Python 3 Alpine image with `iperf3`; runs `loadshaper.py`.
-- `compose.yaml` — two services: `loadshaper` (client/loader) and `iperf3` (receiver) with configurable env vars; mounts config templates.
+- `loadshaper.py` — single-service controller with internal worker processes that shapes CPU, RAM, and NIC load; reads config from environment; prints periodic telemetry. CPU stress must run at the lowest OS priority (`nice` 19) and yield quickly.
+- `Dockerfile` — Python 3 Alpine image with minimal dependencies; runs `loadshaper.py`.
+- `compose.yaml` — single service: `loadshaper` (client/loader) with configurable env vars; mounts config templates and persistent storage.
 - `README.md`, `LICENSE` — usage and licensing.
 - `CLAUDE.md` — additional guidance for Anthropic contributors; keep in sync with this file.
 - `config-templates/` — Oracle shape-specific configuration templates (e2-1-micro.env, e2-2-micro.env, a1-flex-1.env, a1-flex-4.env) with optimized settings for each shape.
@@ -128,6 +173,7 @@ The system automatically detects Oracle Cloud shapes via:
 - Tail logs: `docker logs -f loadshaper`
 - Local run (Linux only, needs /proc): `python -u loadshaper.py`
 - Override settings at launch, e.g.: `CPU_P95_SETPOINT=30 NET_PEERS=10.0.0.2,10.0.0.3 docker compose up -d`
+- Custom storage location: `PERSISTENCE_DIR=/custom/path docker compose up -d`
 - Run tests: `python -m pytest -q`
 
 **🔗 See also:** [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development setup and testing requirements.
@@ -135,7 +181,7 @@ The system automatically detects Oracle Cloud shapes via:
 ## Coding Style & Naming Conventions
 - Language: Python 3; 4‑space indentation; PEP 8 style.
 - Names: functions/variables `snake_case`; constants `UPPER_SNAKE_CASE` (matches existing env-backed config).
-- Keep dependencies minimal (standard library + `iperf3` binary). Avoid adding Python deps unless essential.
+- Keep dependencies minimal (standard library only). Avoid adding Python deps unless essential.
 - Prefer small, testable helpers; keep I/O at edges; maintain clear separation between sensing, control, and workers.
 
 ## Testing Guidelines
@@ -145,10 +191,38 @@ The system automatically detects Oracle Cloud shapes via:
 - Add tests for any new utility functions or control logic.
 - Test edge cases (negative values, missing files, network failures).
 
+### Performance Feature Testing
+**Ring Buffer Batching**: Test I/O optimization with different `CPU_P95_RING_BUFFER_BATCH_SIZE` values:
+- Verify batched saves reduce file I/O frequency
+- Test performance impact of different batch sizes (1, 10, 100)
+- Validate state persistence accuracy with batching
+- Test updated mock patterns handle new thread-safe temp file naming (`{path}.{pid}.{thread_id}.tmp`)
+
+**Thread Safety**: Test race condition prevention in ring buffer operations:
+- Verify PID+thread temp files prevent concurrent write conflicts
+- Test proper locking during ring buffer state saves
+- Validate atomic file operations across multiple threads
+
+**ENOSPC Degraded Mode**: Test comprehensive disk full scenario handling:
+- Test ENOSPC error detection triggers degraded mode properly
+- Verify degraded mode skips persistence operations to prevent crash loops
+- Test manual recovery from degraded mode works correctly
+
+**Configuration Validation**: Test cross-parameter consistency checks:
+- Verify invalid combinations are detected (e.g., CPU_P95_TARGET_MIN > CPU_P95_TARGET_MAX)
+- Test warning messages for suboptimal configurations
+- Validate Oracle shape-specific configuration constraints
+- Test configuration validation timing occurs after runtime initialization
+
+**Database Corruption Handling**: Test detection and recovery mechanisms:
+- Simulate database corruption and verify detection
+- Test automatic backup creation before recovery attempts
+- Validate successful recovery from backup files
+
 ### Integration Testing
 - Validate behavior by running the stack and observing `[loadshaper]` telemetry.
 - CPU/RAM only: `NET_MODE=off docker compose up -d`.
-- Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` and ensure peers run an iperf3 server on `NET_PORT`.
+- Network shaping is a fallback; set peers (comma-separated IPs) via `NET_PEERS` to establish TCP connections on `NET_PORT`.
 
 ### Memory Occupation Testing
 **For A1.Flex shapes (memory reclamation applies):**
@@ -265,8 +339,9 @@ docker compose up -d --build
 sleep 30
 docker logs loadshaper | tail -10
 
-# 3. Verify metrics collection
-docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" 2>/dev/null || echo "Using fallback storage"
+# 3. Verify metrics collection and mount detection
+docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" 2>/dev/null || echo "Persistent storage not mounted - container will fail"
+docker logs loadshaper | grep -E "(persistence|mount|device)" | head -5  # Check mount detection logs
 
 # 4. Test different load scenarios
 LOAD_THRESHOLD=0.1 docker compose up -d  # Should pause quickly

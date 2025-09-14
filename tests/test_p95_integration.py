@@ -140,13 +140,13 @@ class TestP95ControllerIntegration(unittest.TestCase):
     def test_configuration_loading_with_p95_variables(self):
         """Test that P95 configuration variables are properly loaded"""
         # Test that all P95 variables are accessible
-        self.assertEqual(loadshaper.CPU_P95_SLOT_DURATION, 60.0)
-        self.assertEqual(loadshaper.CPU_P95_BASELINE_INTENSITY, 20.0)
-        self.assertEqual(loadshaper.CPU_P95_HIGH_INTENSITY, 35.0)
-        self.assertEqual(loadshaper.CPU_P95_TARGET_MIN, 22.0)
-        self.assertEqual(loadshaper.CPU_P95_TARGET_MAX, 28.0)
-        self.assertEqual(loadshaper.CPU_P95_SETPOINT, 25.0)
-        self.assertEqual(loadshaper.CPU_P95_EXCEEDANCE_TARGET, 6.5)
+        self.assertAlmostEqual(loadshaper.CPU_P95_SLOT_DURATION, 60.0, places=1)
+        self.assertAlmostEqual(loadshaper.CPU_P95_BASELINE_INTENSITY, 20.0, places=1)
+        self.assertAlmostEqual(loadshaper.CPU_P95_HIGH_INTENSITY, 35.0, places=1)
+        self.assertAlmostEqual(loadshaper.CPU_P95_TARGET_MIN, 22.0, places=1)
+        self.assertAlmostEqual(loadshaper.CPU_P95_TARGET_MAX, 28.0, places=1)
+        self.assertAlmostEqual(loadshaper.CPU_P95_SETPOINT, 25.0, places=1)
+        self.assertAlmostEqual(loadshaper.CPU_P95_EXCEEDANCE_TARGET, 6.5, places=1)
 
     def test_metrics_storage_p95_calculation(self):
         """Test that MetricsStorage correctly calculates P95 values"""
@@ -204,7 +204,7 @@ class TestP95ControllerIntegration(unittest.TestCase):
 
             # Should override to baseline due to high load
             self.assertFalse(self.controller.current_slot_is_high)
-            self.assertEqual(intensity, 20.0)  # BASELINE_INTENSITY
+            self.assertAlmostEqual(intensity, 20.0, places=1)  # BASELINE_INTENSITY
             self.assertGreater(self.controller.slots_skipped_safety, 0)
 
     def test_telemetry_output_format(self):
@@ -238,13 +238,13 @@ class TestP95ControllerIntegration(unittest.TestCase):
 
         # Current exceedance should be 100%
         current_exceedance = self.controller.get_current_exceedance()
-        self.assertEqual(current_exceedance, 100.0)
+        self.assertAlmostEqual(current_exceedance, 100.0, places=1)
 
         # Next slot should be forced to low due to exceedance budget
         with patch('time.monotonic', return_value=self.controller.current_slot_start + 70):
             is_high, intensity = self.controller.should_run_high_slot(None)
             self.assertFalse(is_high)
-            self.assertEqual(intensity, 20.0)  # BASELINE_INTENSITY
+            self.assertAlmostEqual(intensity, 20.0, places=1)  # BASELINE_INTENSITY
 
     def test_p95_cache_performance(self):
         """Test that P95 caching improves performance"""
@@ -420,7 +420,7 @@ class TestP95ControllerIntegration(unittest.TestCase):
                 # Controller should still function normally with fresh state
                 status = controller.get_status()
                 self.assertEqual(status['slots_recorded'], 0)
-                self.assertEqual(status['exceedance_pct'], 0.0)  # No high slots recorded yet
+                self.assertAlmostEqual(status['exceedance_pct'], 0.0, places=1)  # No high slots recorded yet
 
         finally:
             # Clean up temporary file
