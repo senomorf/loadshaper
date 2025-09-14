@@ -196,11 +196,23 @@ The system automatically detects Oracle Cloud shapes via:
 - Verify batched saves reduce file I/O frequency
 - Test performance impact of different batch sizes (1, 10, 100)
 - Validate state persistence accuracy with batching
+- Test updated mock patterns handle new thread-safe temp file naming (`{path}.{pid}.{thread_id}.tmp`)
+
+**Thread Safety**: Test race condition prevention in ring buffer operations:
+- Verify PID+thread temp files prevent concurrent write conflicts
+- Test proper locking during ring buffer state saves
+- Validate atomic file operations across multiple threads
+
+**ENOSPC Degraded Mode**: Test comprehensive disk full scenario handling:
+- Test ENOSPC error detection triggers degraded mode properly
+- Verify degraded mode skips persistence operations to prevent crash loops
+- Test manual recovery from degraded mode works correctly
 
 **Configuration Validation**: Test cross-parameter consistency checks:
 - Verify invalid combinations are detected (e.g., CPU_P95_TARGET_MIN > CPU_P95_TARGET_MAX)
 - Test warning messages for suboptimal configurations
 - Validate Oracle shape-specific configuration constraints
+- Test configuration validation timing occurs after runtime initialization
 
 **Database Corruption Handling**: Test detection and recovery mechanisms:
 - Simulate database corruption and verify detection
@@ -327,8 +339,9 @@ docker compose up -d --build
 sleep 30
 docker logs loadshaper | tail -10
 
-# 3. Verify metrics collection
+# 3. Verify metrics collection and mount detection
 docker exec loadshaper sqlite3 /var/lib/loadshaper/metrics.db ".tables" 2>/dev/null || echo "Persistent storage not mounted - container will fail"
+docker logs loadshaper | grep -E "(persistence|mount|device)" | head -5  # Check mount detection logs
 
 # 4. Test different load scenarios
 LOAD_THRESHOLD=0.1 docker compose up -d  # Should pause quickly
