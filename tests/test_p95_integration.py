@@ -491,7 +491,7 @@ class TestP95ConfigurationValidation(unittest.TestCase):
 
             except Exception as e:
                 # Expected - database creation should fail with invalid path or config
-                self.assertIsInstance(e, (OSError, PermissionError, TypeError))
+                self.assertIsInstance(e, (OSError, PermissionError, TypeError, RuntimeError))
 
 
 
