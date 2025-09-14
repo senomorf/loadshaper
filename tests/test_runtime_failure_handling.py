@@ -198,6 +198,9 @@ class TestP95ControllerFailureHandling:
 
     def test_p95_controller_stale_data_handling(self):
         """Test P95 controller behavior when data becomes stale."""
+        # Initialize configuration to prevent None errors
+        loadshaper._initialize_config()
+
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = os.path.join(temp_dir, "test_metrics.db")
             storage = loadshaper.MetricsStorage(db_path)
@@ -219,10 +222,11 @@ class TestP95ControllerFailureHandling:
                 cached_p95 = controller.get_cpu_p95()
                 assert cached_p95 == initial_p95
 
-                # After cache expiry, should return None
+                # After cache expiry, improved fallback logic should still return cached value
+                # instead of None (better resilience during database failures)
                 controller._p95_cache_time = time.monotonic() - 400  # Force cache expiry
                 stale_p95 = controller.get_cpu_p95()
-                assert stale_p95 is None
+                assert stale_p95 == initial_p95  # Should return cached value, not None
 
                 # Controller should handle None gracefully in state updates
                 old_state = controller.state
@@ -232,6 +236,9 @@ class TestP95ControllerFailureHandling:
 
     def test_controller_ring_buffer_persistence_failure(self):
         """Test controller behavior when ring buffer persistence fails."""
+        # Initialize configuration to prevent None errors
+        loadshaper._initialize_config()
+
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = os.path.join(temp_dir, "test_metrics.db")
             storage = loadshaper.MetricsStorage(db_path)
