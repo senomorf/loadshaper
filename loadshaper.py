@@ -843,8 +843,6 @@ def _validate_network_fallback_config():
     # Use globals() to access all network fallback variables dynamically
     global_vars = globals()
 
-    # --- Basic value validation (from first implementation) ---
-
     # Validate network fallback percentage values (0-100)
     for var_name, default_value in [
         ("NET_FALLBACK_START_PCT", 19.0),
@@ -876,8 +874,6 @@ def _validate_network_fallback_config():
         if global_vars["NET_ACTIVATION"] not in valid_modes:
             logger.warning(f"Invalid NET_ACTIVATION='{global_vars['NET_ACTIVATION']}' (must be one of {valid_modes}), using 'adaptive'")
             global_vars["NET_ACTIVATION"] = 'adaptive'
-
-    # --- Logical relationship validation (from second implementation) ---
 
     # Use direct global access for clarity in logical checks
     global NET_FALLBACK_START_PCT, NET_FALLBACK_STOP_PCT, NET_FALLBACK_RISK_THRESHOLD_PCT
@@ -958,35 +954,9 @@ def _validate_p95_config():
 # ---------------------------
 # Env / config
 # ---------------------------
-def getenv_float(name, default):
-    """Get float environment variable with fallback to default.
-
-    Args:
-        name: Environment variable name
-        default: Default value if variable not set or invalid
-
-    Returns:
-        float: Environment variable value or default
-    """
-    try:
-        return float(os.getenv(name, default))
-    except Exception:
-        return float(default)
-
-def getenv_int(name, default):
-    """Get integer environment variable with fallback to default.
-
-    Args:
-        name: Environment variable name
-        default: Default value if variable not set or invalid
-
-    Returns:
-        int: Environment variable value or default
-    """
-    try:
-        return int(os.getenv(name, default))
-    except Exception:
-        return int(default)
+# Note: Legacy getenv_float and getenv_int functions removed.
+# All configuration now uses getenv_*_with_template functions for consistency,
+# except health endpoint configuration which is parsed directly.
 
 # Configuration variables (initialized lazily to avoid issues during testing)
 _config_initialized = False
@@ -1275,7 +1245,14 @@ def _initialize_config():
     _config_initialized = True
 
 # Health check server configuration
-HEALTH_PORT       = getenv_int("HEALTH_PORT", 8080)
+# Health endpoint doesn't use template system, parse directly
+_health_port_str = os.getenv("HEALTH_PORT", "8080").strip()
+try:
+    HEALTH_PORT = int(_health_port_str)
+except ValueError:
+    HEALTH_PORT = 8080
+    logger.warning(f"Invalid HEALTH_PORT value: {_health_port_str}, using default: 8080")
+
 HEALTH_HOST       = os.getenv("HEALTH_HOST", "127.0.0.1").strip()
 HEALTH_ENABLED    = _parse_boolean(os.getenv("HEALTH_ENABLED", "true"))
 
@@ -4001,7 +3978,7 @@ def net_client_thread(stop_evt: threading.Event, paused_fn, rate_mbit_val: Value
     """
     global NET_MODE, NET_MIN_RATE, NET_MAX_RATE, NET_PROTOCOL, NET_TTL, NET_PACKET_SIZE, NET_PORT
     global NET_REQUIRE_EXTERNAL, NET_VALIDATE_STARTUP, NET_STATE_DEBOUNCE_SEC, NET_STATE_MIN_ON_SEC
-    global NET_STATE_MIN_OFF_SEC, NET_STATE_RAMP_UP_SEC
+    global NET_STATE_MIN_OFF_SEC
 
     if NET_MODE != "client":
         return
