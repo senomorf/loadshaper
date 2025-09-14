@@ -88,8 +88,8 @@ class TestStressFailureModes(unittest.TestCase):
         stop_event = threading.Event()
 
         # Initialize loadshaper's memory control variables and config
-        if not hasattr(loadshaper, 'paused'):
-            loadshaper.paused = Value('f', 0.0)
+        # Always set paused as a Value object to avoid AttributeError in thread
+        loadshaper.paused = Value('f', 0.0)
         if not hasattr(loadshaper, 'mem_lock'):
             loadshaper.mem_lock = threading.Lock()
         if not hasattr(loadshaper, 'mem_block'):

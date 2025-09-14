@@ -54,7 +54,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
             storage.store_sample(25.0 + i, 50.0, 30.0, 1.0)
             time.sleep(0.01)  # Small delay for different timestamps
 
-        storage.conn.close()
+        # MetricsStorage uses connection pooling - no need to close explicitly
         return storage
 
     def create_corrupted_database(self):
@@ -85,7 +85,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
         is_corrupted = storage.detect_database_corruption()
 
         self.assertFalse(is_corrupted, "Healthy database should not be detected as corrupted")
-        storage.conn.close()
+        # MetricsStorage uses connection pooling - no explicit close needed
 
     def test_detect_corrupted_database(self):
         """Test corruption detection on corrupted database."""
@@ -96,7 +96,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
             # Should either fail to initialize or detect corruption
             is_corrupted = storage.detect_database_corruption()
             self.assertTrue(is_corrupted, "Corrupted database should be detected")
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError):
             # Expected - corrupted database should cause initialization to fail
             pass
@@ -124,7 +124,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
                 self.assertIn(b'This is not a valid SQLite', backup_content,
                              "Backup should contain original corrupted content")
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError):
             # Expected for severely corrupted databases
             pass
@@ -147,7 +147,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
                 stats = storage.get_percentile('cpu')
                 self.assertIsNotNone(stats, "Recovered database should be functional")
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError):
             # Some corruption scenarios may not be recoverable
             pass
@@ -160,7 +160,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
         # Verify it works initially
         stats = storage.get_percentile('cpu')
         self.assertIsNotNone(stats)
-        storage.conn.close()
+        # MetricsStorage uses connection pooling - no explicit close needed
 
         # Corrupt the database
         self.create_partially_corrupted_database()
@@ -186,7 +186,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
                     stats = storage.get_percentile('cpu')
                     self.assertIsNotNone(stats, "Database should be functional after recovery")
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError) as e:
             # Severe corruption may not be recoverable
             pass
@@ -214,7 +214,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
                     self.assertRegex(backup_file, r'test_metrics_backup_\d{8}_\d{6}\.db',
                                    "Backup filename should include timestamp")
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError):
             pass
 
@@ -230,7 +230,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
             stats = storage.get_percentile('cpu')
             self.assertIsNotNone(stats, "New database should be functional")
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except Exception as e:
             self.fail(f"Missing database should be handled gracefully, not raise: {e}")
 
@@ -251,7 +251,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
         self.assertLess(detection_time, 0.1,
                        f"Corruption detection too slow: {detection_time:.3f}s")
 
-        storage.conn.close()
+        # MetricsStorage uses connection pooling - no explicit close needed
 
     def test_error_handling_during_backup(self):
         """Test error handling when backup creation fails."""
@@ -267,7 +267,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
                 # Should handle backup failure gracefully
                 self.assertFalse(backup_created, "Backup should fail with mocked error")
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError):
             pass
 
@@ -285,7 +285,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
                 # Should handle recovery failure gracefully
                 self.assertFalse(recovery_successful, "Recovery should fail with mocked error")
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError):
             pass
 
@@ -306,7 +306,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
 
                 # Should log corruption detection or recovery attempts
                 # Note: Exact logging depends on implementation
-                storage.conn.close()
+                # MetricsStorage uses connection pooling - no explicit close needed
 
         except (sqlite3.DatabaseError, RuntimeError):
             # Expected for corrupted databases
@@ -320,7 +320,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
         # Add specific test data
         test_cpu_value = 42.5
         storage.store_sample(test_cpu_value, 50.0, 30.0, 1.0)
-        storage.conn.close()
+        # MetricsStorage uses connection pooling - no explicit close needed
 
         # Simulate minor corruption that doesn't affect all data
         # (In practice, this test verifies recovery attempts to preserve what's possible)
@@ -344,7 +344,7 @@ class TestDatabaseCorruptionHandling(unittest.TestCase):
                         # Some data loss may be unavoidable in severe corruption
                         pass
 
-            storage.conn.close()
+            # MetricsStorage uses connection pooling - no explicit close needed
         except (sqlite3.DatabaseError, RuntimeError):
             # Severe corruption may require complete recreation
             pass

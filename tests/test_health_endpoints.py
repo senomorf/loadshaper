@@ -29,11 +29,12 @@ class MockRequest:
 
 class MockHealthHandler(HealthHandler):
     """Mock health handler that captures responses for testing"""
-    def __init__(self, path, controller_state=None, metrics_storage=None):
+    def __init__(self, path, controller_state=None, metrics_storage=None, cpu_p95_controller=None):
         self.path = path
         self.controller_state = controller_state or {}
         self.controller_state_lock = threading.Lock()  # Add lock for thread safety
         self.metrics_storage = metrics_storage
+        self.cpu_p95_controller = cpu_p95_controller  # Add P95 controller for metrics endpoint
         self.response_code = None
         self.response_headers = {}
         self.response_body = None

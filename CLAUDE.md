@@ -6,10 +6,11 @@
 - CPU stress must run at `nice` 19, use transient bursts, and yield immediately to real workloads.
 - Generate network traffic only as a fallback when CPU or memory activity risks dropping below thresholds.
 - **Critical**: CPU load must have minimal impact on system responsiveness - always choose the lightest workload type that minimizes latency for other processes.
-- **Entrypoint validation**: container exits if persistent storage is missing or not writable.
+- **Entrypoint validation**: container exits if persistent storage is missing or not writable - no automatic fixes provided (rootless security)
+- **Rootless container philosophy**: Never runs as root, no privilege escalation, user must configure volume permissions
 
 ## 7-Day Metrics & Oracle Compliance
-- **Storage**: SQLite database at `/var/lib/loadshaper/metrics.db` (persistent storage required)
+- **Storage**: SQLite database at configurable path via `PERSISTENCE_DIR` env var (default: `/var/lib/loadshaper/metrics.db`) - persistent storage required
 - **95th percentile tracking**: CPU only (mirrors Oracle's measurement method for CPU; memory/network use simple averages)
 - **Sample frequency**: Every 5 seconds (≈120,960 samples per week, 10-20MB database size)
 - **Automatic cleanup**: Removes data older than 7 days, requires persistent storage for 7-day P95 calculations
@@ -38,6 +39,33 @@
 - **Oracle compliance**: Aligns with cloud provider standards (AWS CloudWatch, Azure Monitor) and Oracle's likely implementation
 - **Memory occupation not stressing**: Goal is to maintain target utilization percentage, not stress test memory subsystem
 
+## Rootless Container Security
+
+LoadShaper follows **strict rootless container principles**:
+
+- **Never runs as root**: Container always executes as user `loadshaper` (UID/GID 1000)
+- **No privilege escalation**: No automatic permission fixing or root operations in entrypoint
+- **User responsibility**: Volume permissions must be configured correctly BEFORE deployment
+- **Security first**: Prevents container breakout and follows container security best practices
+- **Environment variable support**: `PERSISTENCE_DIR` configures storage path (both entrypoint and loadshaper.py)
+
+### Required Volume Permission Setup
+```bash
+# For Docker named volumes (most common)
+docker run --rm -v loadshaper-metrics:/var/lib/loadshaper alpine:latest chown -R 1000:1000 /var/lib/loadshaper
+
+# For bind mounts
+sudo mkdir -p /var/lib/loadshaper
+sudo chown -R 1000:1000 /var/lib/loadshaper
+sudo chmod -R 755 /var/lib/loadshaper
+```
+
+### Why Rootless?
+- Eliminates container security vulnerabilities
+- Follows least-privilege principle
+- Compatible with security-conscious environments (Kubernetes, OpenShift)
+- Prevents accidental host system modifications
+
 ## Key Configuration Variables
 - **P95 CPU control**: `CPU_P95_TARGET_MIN`, `CPU_P95_TARGET_MAX`, `CPU_P95_SETPOINT`, `CPU_P95_EXCEEDANCE_TARGET`
 - **P95 slot control**: `CPU_P95_SLOT_DURATION_SEC`, `CPU_P95_HIGH_INTENSITY`, `CPU_P95_BASELINE_INTENSITY`
@@ -51,6 +79,7 @@
 - **Network configuration**: `NET_MODE`, `NET_PORT`, `NET_BURST_SEC`, `NET_IDLE_SEC`, `NET_TTL`, `NET_PACKET_SIZE`, `NET_MIN_RATE_MBIT`, `NET_MAX_RATE_MBIT`
 - **Control behavior**: `CONTROL_PERIOD_SEC`, `AVG_WINDOW_SEC`, `HYSTERESIS_PCT`, `JITTER_PCT`, `JITTER_PERIOD_SEC`
 - **Health monitoring**: `HEALTH_ENABLED`, `HEALTH_PORT`, `HEALTH_HOST`
+- **Storage configuration**: `PERSISTENCE_DIR` - configures persistent storage directory path (default: `/var/lib/loadshaper`)
 
 ## Development Standards
 - **Testing**: Always use venv; run `pytest -q` (all tests must pass); install dev dependencies with `pip install -r requirements-dev.txt`
@@ -84,12 +113,17 @@
 ## Project Development Status
 **This is a Work In Progress project.** Breaking changes are intentionally introduced without migration paths as we iterate toward the optimal Oracle Cloud VM protection solution. This approach allows rapid innovation and prevents technical debt accumulation during active development phases.
 
-### Current Breaking Change: Mandatory Persistent Storage
-**CRITICAL CHANGE:** Persistent storage is now **MANDATORY**. All fallback to `/tmp` storage has been completely removed by design.
+### Current Breaking Change: Mandatory Persistent Storage + Rootless Security
+**CRITICAL CHANGES:**
+1. **Persistent storage is now MANDATORY** - All fallback to `/tmp` storage has been completely removed by design
+2. **Rootless container security enforced** - No automatic permission fixing, user must configure volumes
 
-- **Container startup**: Will fail immediately if `/var/lib/loadshaper` volume is not mounted or writable
+**Implementation details:**
+- **Container startup**: Will fail immediately if persistent storage directory (configurable via `PERSISTENCE_DIR`) is not writable
 - **No migration path**: Existing deployments without persistent volumes must be updated
+- **No automatic fixes**: Container will NOT attempt to fix volume permissions - user responsibility
 - **Oracle compliance**: 7-day P95 CPU history requires persistent metrics database
+- **Security first**: Container runs as UID/GID 1000 with no privilege escalation
 - **Multi-instance protection**: Race condition warnings enhanced to prevent P95 calculation corruption
 
 ### Single Instance Requirement
