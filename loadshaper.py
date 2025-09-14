@@ -1305,6 +1305,10 @@ class CPUP95Controller:
         if os.environ.get('PYTEST_CURRENT_TEST'):
             return
 
+        # Skip persistence in degraded mode (disk full)
+        if getattr(self, '_degraded_mode', False):
+            return
+
         try:
             ring_buffer_path = self._get_ring_buffer_path()
             temp_path = ring_buffer_path + '.tmp'
@@ -1326,7 +1330,15 @@ class CPUP95Controller:
             logger.debug(f"Saved P95 ring buffer state to {ring_buffer_path}")
 
         except (OSError, PermissionError, ValueError, TypeError) as e:
-            logger.warning(f"Failed to save P95 ring buffer state: {e}")
+            # Check for disk full condition (ENOSPC)
+            if hasattr(e, 'errno') and e.errno == 28:  # ENOSPC
+                logger.error(f"Disk full - cannot save P95 ring buffer state: {e}")
+                logger.error("LoadShaper entering degraded mode due to storage failure")
+                # In degraded mode, skip persistence to avoid crash loops
+                self._degraded_mode = True
+            else:
+                logger.warning(f"Failed to save P95 ring buffer state: {e}")
+
             # Clean up temp file if it exists
             try:
                 temp_path = self._get_ring_buffer_path() + '.tmp'
@@ -1688,17 +1700,41 @@ def read_proc_stat():
 
     Returns:
         tuple: (total_time, idle_time) in jiffies
+
+    Raises:
+        RuntimeError: If /proc/stat is corrupted or unreadable
     """
-    with open("/proc/stat", "r") as f:
-        line = f.readline()
-    if not line.startswith("cpu "):
-        raise RuntimeError("Unexpected /proc/stat format")
-    parts = line.split()
-    vals = [float(x) for x in parts[1:11]]
-    idle = vals[3] + vals[4]  # idle + iowait
-    nonidle = vals[0] + vals[1] + vals[2] + vals[5] + vals[6] + vals[7]
-    total = idle + nonidle
-    return total, idle
+    try:
+        with open("/proc/stat", "r") as f:
+            line = f.readline()
+
+        if not line or not line.startswith("cpu "):
+            raise RuntimeError("Unexpected /proc/stat format: missing or invalid CPU line")
+
+        parts = line.split()
+        if len(parts) < 8:  # Need at least 7 CPU time fields
+            raise RuntimeError(f"Insufficient CPU statistics in /proc/stat: got {len(parts)-1} fields, need at least 7")
+
+        try:
+            vals = [float(x) for x in parts[1:11]]  # Parse up to 10 fields safely
+        except (ValueError, IndexError) as e:
+            raise RuntimeError(f"Corrupted CPU statistics in /proc/stat: {e}")
+
+        # Ensure we have minimum required fields (user, nice, system, idle, iowait, irq, softirq)
+        while len(vals) < 7:
+            vals.append(0.0)  # Pad with zeros for missing fields
+
+        idle = vals[3] + vals[4]  # idle + iowait
+        nonidle = vals[0] + vals[1] + vals[2] + vals[5] + vals[6] + vals[7] if len(vals) > 6 else vals[0] + vals[1] + vals[2]
+        total = idle + nonidle
+
+        if total <= 0:
+            raise RuntimeError("Invalid CPU statistics: total time is zero or negative")
+
+        return total, idle
+
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        raise RuntimeError(f"Could not read /proc/stat: {e}")
 
 def cpu_percent_over(dt, prev=None):
     """Calculate CPU utilization percentage over a time period.
@@ -1814,23 +1850,42 @@ def read_loadavg():
                - load_15min: 15-minute load average
                - per_core_load: 1-minute load normalized per CPU core
     """
-    # Read system load averages and return per-core load for 1-min average
     try:
         with open("/proc/loadavg", "r") as f:
             line = f.readline().strip()
+
+        if not line:
+            logger.debug("Empty /proc/loadavg file - using zero load")
+            return 0.0, 0.0, 0.0, 0.0
+
         parts = line.split()
-        if len(parts) >= 3:
+        if len(parts) < 3:
+            logger.debug(f"Insufficient load fields in /proc/loadavg: got {len(parts)}, need 3")
+            return 0.0, 0.0, 0.0, 0.0
+
+        try:
             load_1min = float(parts[0])
-            load_5min = float(parts[1]) 
+            load_5min = float(parts[1])
             load_15min = float(parts[2])
-            # Use actual system CPU count since load averages are system-wide metrics
-            # that include all processes, not just loadshaper's worker threads
-            cpu_count = os.cpu_count() or 1
-            per_core_load = load_1min / cpu_count if cpu_count > 0 else load_1min
-            return load_1min, load_5min, load_15min, per_core_load
-    except Exception:
-        pass
-    return 0.0, 0.0, 0.0, 0.0
+
+            # Sanity check for reasonable load values
+            if any(load < 0 or load > 1000.0 for load in [load_1min, load_5min, load_15min]):
+                logger.debug(f"Suspicious load values in /proc/loadavg: {parts[:3]} - using zeros")
+                return 0.0, 0.0, 0.0, 0.0
+
+        except (ValueError, IndexError) as e:
+            logger.debug(f"Corrupted load data in /proc/loadavg: {e} - using zeros")
+            return 0.0, 0.0, 0.0, 0.0
+
+        # Use actual system CPU count since load averages are system-wide metrics
+        # that include all processes, not just loadshaper's worker threads
+        cpu_count = os.cpu_count() or 1
+        per_core_load = load_1min / cpu_count if cpu_count > 0 else load_1min
+        return load_1min, load_5min, load_15min, per_core_load
+
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.debug(f"Could not read /proc/loadavg: {e} - using zero load")
+        return 0.0, 0.0, 0.0, 0.0
 
 # ---------------------------
 # Moving average (EMA)
@@ -1957,7 +2012,14 @@ class MetricsStorage:
                 self.consecutive_failures = 0
                 return True
             except Exception as e:
-                logger.error(f"Failed to store sample: {e}")
+                # Check for disk full condition (ENOSPC)
+                if hasattr(e, 'errno') and e.errno == 28:  # ENOSPC
+                    logger.error(f"Disk full - cannot store metrics sample: {e}")
+                    logger.error("LoadShaper metrics storage entering degraded mode")
+                    # Force degraded state immediately on disk full
+                    self.consecutive_failures = self.max_consecutive_failures
+                else:
+                    logger.error(f"Failed to store sample: {e}")
 
                 # Track consecutive failures for degradation detection
                 self.consecutive_failures += 1
