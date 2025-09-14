@@ -14,9 +14,51 @@
 > Containers will **NOT START** without proper persistent volumes. This is an intentional breaking change.
 >
 > **Development Philosophy:** Breaking changes are introduced frequently without migration paths **by design**.
-> No backward compatibility or migration guides are provided as we iterate rapidly toward the optimal
-> Oracle Cloud VM protection solution. This approach prevents technical debt accumulation and enables
-> rapid innovation. Always review the CHANGELOG before updating.
+> This approach prevents technical debt accumulation and enables rapid innovation toward the optimal
+> Oracle Cloud VM protection solution.
+
+### Migration Guide
+
+**Latest Breaking Change: Mandatory Persistent Storage (Current Version)**
+
+As of the current version, **persistent storage is mandatory**. The container will fail to start without proper volume configuration:
+
+#### ✅ **Required Setup**
+```yaml
+# Docker Compose
+volumes:
+  - /var/lib/loadshaper:/var/lib/loadshaper
+
+# Kubernetes
+volumeMounts:
+  - name: loadshaper-data
+    mountPath: /var/lib/loadshaper
+```
+
+#### ❌ **What No Longer Works**
+- Running without persistent volumes
+- Fallback to `/tmp` storage (completely removed)
+- Containers starting without writable `/var/lib/loadshaper`
+
+#### 🔧 **Troubleshooting Startup Failures**
+```bash
+# Check volume permissions
+ls -la /var/lib/loadshaper
+
+# Fix permissions if needed
+sudo chown -R 1000:1000 /var/lib/loadshaper
+sudo chmod -R 755 /var/lib/loadshaper
+
+# Verify container startup
+docker logs loadshaper
+```
+
+#### **Why This Change?**
+- **Oracle Compliance**: 7-day P95 CPU calculations require persistent metrics database
+- **Data Integrity**: Prevents silent failures that could cause VM reclamation
+- **Performance**: Eliminates temporary storage overhead and reliability issues
+
+**Next Breaking Changes:** Additional Oracle compliance improvements planned. Always check `CHANGELOG.md` before updating.
 
 **Modern native network generator implementation** - Uses Python sockets instead of external dependencies for maximum efficiency and control. Requires **Linux 3.14+ (March 2014)** with kernel MemAvailable support.
 
@@ -237,6 +279,65 @@ CPU stress runs at the **absolute lowest OS priority** (`nice` 19) and is design
 **`off`:** Disables network fallback entirely
 - CPU-only protection mode
 - Recommended only when network generation is not desired
+
+### Network Fallback Configuration Examples
+
+#### 🔥 **Conservative Setup (Minimal Network Usage)**
+*Activates network fallback only in extreme risk scenarios*
+```bash
+NET_ACTIVATION=adaptive
+NET_FALLBACK_START_PCT=15.0          # Very low threshold
+NET_FALLBACK_STOP_PCT=25.0           # Higher deactivation threshold
+NET_FALLBACK_RISK_THRESHOLD_PCT=19.0 # More conservative risk level
+NET_FALLBACK_DEBOUNCE_SEC=60         # Longer debounce to avoid rapid changes
+NET_FALLBACK_MIN_ON_SEC=120          # Stay active longer once triggered
+```
+**Use case:** Environments where network activity should be minimized but Oracle compliance is critical.
+
+#### ⚡ **Aggressive Setup (Maximum Oracle Compliance)**
+*Maximizes protection against VM reclamation with active network generation*
+```bash
+NET_ACTIVATION=adaptive
+NET_FALLBACK_START_PCT=22.0          # Higher activation threshold
+NET_FALLBACK_STOP_PCT=28.0           # Higher deactivation threshold
+NET_FALLBACK_RISK_THRESHOLD_PCT=24.0 # Proactive risk management
+NET_FALLBACK_DEBOUNCE_SEC=15         # Quick response to changes
+NET_FALLBACK_MIN_ON_SEC=60           # Standard minimum on time
+```
+**Use case:** Critical workloads where VM reclamation must be avoided at all costs.
+
+#### 🧪 **Testing/Development Setup**
+*Always-on network generation for testing network bandwidth and validation*
+```bash
+NET_ACTIVATION=always
+NET_TARGET_PCT=25.0                  # Consistent 25% network utilization
+NET_MODE=client                      # Client mode for outbound traffic
+NET_PEERS=198.18.0.1,198.18.0.2    # RFC 2544 test addresses
+```
+**Use case:** Development environments, network performance testing, bandwidth validation.
+
+#### 🚫 **CPU-Only Setup (No Network Generation)**
+*Disables network fallback completely, relies only on CPU P95 control*
+```bash
+NET_ACTIVATION=off
+NET_TARGET_PCT=0                     # No network generation
+CPU_P95_TARGET_MIN=25.0             # Higher CPU target to compensate
+CPU_P95_TARGET_MAX=30.0             # Adjusted range for CPU-only protection
+```
+**Use case:** Environments where network generation is prohibited or impossible.
+
+#### 🏢 **Enterprise Setup (Balanced Protection)**
+*Optimal balance between resource usage and Oracle compliance*
+```bash
+NET_ACTIVATION=adaptive
+NET_FALLBACK_START_PCT=20.0          # Oracle threshold-based
+NET_FALLBACK_STOP_PCT=25.0           # Safe deactivation level
+NET_FALLBACK_RISK_THRESHOLD_PCT=22.0 # Standard risk threshold
+NET_FALLBACK_DEBOUNCE_SEC=30         # Balanced response time
+NET_FALLBACK_MIN_ON_SEC=60           # Standard minimum active period
+NET_FALLBACK_RAMP_SEC=15            # Smooth transitions
+```
+**Use case:** Production environments requiring reliable Oracle compliance with reasonable resource usage.
 
 ## Load average monitoring
 

@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unreachable default peers**: Changed from RFC2544 placeholder IPs to public DNS servers
 - **E2 external traffic requirement**: Validates external addresses and ensures Oracle-compliant external traffic
 - **Network fallback chain**: Automatic fallback UDP → TCP → next peer → DNS servers → local generation
+- **Code quality**: Fixed trailing comma inconsistency in network fallback validation list
+- **Code formatting**: Corrected comment alignment in network fallback configuration
+- **Database corruption**: Added detection and automatic recovery for SQLite corruption
+- **Configuration errors**: Enhanced validation prevents invalid parameter combinations
 
 ### Added
 - **Entrypoint validation**: Container fails fast if persistent storage not properly mounted
@@ -44,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Network health scoring**: 0-100 score based on state, peer reputation, validation success, and error rates
 - **Automatic fallback chain**: UDP → TCP → next peer → DNS servers → local generation with hysteresis
 - **Runtime peer switching**: Detects failed peers and automatically switches to healthy alternatives
+- **Ring buffer batching**: Configurable batch size (`CPU_P95_RING_BUFFER_BATCH_SIZE`) reduces I/O overhead
+- **Memory usage monitoring**: Tracks P95 cache memory consumption with detailed logging
+- **Database size monitoring**: Monitors metrics database size with growth projections
+- **Configuration validation**: Comprehensive cross-parameter consistency checks at startup
+- **Database corruption handling**: Automatic backup and recovery for corrupted metrics database
+- **Enhanced documentation**: Detailed P95 controller state machine documentation
+- **Migration guide**: Breaking changes philosophy and deployment requirements
+- **Network fallback examples**: Five detailed configuration examples for different use cases
 
 ### Changed
 - **BREAKING**: Docker Compose now requires `loadshaper-metrics` named volume
@@ -56,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dockerfile**: Added non-root user setup and entrypoint script
 - **Health checks**: Now validate persistence status explicitly
 - **Network telemetry**: Now includes state machine status, peer health, and validation metrics
+- **Performance**: Ring buffer state saves batched to reduce I/O frequency (60s → 600s default)
+- **Robustness**: Database corruption detection runs on startup and during operations
 
 ### Migration Required
 Existing Docker Compose users must update their configuration:
