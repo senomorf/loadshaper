@@ -20,8 +20,8 @@ class TestNetworkHelperFunctions(unittest.TestCase):
     def test_is_external_address_ipv4(self):
         """Test is_external_address with IPv4 addresses."""
         # External addresses
-        self.assertTrue(loadshaper.is_external_address("8.8.8.8"))
-        self.assertTrue(loadshaper.is_external_address("1.1.1.1"))
+        self.assertTrue(loadshaper.is_external_address("192.0.2.1"))
+        self.assertTrue(loadshaper.is_external_address("198.51.100.1"))
         self.assertTrue(loadshaper.is_external_address("208.67.222.222"))
 
         # Private addresses (RFC1918)

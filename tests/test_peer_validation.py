@@ -2,7 +2,7 @@
 """
 Test suite for NetworkGenerator peer validation functionality.
 
-Tests the comprehensive peer validation system including DNS validation,
+Tests the comprehensive peer validation system including hostname resolution,
 TCP handshake validation, reputation scoring, blacklisting, and recovery.
 """
 
@@ -104,16 +104,16 @@ class TestPeerValidation(unittest.TestCase):
         with unittest.mock.patch.object(self.generator, '_validate_generic_peer') as mock_generic_validate:
             mock_generic_validate.return_value = True
 
-            result = self.generator._validate_peer('8.8.8.8')
+            result = self.generator._validate_peer('192.0.2.1')
 
             self.assertTrue(result)
-            mock_generic_validate.assert_called_once_with('8.8.8.8')
+            mock_generic_validate.assert_called_once_with('192.0.2.1')
 
     def test_peer_reputation_scoring_valid_peer(self):
         """Test reputation scoring for valid peer."""
         # Initialize peers with test peer
         self.generator.peers = {
-            '8.8.8.8': {
+            '192.0.2.1': {
                 'state': loadshaper.PeerState.UNVALIDATED,
                 'reputation': 60.0,
                 'last_attempt': 0.0,
@@ -123,12 +123,12 @@ class TestPeerValidation(unittest.TestCase):
             }
         }
 
-        initial_reputation = self.generator.peers['8.8.8.8']['reputation']
+        initial_reputation = self.generator.peers['192.0.2.1']['reputation']
 
         # Test successful peer recording
-        self.generator._record_peer_success('8.8.8.8')
+        self.generator._record_peer_success('192.0.2.1')
 
-        peer_info = self.generator.peers['8.8.8.8']
+        peer_info = self.generator.peers['192.0.2.1']
         self.assertGreater(peer_info['reputation'], initial_reputation)  # Should increase
         self.assertEqual(peer_info['successes'], 1)
         self.assertEqual(peer_info['failures'], 0)
@@ -137,7 +137,7 @@ class TestPeerValidation(unittest.TestCase):
         """Test reputation scoring for invalid peer."""
         # Initialize peers with test peer
         self.generator.peers = {
-            '8.8.8.8': {
+            '192.0.2.1': {
                 'state': loadshaper.PeerState.VALID,
                 'reputation': 80.0,
                 'last_attempt': 0.0,
@@ -147,12 +147,12 @@ class TestPeerValidation(unittest.TestCase):
             }
         }
 
-        initial_reputation = self.generator.peers['8.8.8.8']['reputation']
+        initial_reputation = self.generator.peers['192.0.2.1']['reputation']
 
         # Test failed peer recording
-        self.generator._record_peer_failure('8.8.8.8', "Connection timeout")
+        self.generator._record_peer_failure('192.0.2.1', "Connection timeout")
 
-        peer_info = self.generator.peers['8.8.8.8']
+        peer_info = self.generator.peers['192.0.2.1']
         self.assertLess(peer_info['reputation'], initial_reputation)  # Should decrease
         self.assertEqual(peer_info['successes'], 5)
         self.assertEqual(peer_info['failures'], 1)
@@ -230,12 +230,12 @@ class TestPeerValidation(unittest.TestCase):
         with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
             with unittest.mock.patch.object(self.generator, '_validate_peer', return_value=True) as mock_validate:
                 with unittest.mock.patch.object(self.generator, '_start_udp'):
-                    self.generator.start(['8.8.8.8', '1.1.1.1'])
+                    self.generator.start(['192.0.2.1', '198.51.100.1'])
 
                     # Should validate all provided peers
                     self.assertEqual(mock_validate.call_count, 2)
-                    mock_validate.assert_any_call('8.8.8.8')
-                    mock_validate.assert_any_call('1.1.1.1')
+                    mock_validate.assert_any_call('192.0.2.1')
+                    mock_validate.assert_any_call('198.51.100.1')
 
 
     def test_ipv6_peer_validation(self):

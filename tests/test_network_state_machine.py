@@ -39,7 +39,7 @@ class TestNetworkStateMachine(unittest.TestCase):
             initial_state = self.generator.state
             self.assertEqual(initial_state, loadshaper.NetworkState.OFF)
 
-            self.generator.start(["8.8.8.8"])
+            self.generator.start(["192.0.2.1"])
 
             # The start() method will transition through states
             # The final state depends on validation and fallback logic
@@ -54,7 +54,7 @@ class TestNetworkStateMachine(unittest.TestCase):
         """Test INITIALIZING -> VALIDATING transition."""
         with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
             with unittest.mock.patch.object(self.generator, '_validate_all_peers'):
-                self.generator.start(["8.8.8.8"])
+                self.generator.start(["192.0.2.1"])
 
                 # Should complete startup and reach a valid final state
                 self.assertIsInstance(self.generator.state, loadshaper.NetworkState)
@@ -68,7 +68,7 @@ class TestNetworkStateMachine(unittest.TestCase):
         with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
             with unittest.mock.patch.object(self.generator, '_validate_all_peers'):
                 with unittest.mock.patch.object(self.generator, '_start_udp'):
-                    self.generator.start(["8.8.8.8"])
+                    self.generator.start(["192.0.2.1"])
 
                     # Should complete startup successfully
                     self.assertIsInstance(self.generator.state, loadshaper.NetworkState)
@@ -85,7 +85,7 @@ class TestNetworkStateMachine(unittest.TestCase):
             with unittest.mock.patch.object(tcp_gen, '_detect_network_interface'):
                 with unittest.mock.patch.object(tcp_gen, '_validate_all_peers'):
                     with unittest.mock.patch.object(tcp_gen, '_start_tcp'):
-                        tcp_gen.start(["8.8.8.8"])
+                        tcp_gen.start(["192.0.2.1"])
 
                         # Protocol should be preserved
                         self.assertEqual(tcp_gen.protocol, "tcp")
@@ -99,7 +99,7 @@ class TestNetworkStateMachine(unittest.TestCase):
         # The original method catches exceptions, so we need to mock at a different level
         with unittest.mock.patch.object(self.generator, '_initialize_peers',
                                        side_effect=Exception("Network error")):
-            self.generator.start(["8.8.8.8"])
+            self.generator.start(["192.0.2.1"])
 
             # Should transition to ERROR state on exception
             self.assertEqual(self.generator.state, loadshaper.NetworkState.ERROR)
@@ -113,7 +113,7 @@ class TestNetworkStateMachine(unittest.TestCase):
 
             # Initialize in a valid state
             with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
-                self.generator.start(["8.8.8.8"])
+                self.generator.start(["192.0.2.1"])
 
             # Force into ACTIVE state and record initial state
             self.generator.state = loadshaper.NetworkState.ACTIVE_UDP
@@ -148,7 +148,7 @@ class TestNetworkStateMachine(unittest.TestCase):
 
             # Initialize generator
             with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
-                self.generator.start(["8.8.8.8"])
+                self.generator.start(["192.0.2.1"])
 
             # Force into ACTIVE_UDP state (which has min-on time restrictions)
             self.generator.state = loadshaper.NetworkState.ACTIVE_UDP
@@ -216,7 +216,7 @@ class TestNetworkStateMachine(unittest.TestCase):
                 # Mock UDP failure
                 with unittest.mock.patch.object(self.generator, '_start_udp',
                                                side_effect=Exception("UDP failed")):
-                    self.generator.start(["8.8.8.8"])
+                    self.generator.start(["192.0.2.1"])
 
                     # Should handle UDP failure gracefully
                     self.assertIn(self.generator.state, [s for s in loadshaper.NetworkState])
@@ -228,7 +228,7 @@ class TestNetworkStateMachine(unittest.TestCase):
 
         with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
             with unittest.mock.patch.object(self.generator, '_start_protocol'):
-                self.generator.start(["8.8.8.8"])
+                self.generator.start(["192.0.2.1"])
 
                 # Record pre-stop state (should be ACTIVE_UDP after start)
                 pre_stop_state = self.generator.state
@@ -251,7 +251,7 @@ class TestNetworkStateMachine(unittest.TestCase):
     def test_state_persistence_during_operation(self):
         """Test state remains stable during normal operation."""
         with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
-            self.generator.start(["8.8.8.8"])
+            self.generator.start(["192.0.2.1"])
 
             initial_state = self.generator.state
 
@@ -292,7 +292,7 @@ class TestNetworkStateMachine(unittest.TestCase):
         def worker():
             try:
                 with unittest.mock.patch.object(self.generator, '_detect_network_interface'):
-                    self.generator.start(["8.8.8.8"])
+                    self.generator.start(["192.0.2.1"])
                 results.append("success")
             except Exception as e:
                 results.append(f"error: {e}")

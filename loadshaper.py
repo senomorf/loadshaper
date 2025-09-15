@@ -1213,7 +1213,7 @@ def _initialize_config():
     MEM_TOUCH_INTERVAL_SEC = getenv_float_with_template("MEM_TOUCH_INTERVAL_SEC", 1.0, CONFIG_TEMPLATE)
 
     NET_MODE          = getenv_with_template("NET_MODE", "client", CONFIG_TEMPLATE).strip().lower()
-    NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "8.8.8.8,1.1.1.1,9.9.9.9", CONFIG_TEMPLATE).split(",") if p.strip()]
+    NET_PEERS         = [p.strip() for p in getenv_with_template("NET_PEERS", "", CONFIG_TEMPLATE).split(",") if p.strip()]
     NET_PORT          = getenv_int_with_template("NET_PORT", 15201, CONFIG_TEMPLATE)
     NET_BURST_SEC     = getenv_int_with_template("NET_BURST_SEC", 10, CONFIG_TEMPLATE)
     NET_IDLE_SEC      = getenv_int_with_template("NET_IDLE_SEC", 10, CONFIG_TEMPLATE)
@@ -3198,10 +3198,13 @@ class NetworkGenerator:
 
     Implements reliable network generation with automatic fallback mechanisms,
     peer validation, tx_bytes monitoring, and comprehensive health scoring.
-    Designed for Oracle Cloud VM protection with robust external traffic validation.
+    Designed for Oracle Cloud VM protection with external traffic validation.
+
+    WARNING: IPv6 global addresses may route internally within Oracle VCN,
+    bypassing external traffic requirements.
     """
 
-    # Default public DNS servers for reliable external traffic
+    # Network peer management constants
 
     # PEER REPUTATION SYSTEM CONSTANTS
     # Reputation range: 0.0 (blacklisted) to 100.0 (perfect peer)
@@ -3305,7 +3308,7 @@ class NetworkGenerator:
         self.state_min_off_sec = 20.0
         self.last_transition_time = time.monotonic()
 
-        # DNS generation settings
+        # Network packet generation settings
 
         # Initialize packet data
         self._prepare_packet_data()

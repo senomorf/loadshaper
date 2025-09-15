@@ -156,7 +156,7 @@ docker run --rm -v /tmp/readonly:/var/lib/loadshaper:ro loadshaper:latest
    NET_PROTOCOL=udp docker compose up -d --build
 
    # Test custom targets (optional)
-   NET_PEERS=8.8.8.8:53 NET_PROTOCOL=udp docker compose up -d --build
+   NET_PEERS=192.0.2.1 NET_PROTOCOL=udp docker compose up -d --build
    ```
 
 **P95 CPU Controller Testing:**
