@@ -244,7 +244,7 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 - CPU: 1/8 OCPU (burstable)
 - Memory: 1 GB RAM (no memory reclamation rule)
 - Network: 480 Mbps internal, **50 Mbps external (internet)**
-- 20% threshold = ~10 Mbps external traffic required
+- 20% threshold = ~10 Mbps external traffic required ⚠️ **See VCN Routing Warning below**
 
 **A1.Flex (ARM-based):**
 - CPU: Up to 4 OCPUs
@@ -253,6 +253,30 @@ Oracle's Always Free Tier compute shapes have the following specifications and r
 - 20% threshold = ~0.2 Gbps per vCPU required
 
 **Important:** Network monitoring typically measures internet-bound traffic (external bandwidth), not internal VM-to-VM traffic. For E2 shapes, focus on the 50 Mbps external limit.
+
+### ⚠️ Critical VCN Routing Warning
+
+**IPv6 Global Addresses Can Route Internally:** In Oracle Cloud VCNs, IPv6 global addresses (2001::/3) may route internally between VMs in the same subnet/VCN rather than via the internet gateway. This creates a critical compliance risk:
+
+- **Problem:** Traffic between VMs with IPv6 global addresses stays within the VCN
+- **Result:** Oracle's monitoring sees no external network activity → VM reclamation
+- **Solution:** Ensure `NET_PEERS` targets are external servers you control or have permission to use
+
+**Example External Peers (Replace with your own servers):**
+```bash
+NET_PEERS=192.0.2.1,198.51.100.1    # TEST-NET addresses (example only - replace with real servers)
+NET_PEERS=2001:db8::1               # Documentation IPv6 (example only - replace with real servers)
+```
+
+⚠️ **IMPORTANT:** Do NOT use public DNS servers (8.8.8.8, 1.1.1.1, etc.) as peers - this is unethical and may result in service bans. Use only servers you control or have explicit permission to send traffic to.
+
+**Avoid VCN-Internal Peers:**
+```bash
+# DON'T USE - These may route internally:
+NET_PEERS=10.0.0.5                  # RFC1918 private (definitely internal)
+NET_PEERS=2603:1234::5               # IPv6 global but same VCN (may be internal)
+NET_PEERS=your-other-vm-hostname     # Another VM in same VCN
+```
 
 `loadshaper` drives CPU usage and can emit network traffic. It tracks CPU utilization over a 7-day rolling window and calculates the 95th percentile to match Oracle's exact reclamation criteria. For memory and network, it uses simple threshold monitoring (no P95) as per Oracle's actual measurement method. The telemetry output shows current values, averages, and CPU P95.
 
@@ -409,7 +433,7 @@ NET_FALLBACK_MIN_ON_SEC=60           # Standard minimum on time
 NET_ACTIVATION=always
 NET_TARGET_PCT=25.0                  # Consistent 25% network utilization
 NET_MODE=client                      # Client mode for outbound traffic
-NET_PEERS=8.8.8.8,1.1.1.1          # Public DNS servers for external traffic
+NET_PEERS=your-server.example.com    # External servers you control (replace with actual servers)
 ```
 **Use case:** Development environments, network performance testing, bandwidth validation.
 
@@ -702,7 +726,7 @@ This shows the huge difference: 25% (real app usage) vs 78% (including cache).
 |----------|---------|-------------|
 | `NET_MODE` | `client` | Network mode: `off`, `client` |
 | `NET_PROTOCOL` | `udp` | Protocol: `udp` (lower CPU), `tcp` |
-| `NET_PEERS` | `8.8.8.8,1.1.1.1,9.9.9.9` | Comma-separated peer IP addresses (public DNS servers for reliability) |
+| `NET_PEERS` | *(empty)* | Comma-separated peer IP addresses - **must be external servers you control** |
 | `NET_PORT` | `15201` | TCP port for network communication |
 | `NET_BURST_SEC` | `10` | Duration of traffic bursts (seconds) |
 | `NET_IDLE_SEC` | `10` | Idle time between bursts (seconds) |
@@ -784,8 +808,9 @@ The native network generator provides advanced performance features:
 - Significant performance improvement for sustained TCP traffic
 
 **IPv6 Support:**
-- Dual-stack networking with IPv4/IPv6 auto-detection
-- Prefers IPv4 for compatibility, falls back to IPv6
+- Protocol-agnostic networking using socket.getaddrinfo() with AF_UNSPEC
+- Supports IPv4, IPv6, and hostname targets (resolved via DNS)
+- \u26a0\ufe0f **VCN Routing Risk:** IPv6 global addresses may route internally within Oracle VCN
 - Proper TTL/hop limit handling for both address families
 
 **DNS Resolution Caching:**
@@ -806,7 +831,7 @@ The native network generator provides advanced performance features:
 
 ### Network Generation Reliability
 
-The network generator includes a comprehensive reliability system to prevent silent failures and ensure Oracle-compliant external traffic generation:
+The network generator includes a comprehensive reliability system to prevent silent failures and ensure Oracle-compliant traffic generation (requires external peers):
 
 **State Machine Architecture:**
 - `OFF` → `INITIALIZING` → `VALIDATING` → `ACTIVE_UDP` → `ACTIVE_TCP` → `ERROR`
@@ -815,15 +840,15 @@ The network generator includes a comprehensive reliability system to prevent sil
 - Network is supplementary protection - system continues on CPU/memory even without network
 
 **Peer Validation & Reputation:**
-- **External address validation**: Automatically rejects RFC1918, loopback, and link-local addresses for E2 Oracle compliance
+- **External address validation**: Automatically rejects RFC1918, loopback, and link-local addresses (⚠️ VCN-internal IPv6 not detected)
 - **EMA-based reputation scoring**: Tracks peer reliability over time (0-100 score)
-- **Runtime tx_bytes monitoring**: Validates actual network traffic generation via `/sys/class/net/*/statistics/tx_bytes`
+- **Runtime tx_bytes monitoring**: Validates actual network traffic generation (⚠️ Cannot detect VCN-internal routing)
 - **Automatic peer switching**: Detects failed peers and switches to healthy alternatives
 
 **Fallback Chain:**
 - **Primary**: UDP traffic to configured peers
 - **Secondary**: TCP traffic to same peers
-- **Tertiary**: DNS queries with EDNS0 padding to public DNS servers
+- **Final**: If no valid peers, network generation will be inactive (fail-fast)
 - **Final**: Local loopback generation (degraded mode)
 
 **Network Health Scoring (0-100):**
@@ -834,7 +859,7 @@ The network generator includes a comprehensive reliability system to prevent sil
 
 **Oracle E2 Compliance Features:**
 - Ensures all traffic targets external addresses (non-RFC1918)
-- Uses public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) as reliable default peers
+- Requires user-configured external peers for Oracle compliance
 - Validates actual external traffic generation required for Oracle's 20% network threshold
 
 ### Shape-Specific Recommendations
@@ -1132,7 +1157,7 @@ A: Absolutely. That's the primary use case. `loadshaper` is designed to coexist 
 A: Check if `LOAD_THRESHOLD` is too low (causing frequent pauses) or if `CPU_STOP_PCT` is being triggered. Try increasing `LOAD_THRESHOLD` to 0.8 or 1.0.
 
 **Q: Network traffic isn't being generated**
-A: Check network state in telemetry output. The new network generator (v75+) uses external peers by default (`NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9`). Monitor network health scores and state transitions. If state shows ERROR, check connectivity to external addresses.
+A: Check network state in telemetry output. Configure `NET_PEERS` with external servers you control. Monitor network health scores and state transitions. If state shows ERROR, check connectivity to your configured peers.
 
 **Q: Memory usage isn't increasing on A1.Flex**
 A: Check available free memory and ensure `MEM_TARGET_PCT` is set above current usage. Verify the container has adequate memory limits.
@@ -1358,9 +1383,9 @@ docker volume inspect loadshaper-metrics       # Check volume details
 
 **Network traffic not generating:**
 - Check telemetry for network state (should show ACTIVE_UDP or ACTIVE_TCP)
-- Default `NET_PEERS=8.8.8.8,1.1.1.1,9.9.9.9` (public DNS servers) - no custom setup required
+- Configure `NET_PEERS` with external servers you control - **required for network protection**
 - Monitor network health score (0-100) - low scores indicate connectivity issues
-- Network generator automatically falls back: UDP → TCP → DNS → local
+- Network generator automatically falls back: UDP → TCP → next peer
 - For E2 shapes, ensure external internet access (not just internal VM connectivity)
 
 **Database storage issues:**
@@ -1390,12 +1415,12 @@ LOAD_THRESHOLD=1.0 LOAD_RESUME_THRESHOLD=0.6 docker compose up -d
 # For E2 shapes, ensure peers are external (not internal/localhost)
 ```
 
-**DNS resolution failures:**
+**Peer connectivity failures:**
 ```shell
-# Check DNS resolution for default peers
-docker exec loadshaper nslookup 8.8.8.8
-# The default public DNS servers should always be reachable
-# If not, check your network connectivity or firewall rules
+# Check connectivity to your configured peers
+docker exec loadshaper ping -c 3 your-server.example.com
+# Replace with your actual peer addresses
+# If unreachable, check your network connectivity or firewall rules
 ```
 
 **Network generation issues:**
@@ -1458,7 +1483,7 @@ echo "=== Recent Logs ==="
 docker logs --tail 50 loadshaper
 
 echo "=== Network Connectivity ==="
-docker exec loadshaper ping -c 3 8.8.8.8 2>/dev/null || echo "External DNS unreachable"
+docker exec loadshaper ping -c 3 your-server.example.com 2>/dev/null || echo "External peer unreachable"
 
 echo "=== Resource Usage ==="
 docker stats --no-stream loadshaper

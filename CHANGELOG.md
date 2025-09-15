@@ -7,12 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **📖 Related Documentation:** [README.md](README.md) | [CONTRIBUTING.md](CONTRIBUTING.md) | [AGENTS.md](AGENTS.md)
 
-## [Unreleased] - 2025-01-15
+## [Unreleased] - 2025-09-15
 
 ### ⚠️ BREAKING CHANGES
+- **NET_PEERS configuration now REQUIRED** - Default DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) removed. Users must configure external servers they control or have permission to use. Network generation will be inactive if no valid peers are configured (fail-fast behavior).
 - **Persistent volume storage now REQUIRED** - Docker Compose deployments must include persistent volume or container will not start
 - **Network generation completely rewritten** - No backwards compatibility with previous implementation
-  - Default NET_PEERS changed from placeholder IPs (10.0.0.2, 10.0.0.3) to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
   - Several new network configuration variables added for reliability and validation
 - **Container security hardened** - Now runs as non-root user (uid/gid 1000) with no fallback to ephemeral storage
 
@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configuration validation timing**: Moved runtime-dependent validations after system initialization to prevent startup errors
 - **Network generation reliability**: Complete rewrite fixing silent failures and Oracle E2 compliance issues
   - Detects failed network generation via tx_bytes monitoring
-  - Changed default peers from RFC2544 placeholder IPs to external addresses (8.8.8.8, 1.1.1.1, 9.9.9.9)
+  - Changed default peers from RFC2544 placeholder IPs to user-configured external addresses (no defaults)
   - Validates external addresses rejecting RFC1918, loopback, and link-local for Oracle E2 compliance
   - Implements automatic protocol fallback: UDP → TCP → next peer
   - Added debounce and min-on/min-off time controls to prevent network state oscillation
@@ -64,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Migration guide for breaking changes
 
 ### Changed
-- **Configuration templates**: All templates updated to use public DNS servers as default peers
+- **Configuration templates**: All templates updated to require user-configured peers (no defaults)
 - **Network configuration**: Default `NET_MIN_RATE_MBIT` changed from 0 to 1 Mbps to ensure minimum network activity
 - **Health monitoring**: Health checks now validate persistence status explicitly
 - **Network telemetry**: Enhanced to include state machine status, peer health, and validation metrics
@@ -89,7 +89,7 @@ volumes:
 ```
 
 **Network Configuration (Breaking Change):**
-- **NET_PEERS default changed**: Old placeholder IPs (10.0.0.2, 10.0.0.3) now default to public DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)
+- **NET_PEERS default removed**: Users must configure external servers they control (no automatic defaults)
 - **New network variables**: Validation, fallback, and reliability settings added
 - **Configuration templates**: All shape-specific templates updated with new defaults
 - **No backwards compatibility**: Old network implementation completely removed

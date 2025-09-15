@@ -136,7 +136,7 @@ class TestStressFailureModes(unittest.TestCase):
         )
 
         # Should handle connection failures gracefully
-        gen.start(['192.0.2.1'])  # RFC 5737 test address (non-routable)
+        gen.start(['1.2.3.4'])  # RFC 5737 test address (non-routable)
         time.sleep(0.2)  # Let it try to connect
         gen.stop()
 
@@ -144,21 +144,21 @@ class TestStressFailureModes(unittest.TestCase):
         self.assertEqual(len(gen.tcp_connections), 0,
                         "Should clean up failed connections")
 
-    def test_network_generator_dns_resolution_failure(self):
-        """Test network generator with DNS resolution failures."""
+    def test_network_generator_hostname_resolution_failure(self):
+        """Test network generator with hostname resolution failures."""
         gen = loadshaper.NetworkGenerator(
             rate_mbps=1.0,
             protocol='udp',
             port=12345
         )
 
-        # Should handle DNS failures gracefully
+        # Should handle hostname resolution failures gracefully
         gen.start(['this-domain-does-not-exist-12345.invalid'])
         time.sleep(0.1)
         gen.stop()
 
         # Should not crash
-        self.assertTrue(True, "Should handle DNS failures gracefully")
+        self.assertTrue(True, "Should handle hostname resolution failures gracefully")
 
     def test_network_generator_port_exhaustion(self):
         """Test network generator behavior when ports are exhausted."""
