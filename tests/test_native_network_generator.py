@@ -459,7 +459,7 @@ class TestNetworkGeneratorIntegration(unittest.TestCase):
 
     def test_udp_burst_with_external_peers(self):
         """Test UDP traffic generation with external peers."""
-        self.generator.start(["192.0.2.1"])  # Use external peer
+        self.generator.start(["1.2.3.4"])  # Use external peer
 
         # Send very short burst to avoid network impact
         packets_sent = self.generator.send_burst(0.01)  # 10ms burst
@@ -474,7 +474,7 @@ class TestNetworkGeneratorIntegration(unittest.TestCase):
         self.generator.update_rate(0.001)  # 1 kbps
 
         # Start generator to initialize socket
-        self.generator.start(["192.0.2.1"])  # Use external peer
+        self.generator.start(["1.2.3.4"])  # Use external peer
 
         start_time = time.time()
         packets_sent = self.generator.send_burst(0.1)  # 100ms burst

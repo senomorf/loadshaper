@@ -136,7 +136,7 @@ class TestStressFailureModes(unittest.TestCase):
         )
 
         # Should handle connection failures gracefully
-        gen.start(['192.0.2.1'])  # RFC 5737 test address (non-routable)
+        gen.start(['1.2.3.4'])  # RFC 5737 test address (non-routable)
         time.sleep(0.2)  # Let it try to connect
         gen.stop()
 

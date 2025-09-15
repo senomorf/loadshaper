@@ -120,7 +120,7 @@ class TestSpecialUseRanges(unittest.TestCase):
         """Test TEST-NET ranges."""
         # TEST-NET-1 (192.0.2.0/24)
         self.assertFalse(is_external_address("192.0.2.0"))
-        self.assertFalse(is_external_address("192.0.2.100"))
+        self.assertFalse(is_external_address("192.0.2.1"))
         self.assertFalse(is_external_address("192.0.2.255"))
 
         # TEST-NET-2 (198.51.100.0/24)
@@ -159,9 +159,10 @@ class TestSpecialUseRanges(unittest.TestCase):
 
     def test_valid_external_addresses(self):
         """Test that actual external addresses are recognized."""
-        self.assertTrue(is_external_address("192.0.2.1"))
-        self.assertTrue(is_external_address("198.51.100.1"))
-        self.assertTrue(is_external_address("203.0.113.1"))
+        # Use actual external addresses, not TEST-NET addresses
+        self.assertTrue(is_external_address("1.2.3.4"))
+        self.assertTrue(is_external_address("4.4.4.4"))
+        self.assertTrue(is_external_address("208.67.220.220"))
         self.assertTrue(is_external_address("208.67.222.222"))
         self.assertTrue(is_external_address("2001:4860:4860::8888"))  # Google DNS IPv6
 
@@ -198,7 +199,7 @@ class TestTxBytesValidation(unittest.TestCase):
         from loadshaper import PeerState
         gen.peers = {
             "192.168.1.1": {"is_external": False, "state": PeerState.VALID},
-            "192.0.2.1": {"is_external": True, "state": PeerState.VALID}
+            "1.2.3.4": {"is_external": True, "state": PeerState.VALID}
         }
 
         # Test 1: Sending to internal peer should NOT verify external egress
@@ -210,7 +211,7 @@ class TestTxBytesValidation(unittest.TestCase):
 
         # Test 2: Sending to external peer SHOULD verify external egress
         mock_get_tx.return_value = 1004000  # Another good increase
-        gen.last_sent_peer = "192.0.2.1"  # Set the last sent peer directly
+        gen.last_sent_peer = "1.2.3.4"  # Set the last sent peer directly
         gen._validate_transmission_effectiveness(1002000, 1500, 1)
         self.assertTrue(gen.external_egress_verified)
 
@@ -225,7 +226,7 @@ class TestTxBytesValidation(unittest.TestCase):
         gen.socket.sendto = MagicMock(return_value=None)
 
         # Add a regular external peer
-        gen.peers = {"192.0.2.1": {"state": "VALID", "is_external": True, "blacklist_until": 0}}
+        gen.peers = {"1.2.3.4": {"state": "VALID", "is_external": True, "blacklist_until": 0}}
 
         with patch('loadshaper.NetworkGenerator._get_tx_bytes', return_value=1000000):
             with patch('loadshaper.NetworkGenerator._validate_transmission_effectiveness') as mock_validate:
